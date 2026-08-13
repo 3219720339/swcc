@@ -1091,6 +1091,7 @@ impl Analyzer {
                 diagnostics,
                 state,
                 global_index_by_symbol: HashMap::new(),
+                hidden_functions: Vec::new(),
             };
             lowerer.lower_module()
         };
@@ -1966,14 +1967,22 @@ impl<'s> Checker<'s> {
             }
             ExprKind::Lambda { params, body } => {
                 let mut param_types = Vec::new();
+                self.scopes.push(HashMap::new());
                 for param in params {
-                    match &param.ty {
-                        Some(ty) => param_types.push(self.lower_type(ty)),
+                    let ty = match &param.ty {
+                        Some(ty) => self.lower_type(ty),
                         None => {
                             self.error("v0.1 lambda 参数必须标注类型", param.name.span);
-                            param_types.push(Type::Error);
+                            Type::Error
                         }
-                    }
+                    };
+                    let id = self.alloc_local();
+                    self.symbols[id.0 as usize].kind = SymbolKind::Param { ty: ty.clone() };
+                    self.scopes
+                        .last_mut()
+                        .expect("作用域存在")
+                        .insert(param.name.name.clone(), id);
+                    param_types.push(ty);
                 }
                 let ret = match body {
                     LambdaBody::Expr(expr) => self.check_expr(expr),
@@ -1982,6 +1991,7 @@ impl<'s> Checker<'s> {
                         Type::Void
                     }
                 };
+                self.scopes.pop();
                 Type::Function {
                     params: param_types,
                     ret: Box::new(ret),
@@ -2282,6 +2292,54 @@ impl<'s> Checker<'s> {
 
         match &callee.kind {
             ExprKind::Ident(ident) => {
+                // 闭包变量调用：f(...)
+                if let Some(symbol_id) = self.lookup(&ident.name) {
+                    let is_variable = matches!(
+                        self.symbols[symbol_id.0 as usize].kind,
+                        SymbolKind::Local { .. }
+                            | SymbolKind::Param { .. }
+                            | SymbolKind::Global { .. }
+                    );
+                    if is_variable {
+                        let symbol_type = self.symbol_type(symbol_id);
+                        if let Type::Function { params, ret } = &symbol_type {
+                            self.state
+                                .result
+                                .ident_symbols
+                                .insert(ident.span.start, symbol_id);
+                            self.state
+                                .result
+                                .expr_types
+                                .insert(ident.span.start, symbol_type.clone());
+                            let args_ty: Vec<Type> =
+                                args.iter().map(|arg| self.check_expr(arg)).collect();
+                            if args_ty.len() != params.len() {
+                                self.error(
+                                    format!(
+                                        "闭包调用参数数量不匹配：需要 {} 个，实际 {} 个",
+                                        params.len(),
+                                        args_ty.len()
+                                    ),
+                                    span,
+                                );
+                                return Type::Error;
+                            }
+                            for (arg_ty, param_ty) in args_ty.iter().zip(params.iter()) {
+                                if !self.is_assignable(arg_ty, param_ty) {
+                                    self.error(
+                                        format!(
+                                            "闭包参数类型不匹配：{} 不能赋给 {}",
+                                            arg_ty.display(),
+                                            param_ty.display()
+                                        ),
+                                        span,
+                                    );
+                                }
+                            }
+                            return (**ret).clone();
+                        }
+                    }
+                }
                 let args_ty: Vec<Type> = args.iter().map(|arg| self.check_expr(arg)).collect();
                 let Some(symbol_ids) = self.state.names.get(&ident.name).cloned() else {
                     self.error(format!("未定义的函数 `{}`", ident.name), ident.span);
@@ -2547,6 +2605,7 @@ struct MirLowerer<'m, 's> {
     diagnostics: &'s mut Diagnostics,
     state: &'s mut ModuleState,
     global_index_by_symbol: HashMap<u32, usize>,
+    hidden_functions: Vec<MirFunction>,
 }
 
 struct FnLower<'a, 'm, 's> {
@@ -2558,6 +2617,8 @@ struct FnLower<'a, 'm, 's> {
     name_scopes: Vec<HashMap<String, usize>>,
     global_by_symbol: HashMap<u32, usize>,
     this_class: Option<u32>,
+    /// 闭包隐藏函数内：符号 ID → 环境槽序号。
+    captures: HashMap<u32, usize>,
 }
 
 impl<'m, 's> MirLowerer<'m, 's> {
@@ -2631,6 +2692,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         name_scopes: Vec::new(),
                         global_by_symbol: global_by_symbol.clone(),
                         this_class: None,
+                        captures: HashMap::new(),
                     };
                     for param in &sig.params {
                         lower.params.push(MirParam {
@@ -2695,6 +2757,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         name_scopes: Vec::new(),
                         global_by_symbol: global_by_symbol.clone(),
                         this_class: Some(class_id),
+                        captures: HashMap::new(),
                     };
                     for param in &sig.params {
                         lower.params.push(MirParam {
@@ -2708,6 +2771,9 @@ impl<'m, 's> MirLowerer<'m, 's> {
             }
         }
 
+        for function in std::mem::take(&mut self.hidden_functions) {
+            module_mir.functions.push(function);
+        }
         module_mir.strings = self.state.mir_strings.clone();
         module_mir
     }
@@ -3040,17 +3106,180 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
                 output.extend(chain);
             }
-            StmtKind::Try { .. } => {
-                self.error(
-                    "MIR 降级暂不支持 try/catch（异常处理在后续版本实现）",
-                    statement.span,
-                );
+            StmtKind::Try {
+                body,
+                catches,
+                finally,
+            } => {
+                let frame_ty = Type::Ptr(Box::new(Type::I8));
+                let frame_local = self.declare_local("$frame", frame_ty.clone(), true);
+                let frame = MirExpr::Local(frame_local);
+                output.push(MirStmt::new(MirStmtKind::VarDecl {
+                    local: frame_local,
+                    init: Some(MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "sw_try_begin".to_owned(),
+                        },
+                        args: vec![],
+                    }),
+                }));
+
+                // 异常路径：取值 → 弹出框架 → 类型分派 → finally → 未匹配则重抛
+                let mut then_stmts = Vec::new();
+                let e_local = self.declare_local("$exc", frame_ty.clone(), false);
+                let e = MirExpr::Local(e_local);
+                then_stmts.push(MirStmt::new(MirStmtKind::VarDecl {
+                    local: e_local,
+                    init: Some(MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "sw_try_value".to_owned(),
+                        },
+                        args: vec![frame.clone()],
+                    }),
+                }));
+                then_stmts.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "sw_try_leave".to_owned(),
+                    },
+                    args: vec![frame.clone()],
+                })));
+
+                let matched_local = self.declare_local("$matched", Type::Int, false);
+                then_stmts.push(MirStmt::new(MirStmtKind::VarDecl {
+                    local: matched_local,
+                    init: Some(MirExpr::Int(0)),
+                }));
+                let exception_type = || MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "sw_exception_type".to_owned(),
+                    },
+                    args: vec![e.clone()],
+                };
+                for catch in catches {
+                    let cond = match &catch.ty {
+                        Some(ty) => {
+                            let ty = self.lowerer.lower_type_for_mir(ty);
+                            match ty {
+                                Type::Str => MirExpr::Binary {
+                                    op: MirBinary::Eq,
+                                    left: Box::new(exception_type()),
+                                    right: Box::new(MirExpr::Int(0)),
+                                },
+                                Type::Class(class_id) => MirExpr::Binary {
+                                    op: MirBinary::Eq,
+                                    left: Box::new(exception_type()),
+                                    right: Box::new(MirExpr::Int(class_id as i64)),
+                                },
+                                // 其他类型（如 int）不能匹配 string/class 异常
+                                _ => MirExpr::Bool(false),
+                            }
+                        }
+                        None => MirExpr::Bool(true),
+                    };
+                    let catch_ty = catch
+                        .ty
+                        .as_ref()
+                        .map(|ty| self.lowerer.lower_type_for_mir(ty))
+                        .unwrap_or(Type::Error);
+                    let catch_local = self.declare_local(&catch.name.name, catch_ty, false);
+                    let mut catch_body = vec![MirStmt::new(MirStmtKind::VarDecl {
+                        local: catch_local,
+                        init: Some(MirExpr::Call {
+                            callee: MirCallee::Intrinsic {
+                                name: "sw_exception_value".to_owned(),
+                            },
+                            args: vec![e.clone()],
+                        }),
+                    })];
+                    catch_body.extend(self.lower_stmts(&catch.body.statements));
+                    catch_body.push(MirStmt::new(MirStmtKind::Assign {
+                        target: MirTarget::Local(matched_local),
+                        value: MirExpr::Int(1),
+                    }));
+                    then_stmts.push(MirStmt::new(MirStmtKind::If {
+                        cond,
+                        then: catch_body,
+                        else_: Vec::new(),
+                    }));
+                }
+                if let Some(finally) = finally {
+                    then_stmts.extend(self.lower_stmts(&finally.statements));
+                }
+                then_stmts.push(MirStmt::new(MirStmtKind::If {
+                    cond: MirExpr::Binary {
+                        op: MirBinary::Eq,
+                        left: Box::new(MirExpr::Local(matched_local)),
+                        right: Box::new(MirExpr::Int(0)),
+                    },
+                    then: vec![MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "sw_rethrow".to_owned(),
+                        },
+                        args: vec![e],
+                    }))],
+                    else_: Vec::new(),
+                }));
+
+                // 正常路径：body → finally → 弹出框架
+                let mut else_stmts = self.lower_stmts(&body.statements);
+                if let Some(finally) = finally {
+                    else_stmts.extend(self.lower_stmts(&finally.statements));
+                }
+                else_stmts.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "sw_try_leave".to_owned(),
+                    },
+                    args: vec![frame],
+                })));
+
+                output.push(MirStmt::new(MirStmtKind::If {
+                    cond: MirExpr::Binary {
+                        op: MirBinary::Ne,
+                        left: Box::new(MirExpr::Call {
+                            callee: MirCallee::Extern {
+                                name: "sw_setjmp".to_owned(),
+                                sig: FunctionSig {
+                                    module: ModuleId(0),
+                                    name: "sw_setjmp".to_owned(),
+                                    generics: Vec::new(),
+                                    params: vec![ParamSig {
+                                        name: "buf".to_owned(),
+                                        ty: Type::Ptr(Box::new(Type::I8)),
+                                        has_default: false,
+                                    }],
+                                    ret: Type::Int,
+                                    extern_c: true,
+                                    span: Span::empty(0),
+                                },
+                            },
+                            args: vec![MirExpr::Local(frame_local)],
+                        }),
+                        right: Box::new(MirExpr::Int(0)),
+                    },
+                    then: then_stmts,
+                    else_: else_stmts,
+                }));
             }
             StmtKind::Throw(expr) => {
-                self.error(
-                    "MIR 降级暂不支持 throw（异常处理在后续版本实现）",
-                    expr.span,
-                );
+                let value = self.lower_expr(expr);
+                let ty = self
+                    .lowerer
+                    .state
+                    .result
+                    .expr_types
+                    .get(&expr.span.start)
+                    .cloned()
+                    .unwrap_or(Type::Error);
+                let type_id = match ty {
+                    Type::Class(class_id) => class_id as i64,
+                    _ => 0,
+                };
+                output.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "sw_throw".to_owned(),
+                    },
+                    args: vec![value, MirExpr::Int(type_id)],
+                })));
             }
             StmtKind::Defer(expr) => {
                 self.error("MIR 降级暂不支持 defer（清理在后续版本实现）", expr.span);
@@ -3269,6 +3498,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .get(&expr.span.start)
                     .copied()
                 {
+                    if let Some(slot) = self.captures.get(&symbol.0) {
+                        return MirExpr::EnvGet { slot: *slot };
+                    }
                     if let Some(global) = self.global_by_symbol.get(&symbol.0) {
                         return MirExpr::Global(*global as u32);
                     }
@@ -3337,11 +3569,70 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 self.error("赋值表达式降级暂不支持，请用作语句", expr.span);
                 MirExpr::Int(0)
             }
-            ExprKind::Conditional { .. } => {
-                self.error("三元表达式降级暂不支持（后续版本）", expr.span);
-                MirExpr::Int(0)
-            }
+            ExprKind::Conditional { cond, then, else_ } => MirExpr::Select {
+                cond: Box::new(self.lower_expr(cond)),
+                then: Box::new(self.lower_expr(then)),
+                else_: Box::new(self.lower_expr(else_)),
+            },
             ExprKind::Call { callee, args } => {
+                // 闭包调用：callee 是 lambda，或 callee 是函数类型的局部/参数/全局
+                let closure_ty = match &callee.kind {
+                    ExprKind::Lambda { .. } => self.expr_type(callee),
+                    ExprKind::Ident(_) => {
+                        let symbol = self
+                            .lowerer
+                            .state
+                            .result
+                            .ident_symbols
+                            .get(&callee.span.start)
+                            .copied()
+                            .map(|id| self.lowerer.symbol(id));
+                        match symbol {
+                            Some(symbol) => match &symbol.kind {
+                                SymbolKind::Local { ty, .. }
+                                | SymbolKind::Param { ty }
+                                | SymbolKind::Global { ty, .. } => ty.clone(),
+                                _ => Type::Error,
+                            },
+                            None => Type::Error,
+                        }
+                    }
+                    _ => Type::Error,
+                };
+                if let Type::Function {
+                    params: fn_params,
+                    ret: fn_ret,
+                } = &closure_ty
+                {
+                    let mut values = vec![self.lower_expr(callee)];
+                    for arg in args {
+                        values.push(self.lower_expr(arg));
+                    }
+                    let mut sig = FunctionSig {
+                        module: self.lowerer.state.id,
+                        name: "$closure".to_owned(),
+                        generics: Vec::new(),
+                        params: vec![ParamSig {
+                            name: "$env".to_owned(),
+                            ty: Type::Ptr(Box::new(Type::I8)),
+                            has_default: false,
+                        }],
+                        ret: (**fn_ret).clone(),
+                        extern_c: false,
+                        span: expr.span,
+                    };
+                    for (index, param_ty) in fn_params.iter().enumerate() {
+                        sig.params.push(ParamSig {
+                            name: format!("arg{index}"),
+                            ty: param_ty.clone(),
+                            has_default: false,
+                        });
+                    }
+                    return MirExpr::Call {
+                        callee: MirCallee::Closure { sig },
+                        args: values,
+                    };
+                }
                 let target = self
                     .lowerer
                     .state
@@ -3583,10 +3874,313 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
                 result
             }
-            ExprKind::Lambda { .. } => {
-                self.error("MIR 降级暂不支持闭包/lambda（后续版本）", expr.span);
-                MirExpr::Null
+            ExprKind::Lambda { params, body } => {
+                let lambda_type = self.expr_type(expr);
+                let (lambda_params, lambda_ret) = match lambda_type {
+                    Type::Function { params, ret } => (params, *ret),
+                    other => {
+                        self.error(format!("闭包类型未知：{}", other.display()), expr.span);
+                        return MirExpr::Null;
+                    }
+                };
+                let param_names: Vec<String> =
+                    params.iter().map(|param| param.name.name.clone()).collect();
+                let mut captures = Vec::new();
+                let mut seen = HashSet::new();
+                match body {
+                    LambdaBody::Expr(inner) => {
+                        self.collect_captures_expr(inner, &param_names, &mut captures, &mut seen);
+                    }
+                    LambdaBody::Block(block) => {
+                        for statement in &block.statements {
+                            self.collect_captures_stmt(
+                                statement,
+                                &param_names,
+                                &mut captures,
+                                &mut seen,
+                            );
+                        }
+                    }
+                }
+
+                let hidden_name =
+                    format!("sw_closure_{}_{}", self.lowerer.state.id.0, expr.span.start);
+                let env_ty = Type::Ptr(Box::new(Type::I8));
+                let mut hidden_params = vec![MirParam {
+                    name: "$env".to_owned(),
+                    ty: env_ty.clone(),
+                }];
+                for (index, param) in params.iter().enumerate() {
+                    hidden_params.push(MirParam {
+                        name: param.name.name.clone(),
+                        ty: lambda_params.get(index).cloned().unwrap_or(Type::Error),
+                    });
+                }
+                let mut hidden_sig = FunctionSig {
+                    module: self.lowerer.state.id,
+                    name: hidden_name.clone(),
+                    generics: Vec::new(),
+                    params: Vec::new(),
+                    ret: lambda_ret.clone(),
+                    extern_c: false,
+                    span: expr.span,
+                };
+                hidden_sig.params.push(ParamSig {
+                    name: "$env".to_owned(),
+                    ty: env_ty,
+                    has_default: false,
+                });
+                for (index, param) in params.iter().enumerate() {
+                    hidden_sig.params.push(ParamSig {
+                        name: param.name.name.clone(),
+                        ty: lambda_params[index].clone(),
+                        has_default: false,
+                    });
+                }
+
+                let capture_map: HashMap<u32, usize> = captures
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, (_, symbol_id))| (*symbol_id, slot))
+                    .collect();
+                let body_block = match body {
+                    LambdaBody::Block(block) => block.clone(),
+                    LambdaBody::Expr(inner) => Block {
+                        statements: vec![Stmt {
+                            kind: StmtKind::Return(Some(inner.as_ref().clone())),
+                            span: inner.span,
+                        }],
+                        span: inner.span,
+                    },
+                };
+                let lowerer = &mut *self.lowerer;
+                let mut nested = FnLower {
+                    lowerer,
+                    name: hidden_name.clone(),
+                    params: hidden_params,
+                    ret: lambda_ret,
+                    locals: Vec::new(),
+                    name_scopes: Vec::new(),
+                    global_by_symbol: self.global_by_symbol.clone(),
+                    this_class: None,
+                    captures: capture_map,
+                };
+                let hidden_function = nested.lower_function(Some(&body_block), false);
+                self.lowerer.hidden_functions.push(hidden_function);
+
+                let capture_values: Vec<MirExpr> = captures
+                    .iter()
+                    .filter_map(|(name, _)| self.lookup_local(name).map(MirExpr::Local))
+                    .collect();
+                MirExpr::ClosureNew {
+                    name: hidden_name,
+                    captures: capture_values,
+                    sig: hidden_sig,
+                }
             }
+        }
+    }
+
+    fn collect_captures_expr(
+        &self,
+        expr: &Expr,
+        lambda_params: &[String],
+        out: &mut Vec<(String, u32)>,
+        seen: &mut HashSet<u32>,
+    ) {
+        match &expr.kind {
+            ExprKind::Ident(ident) => {
+                if lambda_params.iter().any(|name| name == &ident.name) {
+                    return;
+                }
+                let Some(symbol) = self
+                    .lowerer
+                    .state
+                    .result
+                    .ident_symbols
+                    .get(&expr.span.start)
+                    .copied()
+                else {
+                    return;
+                };
+                let is_local = matches!(
+                    self.lowerer.symbol(symbol).kind,
+                    SymbolKind::Local { .. } | SymbolKind::Param { .. }
+                );
+                if is_local && seen.insert(symbol.0) {
+                    out.push((ident.name.clone(), symbol.0));
+                }
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.collect_captures_expr(left, lambda_params, out, seen);
+                self.collect_captures_expr(right, lambda_params, out, seen);
+            }
+            ExprKind::Unary { expr: inner, .. }
+            | ExprKind::Group(inner)
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Postfix { expr: inner, .. } => {
+                self.collect_captures_expr(inner, lambda_params, out, seen);
+            }
+            ExprKind::Assign { target, value, .. } => {
+                self.collect_captures_expr(target, lambda_params, out, seen);
+                self.collect_captures_expr(value, lambda_params, out, seen);
+            }
+            ExprKind::Conditional { cond, then, else_ } => {
+                self.collect_captures_expr(cond, lambda_params, out, seen);
+                self.collect_captures_expr(then, lambda_params, out, seen);
+                self.collect_captures_expr(else_, lambda_params, out, seen);
+            }
+            ExprKind::Call { callee, args } => {
+                self.collect_captures_expr(callee, lambda_params, out, seen);
+                for arg in args {
+                    self.collect_captures_expr(arg, lambda_params, out, seen);
+                }
+            }
+            ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => {
+                self.collect_captures_expr(object, lambda_params, out, seen);
+            }
+            ExprKind::Array(items) => {
+                for item in items {
+                    self.collect_captures_expr(item, lambda_params, out, seen);
+                }
+            }
+            ExprKind::Object(fields) => {
+                for field in fields {
+                    self.collect_captures_expr(&field.value, lambda_params, out, seen);
+                }
+            }
+            ExprKind::New { args, .. } => {
+                for arg in args {
+                    self.collect_captures_expr(arg, lambda_params, out, seen);
+                }
+            }
+            ExprKind::Template(parts) => {
+                for part in parts {
+                    if let TemplatePart::Expr(inner) = part {
+                        self.collect_captures_expr(inner, lambda_params, out, seen);
+                    }
+                }
+            }
+            ExprKind::Lambda { .. }
+            | ExprKind::Str(_)
+            | ExprKind::Integer { .. }
+            | ExprKind::Float { .. }
+            | ExprKind::Char(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Null
+            | ExprKind::This
+            | ExprKind::Super => {}
+        }
+    }
+
+    fn collect_captures_stmt(
+        &self,
+        statement: &Stmt,
+        lambda_params: &[String],
+        out: &mut Vec<(String, u32)>,
+        seen: &mut HashSet<u32>,
+    ) {
+        match &statement.kind {
+            StmtKind::Block(block) => {
+                for statement in &block.statements {
+                    self.collect_captures_stmt(statement, lambda_params, out, seen);
+                }
+            }
+            StmtKind::Variable(variable) => {
+                if let Some(init) = &variable.init {
+                    self.collect_captures_expr(init, lambda_params, out, seen);
+                }
+            }
+            StmtKind::If { cond, then, else_ } => {
+                self.collect_captures_expr(cond, lambda_params, out, seen);
+                self.collect_captures_stmt(then, lambda_params, out, seen);
+                if let Some(else_) = else_ {
+                    self.collect_captures_stmt(else_, lambda_params, out, seen);
+                }
+            }
+            StmtKind::While { cond, body } => {
+                self.collect_captures_expr(cond, lambda_params, out, seen);
+                self.collect_captures_stmt(body, lambda_params, out, seen);
+            }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                if let Some(init) = init {
+                    match init {
+                        ForInit::Variable(variable) => {
+                            if let Some(init) = &variable.init {
+                                self.collect_captures_expr(init, lambda_params, out, seen);
+                            }
+                        }
+                        ForInit::Expr(expr) => {
+                            self.collect_captures_expr(expr, lambda_params, out, seen);
+                        }
+                    }
+                }
+                if let Some(cond) = cond {
+                    self.collect_captures_expr(cond, lambda_params, out, seen);
+                }
+                if let Some(update) = update {
+                    self.collect_captures_expr(update, lambda_params, out, seen);
+                }
+                self.collect_captures_stmt(body, lambda_params, out, seen);
+            }
+            StmtKind::ForEach { iterable, body, .. } => {
+                self.collect_captures_expr(iterable, lambda_params, out, seen);
+                self.collect_captures_stmt(body, lambda_params, out, seen);
+            }
+            StmtKind::Switch {
+                value,
+                cases,
+                default,
+            } => {
+                self.collect_captures_expr(value, lambda_params, out, seen);
+                for case in cases {
+                    self.collect_captures_expr(&case.value, lambda_params, out, seen);
+                    for statement in &case.body {
+                        self.collect_captures_stmt(statement, lambda_params, out, seen);
+                    }
+                }
+                if let Some(statements) = default {
+                    for statement in statements {
+                        self.collect_captures_stmt(statement, lambda_params, out, seen);
+                    }
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                finally,
+            } => {
+                for statement in &body.statements {
+                    self.collect_captures_stmt(statement, lambda_params, out, seen);
+                }
+                for catch in catches {
+                    for statement in &catch.body.statements {
+                        self.collect_captures_stmt(statement, lambda_params, out, seen);
+                    }
+                }
+                if let Some(finally) = finally {
+                    for statement in &finally.statements {
+                        self.collect_captures_stmt(statement, lambda_params, out, seen);
+                    }
+                }
+            }
+            StmtKind::Throw(expr) | StmtKind::Defer(expr) => {
+                self.collect_captures_expr(expr, lambda_params, out, seen);
+            }
+            StmtKind::Return(expr) => {
+                if let Some(expr) = expr {
+                    self.collect_captures_expr(expr, lambda_params, out, seen);
+                }
+            }
+            StmtKind::Expr(expr) => {
+                self.collect_captures_expr(expr, lambda_params, out, seen);
+            }
+            StmtKind::Break | StmtKind::Continue | StmtKind::Empty => {}
         }
     }
 

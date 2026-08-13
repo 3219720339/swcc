@@ -146,6 +146,22 @@ pub enum MirExpr {
         expr: Box<MirExpr>,
         to: Type,
     },
+    /// 三元表达式：条件分支各求值一次（与 JS 语义一致）。
+    Select {
+        cond: Box<MirExpr>,
+        then: Box<MirExpr>,
+        else_: Box<MirExpr>,
+    },
+    /// 创建闭包对象：运行时分配 { fn 指针, 环境槽数组 }。
+    ClosureNew {
+        name: String,
+        captures: Vec<MirExpr>,
+        sig: FunctionSig,
+    },
+    /// 隐藏函数内部读取捕获槽。
+    EnvGet {
+        slot: usize,
+    },
     /// 创建类对象并调用构造函数。
     New {
         class: u32,
@@ -163,6 +179,10 @@ pub enum MirCallee {
     Method {
         class: u32,
         name: String,
+        sig: FunctionSig,
+    },
+    /// 通过闭包对象间接调用：args[0] 是闭包指针。
+    Closure {
         sig: FunctionSig,
     },
     Extern {

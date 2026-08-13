@@ -895,7 +895,7 @@ impl<'a> Parser<'a> {
                 body: catch_body,
             });
         }
-        if catches.is_empty() {
+        if catches.is_empty() && !self.at_keyword(Keyword::Finally) {
             let span = self.peek().span;
             self.error("try 语句缺少 catch 或 finally", span);
         }

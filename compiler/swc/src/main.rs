@@ -130,7 +130,7 @@ fn main() {
         return;
     }
 
-    // ---- 代码生成与链接 ----
+    // ---- 代码生成与链接（自包含：Cranelift + lld + MinGW CRT） ----
     let output = match parse_output(&args) {
         Some(output) => output,
         None => {
@@ -164,47 +164,68 @@ fn main() {
         objects.push(object_path);
     }
 
-    let clang = find_clang().unwrap_or_else(|| {
+    let toolchain = find_toolchain().unwrap_or_else(|| {
         eprintln!(
-            "未找到 clang；请设置环境变量 SW_CLANG 指向 clang.exe，或安装 Visual Studio LLVM 工具"
+            "未找到 llvm-mingw 工具链；请设置环境变量 SW_TOOLCHAIN 指向解压后的 llvm-mingw 目录"
         );
         std::process::exit(2);
     });
-    let runtime_c = env::var("SW_RUNTIME_C")
-        .map(PathBuf::from)
-        .ok()
-        .or_else(|| {
-            let candidate = env::current_dir().ok()?.join("runtime").join("runtime.c");
-            candidate.is_file().then_some(candidate)
-        })
-        .unwrap_or_else(|| {
-            eprintln!("未找到 runtime/runtime.c");
-            std::process::exit(2);
-        });
-    let runtime_obj = cache_dir.join("runtime.obj");
-    if !runtime_obj.exists() {
-        let status = Command::new(&clang)
-            .args(["-O2", "-c"])
-            .arg(&runtime_c)
-            .arg("-o")
-            .arg(&runtime_obj)
-            .status();
-        if !status.map(|status| status.success()).unwrap_or(false) {
-            eprintln!("运行时编译失败");
+    let mingw_clang = toolchain.join("bin").join("x86_64-w64-mingw32-clang.exe");
+    let lld = toolchain.join("bin").join("ld.lld.exe");
+    let mingw_lib = toolchain.join("x86_64-w64-mingw32").join("lib");
+    let builtins = toolchain
+        .join("lib")
+        .join("clang")
+        .join("22")
+        .join("lib")
+        .join("windows")
+        .join("libclang_rt.builtins-x86_64.a");
+    if !mingw_clang.is_file() || !lld.is_file() || !mingw_lib.is_dir() || !builtins.is_file() {
+        eprintln!(
+            "工具链不完整（需要 bin/x86_64-w64-mingw32-clang.exe、bin/ld.lld.exe、MinGW 库、compiler-rt）：{}",
+            toolchain.display()
+        );
+        std::process::exit(2);
+    }
+
+    let runtime_dir = env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("runtime");
+    let runtime_c = runtime_dir.join("runtime.c");
+    let runtime_s = runtime_dir.join("runtime.s");
+    let startup_s = runtime_dir.join("startup.s");
+    let runtime_obj = cache_dir.join("runtime_mingw.obj");
+    let runtime_asm_obj = cache_dir.join("runtime_asm_mingw.obj");
+    let startup_obj = cache_dir.join("startup_mingw.obj");
+
+    for (source, object, prefix) in [
+        (&runtime_c, &runtime_obj, &["-O2", "-c"][..]),
+        (&runtime_s, &runtime_asm_obj, &["-c"][..]),
+        (&startup_s, &startup_obj, &["-c"][..]),
+    ] {
+        if compile_if_stale(&mingw_clang, source, object, prefix).is_err() {
             std::process::exit(1);
         }
     }
 
-    let mut link_args = Vec::new();
+    let mut link_args: Vec<std::ffi::OsString> = vec!["-m".into(), "i386pep".into()];
     for object in &objects {
         link_args.push(object.as_os_str().to_os_string());
     }
-    link_args.push(runtime_obj.as_os_str().to_os_string());
+    for object in [&runtime_obj, &runtime_asm_obj, &startup_obj] {
+        link_args.push(object.as_os_str().to_os_string());
+    }
+    link_args.push("-L".into());
+    link_args.push(mingw_lib.as_os_str().to_os_string());
+    for library in ["-lucrt", "-lucrtbase", "-lkernel32"] {
+        link_args.push(library.into());
+    }
+    link_args.push(builtins.as_os_str().to_os_string());
     link_args.push("-o".into());
     link_args.push(output.as_os_str().to_os_string());
-    let status = Command::new(&clang).args(&link_args).status();
+    let status = Command::new(&lld).args(&link_args).status();
     if !status.map(|status| status.success()).unwrap_or(false) {
-        eprintln!("链接失败");
+        eprintln!("链接失败（ld.lld）");
         std::process::exit(1);
     }
     println!("构建成功：{}", output.display());
@@ -225,6 +246,39 @@ fn main() {
     }
 }
 
+fn compile_if_stale(
+    compiler: &Path,
+    source: &Path,
+    object: &Path,
+    prefix: &[&str],
+) -> Result<(), ()> {
+    let source_mtime = fs::metadata(source)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let object_mtime = fs::metadata(object)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let stale = !object.exists()
+        || source_mtime
+            .zip(object_mtime)
+            .map(|(source, object)| source > object)
+            .unwrap_or(true);
+    if !stale {
+        return Ok(());
+    }
+    let status = Command::new(compiler)
+        .args(prefix)
+        .arg(source)
+        .arg("-o")
+        .arg(object)
+        .status();
+    if !status.map(|status| status.success()).unwrap_or(false) {
+        eprintln!("编译失败：{}", source.display());
+        return Err(());
+    }
+    Ok(())
+}
+
 fn parse_output(args: &[String]) -> Option<PathBuf> {
     let mut index = 3;
     while index < args.len() {
@@ -236,20 +290,20 @@ fn parse_output(args: &[String]) -> Option<PathBuf> {
     None
 }
 
-fn find_clang() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("SW_CLANG") {
+fn find_toolchain() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("SW_TOOLCHAIN") {
         let path = PathBuf::from(path);
-        if path.is_file() {
+        if path.join("bin").join("ld.lld.exe").is_file() {
             return Some(path);
         }
     }
     let candidates = [
-        r"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang.exe",
-        r"C:\Program Files\Microsoft Visual Studio\17\Community\VC\Tools\Llvm\x64\bin\clang.exe",
-        r"C:\Program Files\Microsoft Visual Studio\16\Community\VC\Tools\Llvm\x64\bin\clang.exe",
+        r"D:\llvm-mingw-20260616-ucrt-x86_64",
+        r"C:\llvm-mingw-20260616-ucrt-x86_64",
+        r"C:\llvm-mingw",
     ];
     candidates
         .iter()
         .map(PathBuf::from)
-        .find(|path| path.is_file())
+        .find(|path| path.join("bin").join("ld.lld.exe").is_file())
 }

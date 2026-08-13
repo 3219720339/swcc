@@ -212,7 +212,15 @@ impl Generator {
         lower.stmts(&function.body)?;
         // 空函数体兜底：补一个 void 返回，避免“块未填充”。
         if !lower.last_terminated {
-            lower.builder.ins().return_(&[]);
+            if function.ret == Type::Void || function.ret == Type::Unknown {
+                lower.builder.ins().return_(&[]);
+            } else if function.ret.is_float() {
+                let zero = lower.builder.ins().f64const(0.0);
+                lower.builder.ins().return_(&[zero]);
+            } else {
+                let zero = lower.builder.ins().iconst(types::I64, 0);
+                lower.builder.ins().return_(&[zero]);
+            }
         }
         lower.builder.seal_all_blocks();
         lower.builder.finalize(self.module.isa().frontend_config());
@@ -232,6 +240,7 @@ struct RefTable {
     func_refs: HashMap<String, cranelift_codegen::ir::FuncRef>,
     global_refs: HashMap<u32, cranelift_codegen::ir::GlobalValue>,
     string_refs: HashMap<usize, cranelift_codegen::ir::GlobalValue>,
+    closure_sig_refs: HashMap<String, cranelift_codegen::ir::SigRef>,
 }
 
 /// 预扫描函数体，把引用的外部符号（调用目标、字符串、全局）声明进 Context。
@@ -351,20 +360,59 @@ fn visit_expr(
             refs.global_refs.insert(*index, gv);
         }
         MirExpr::Call { callee, args } => {
-            let (name, sig) = callee_signature(callee, generator)?;
-            let func_id = if let Some(func_id) = exports.get(&name) {
-                *func_id
+            if let MirCallee::Closure { sig } = callee {
+                let key = format!("{:?}", sig);
+                let cranelift_sig = signature_of_sig(sig, generator.module.isa())?;
+                let sig_ref = ctx.func.import_signature(cranelift_sig);
+                refs.closure_sig_refs.insert(key, sig_ref);
             } else {
-                generator.declare_import(&name, &sig)?
-            };
-            let func_ref = generator
-                .module
-                .declare_func_in_func(func_id, &mut ctx.func);
-            refs.func_refs.insert(name.clone(), func_ref);
+                let (name, sig) = callee_signature(callee, generator)?;
+                let func_id = if let Some(func_id) = exports.get(&name) {
+                    *func_id
+                } else {
+                    generator.declare_import(&name, &sig)?
+                };
+                let func_ref = generator
+                    .module
+                    .declare_func_in_func(func_id, &mut ctx.func);
+                refs.func_refs.insert(name.clone(), func_ref);
+            }
             for arg in args {
                 visit_expr(arg, generator, mir, exports, ctx, refs)?;
             }
         }
+        MirExpr::ClosureNew { name, captures, .. } => {
+            if let Some(func_id) = exports.get(name) {
+                refs.func_refs.insert(
+                    name.clone(),
+                    generator
+                        .module
+                        .declare_func_in_func(*func_id, &mut ctx.func),
+                );
+            }
+            let closure_new = generator.declare_import(
+                "sw_closure_new",
+                &closure_new_signature(generator.module.isa()),
+            )?;
+            let env_set = generator
+                .declare_import("sw_env_set", &env_set_signature(generator.module.isa()))?;
+            refs.func_refs.insert(
+                "sw_closure_new".to_owned(),
+                generator
+                    .module
+                    .declare_func_in_func(closure_new, &mut ctx.func),
+            );
+            refs.func_refs.insert(
+                "sw_env_set".to_owned(),
+                generator
+                    .module
+                    .declare_func_in_func(env_set, &mut ctx.func),
+            );
+            for capture in captures {
+                visit_expr(capture, generator, mir, exports, ctx, refs)?;
+            }
+        }
+        MirExpr::EnvGet { .. } => {}
         MirExpr::Unary { expr: inner, .. }
         | MirExpr::Cast { expr: inner, .. }
         | MirExpr::Len { object: inner }
@@ -375,6 +423,11 @@ fn visit_expr(
         MirExpr::Binary { left, right, .. } => {
             visit_expr(left, generator, mir, exports, ctx, refs)?;
             visit_expr(right, generator, mir, exports, ctx, refs)?;
+        }
+        MirExpr::Select { cond, then, else_ } => {
+            visit_expr(cond, generator, mir, exports, ctx, refs)?;
+            visit_expr(then, generator, mir, exports, ctx, refs)?;
+            visit_expr(else_, generator, mir, exports, ctx, refs)?;
         }
         MirExpr::Array { items, .. } => {
             let array_new = generator
@@ -450,7 +503,27 @@ fn callee_signature(
             let sig = intrinsic_signature(runtime_name, generator.module.isa());
             (runtime_name.to_owned(), sig)
         }
+        MirCallee::Closure { sig } => (
+            "$closure".to_owned(),
+            signature_of_sig(sig, generator.module.isa())?,
+        ),
     })
+}
+
+fn closure_new_signature(isa: &dyn cranelift_codegen::isa::TargetIsa) -> Signature {
+    let mut sig = Signature::new(isa.default_call_conv());
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(types::I64));
+    sig
+}
+
+fn env_set_signature(isa: &dyn cranelift_codegen::isa::TargetIsa) -> Signature {
+    let mut sig = Signature::new(isa.default_call_conv());
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    sig
 }
 
 fn intrinsic_name(name: &str) -> &str {
@@ -461,17 +534,56 @@ fn intrinsic_name(name: &str) -> &str {
         "float_to_string" => "sw_float_to_string",
         "char_to_string" => "sw_char_to_string",
         "bool_to_string" => "sw_bool_to_string",
+        _ if name.starts_with("sw_") => name,
         _ => "sw_unimplemented",
     }
 }
 
 fn intrinsic_signature(name: &str, isa: &dyn cranelift_codegen::isa::TargetIsa) -> Signature {
     let mut sig = Signature::new(isa.default_call_conv());
-    if name == "sw_string_concat" {
-        sig.params.push(AbiParam::new(types::I64));
+    match name {
+        "sw_string_concat" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "sw_try_begin" => {
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "sw_security_cookie" | "sw_func_name_addr" => {
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "sw_try_value" | "sw_exception_type" | "sw_exception_value" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "sw_try_leave" | "sw_rethrow" => {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        "sw_throw" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        "sw_closure_new" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "sw_env_set" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        "sw_env_get" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        _ => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
     }
-    sig.params.push(AbiParam::new(types::I64));
-    sig.returns.push(AbiParam::new(types::I64));
     sig
 }
 
@@ -865,23 +977,52 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 }
             }
             MirExpr::Call { callee, args } => {
-                let name = match callee {
-                    MirCallee::Function { name, .. }
-                    | MirCallee::Method { name, .. }
-                    | MirCallee::Extern { name, .. } => name.clone(),
-                    MirCallee::Intrinsic { name } => intrinsic_name(name).to_owned(),
-                };
                 let mut values = Vec::new();
                 for arg in args {
                     values.push(self.expr(arg)?);
                 }
-                let func_ref = self
-                    .refs
-                    .func_refs
-                    .get(&name)
-                    .copied()
-                    .ok_or("调用目标未声明")?;
-                let call = self.builder.ins().call(func_ref, &values);
+                let call = match callee {
+                    MirCallee::Closure { sig } => {
+                        let key = format!("{:?}", sig);
+                        let sig_ref = self
+                            .refs
+                            .closure_sig_refs
+                            .get(&key)
+                            .copied()
+                            .ok_or("闭包签名未导入")?;
+                        let mut values = values.into_iter();
+                        let closure = values.next().ok_or("闭包调用缺少接收者")?;
+                        let fn_ptr =
+                            self.builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::new(), closure, 0);
+                        let env =
+                            self.builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::new(), closure, 8);
+                        let mut call_args = vec![env];
+                        call_args.extend(values);
+                        self.builder
+                            .ins()
+                            .call_indirect(sig_ref, fn_ptr, &call_args)
+                    }
+                    _ => {
+                        let name = match callee {
+                            MirCallee::Function { name, .. }
+                            | MirCallee::Method { name, .. }
+                            | MirCallee::Extern { name, .. } => name.clone(),
+                            MirCallee::Intrinsic { name } => intrinsic_name(name).to_owned(),
+                            MirCallee::Closure { .. } => unreachable!(),
+                        };
+                        let func_ref = self
+                            .refs
+                            .func_refs
+                            .get(&name)
+                            .copied()
+                            .ok_or("调用目标未声明")?;
+                        self.builder.ins().call(func_ref, &values)
+                    }
+                };
                 let results = self.builder.inst_results(call);
                 if results.is_empty() {
                     self.builder.ins().iconst(types::I64, 0)
@@ -989,6 +1130,79 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 } else {
                     value
                 }
+            }
+            MirExpr::Select { cond, then, else_ } => {
+                let cond = self.expr(cond)?;
+                let then_block = self.builder.create_block();
+                let else_block = self.builder.create_block();
+                let join_block = self.builder.create_block();
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let is_true = self.builder.ins().icmp(IntCC::NotEqual, cond, zero);
+                self.builder
+                    .ins()
+                    .brif(is_true, then_block, &[], else_block, &[]);
+                let slot = self.new_slot();
+                self.builder.switch_to_block(then_block);
+                let then_value = self.expr(then)?;
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, then_value, slot, 0);
+                self.builder.ins().jump(join_block, &[]);
+                self.builder.switch_to_block(else_block);
+                let else_value = self.expr(else_)?;
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, else_value, slot, 0);
+                self.builder.ins().jump(join_block, &[]);
+                self.builder.switch_to_block(join_block);
+                self.builder.seal_block(join_block);
+                self.builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, slot, 0)
+            }
+            MirExpr::ClosureNew { name, captures, .. } => {
+                let func_ref = self
+                    .refs
+                    .func_refs
+                    .get(name)
+                    .copied()
+                    .ok_or("闭包函数未声明")?;
+                let fn_addr = self.builder.ins().func_addr(types::I64, func_ref);
+                let count = self.builder.ins().iconst(types::I64, captures.len() as i64);
+                let closure = self.call_import(
+                    "sw_closure_new",
+                    closure_new_signature(self.module.isa()),
+                    &[fn_addr, count],
+                )?;
+                let slot = self.new_slot();
+                self.builder.ins().stack_store(types::I64, closure, slot, 0);
+                for (index, capture) in captures.iter().enumerate() {
+                    let value = self.expr(capture)?;
+                    let closure = self
+                        .builder
+                        .ins()
+                        .stack_load(types::I64, types::I64, slot, 0);
+                    let index_value = self.builder.ins().iconst(types::I64, index as i64);
+                    self.call_import(
+                        "sw_env_set",
+                        env_set_signature(self.module.isa()),
+                        &[closure, index_value, value],
+                    )?;
+                }
+                self.builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, slot, 0)
+            }
+            MirExpr::EnvGet { slot } => {
+                let env_slot = self.slot_for(0);
+                let env = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, env_slot, 0);
+                let offset = (*slot as i32) * 8;
+                self.builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), env, offset)
             }
         })
     }
