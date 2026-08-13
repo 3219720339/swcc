@@ -11,5 +11,6 @@
 *.a
 *.lib
 *.swp
+dist/
 .idea/
 .vscode/
