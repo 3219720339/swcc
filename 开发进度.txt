@@ -89,7 +89,11 @@ Sw 编译器（swcc）开发进度
     2026-08-14 07:51  标准库：std/json（最小 JSON 解析）、std/time（now_ms/sleep_ms）、
                        std/unicode（utf8_len/utf8_char_at/utf8_substring）
 
-    待办（下一批）：泛型 struct/class 实例化（需类型表可变重构，独立成批）
+    2026-08-14 07:58  泛型 struct/class：TypeResolver 改持可变类型表，惰性实例化并缓存；
+                       泛型类实例的方法按实例 id 生成（this_class + 类型实参替换）；
+                       泛型类暂不支持 implements 接口（显式报错）；测试与示例 probe-generic
+
+    待办（下一批）：文本/文件操作等基础能力（见分析）
 
 二、已知限制
 

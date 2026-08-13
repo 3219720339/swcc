@@ -1,6 +1,6 @@
 //! 语义层类型系统。
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
     Void,
     Bool,

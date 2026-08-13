@@ -185,7 +185,7 @@ fn compiles_generic_function_instances() {
 
 #[test]
 fn compiles_optional_chain_and_interfaces() {
-    for name in ["optional.sw", "interface.sw"] {
+    for name in ["optional.sw", "interface.sw", "generic-types.sw"] {
         let result = analyze(&fixture(name), None);
         assert!(
             !result.diagnostics.has_errors(),

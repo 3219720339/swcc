@@ -87,6 +87,10 @@ pub struct TypeTable {
     pub interfaces: Vec<InterfaceInfo>,
     /// class id → 其实现的接口 id 列表。
     pub class_interfaces: HashMap<u32, Vec<u32>>,
+    /// (泛型 struct id, 类型实参) → 实例化 struct id。
+    pub generic_struct_instances: HashMap<(u32, Vec<Type>), u32>,
+    /// (泛型 class id, 类型实参) → 实例化 class id。
+    pub generic_class_instances: HashMap<(u32, Vec<Type>), u32>,
 }
 
 impl TypeTable {

@@ -536,11 +536,11 @@ impl Analyzer {
                         .collect::<Vec<_>>();
                     let mut base = None;
                     if let Some(extends) = &class.extends {
-                        let resolver = TypeResolver::new(
+                        let mut resolver = TypeResolver::new(
                             &self.symbols,
-                            &self.types,
+                            &mut self.types,
                             &self.registry,
-                            &self.state(module_id).names,
+                            &self.states[module_id.0 as usize].names,
                         );
                         match resolver.lower(extends, &generics) {
                             Type::Class(id) => base = Some(id),
@@ -574,12 +574,15 @@ impl Analyzer {
                             info.fields = fields;
                             info.methods = methods;
                         }
+                        if !generics.is_empty() && !class.implements.is_empty() {
+                            self.error("v0.1 泛型类暂不支持实现接口", class.span);
+                        }
                         // 接口实现：解析 implements 并校验方法覆盖。
-                        let resolver = TypeResolver::new(
+                        let mut resolver = TypeResolver::new(
                             &self.symbols,
-                            &self.types,
+                            &mut self.types,
                             &self.registry,
-                            &self.state(module_id).names,
+                            &self.states[module_id.0 as usize].names,
                         );
                         let resolved: Vec<(Type, &TypeRef)> = class
                             .implements
@@ -644,11 +647,11 @@ impl Analyzer {
                     }
                 }
                 ItemKind::TypeAlias(alias) => {
-                    let resolver = TypeResolver::new(
+                    let mut resolver = TypeResolver::new(
                         &self.symbols,
-                        &self.types,
+                        &mut self.types,
                         &self.registry,
-                        &self.state(module_id).names,
+                        &self.states[module_id.0 as usize].names,
                     );
                     let ty = resolver.lower(&alias.ty, &generics);
                     if let Some(SymbolId(id)) = self
@@ -679,11 +682,11 @@ impl Analyzer {
                 ItemKind::Variable(variable) => {
                     let generics = Vec::new();
                     let ty = if let Some(annotation) = &variable.ty {
-                        let resolver = TypeResolver::new(
+                        let mut resolver = TypeResolver::new(
                             &self.symbols,
-                            &self.types,
+                            &mut self.types,
                             &self.registry,
-                            &self.state(module_id).names,
+                            &self.states[module_id.0 as usize].names,
                         );
                         resolver.lower(annotation, &generics)
                     } else if let Some(init) = &variable.init {
@@ -716,11 +719,11 @@ impl Analyzer {
         fields: &[FieldDecl],
         generics: &[String],
     ) -> Vec<FieldInfo> {
-        let resolver = TypeResolver::new(
+        let mut resolver = TypeResolver::new(
             &self.symbols,
-            &self.types,
+            &mut self.types,
             &self.registry,
-            &self.state(module_id).names,
+            &self.states[module_id.0 as usize].names,
         );
         let lowered: Vec<(Type, Span)> = fields
             .iter()
@@ -763,11 +766,11 @@ impl Analyzer {
         for member in &class.members {
             match member {
                 ClassMember::Field(field) => {
-                    let resolver = TypeResolver::new(
+                    let mut resolver = TypeResolver::new(
                         &self.symbols,
-                        &self.types,
+                        &mut self.types,
                         &self.registry,
-                        &self.state(module_id).names,
+                        &self.states[module_id.0 as usize].names,
                     );
                     let ty = resolver.lower(&field.ty, generics);
                     self.reject_complex_field(&ty, field.span, false);
@@ -824,11 +827,11 @@ impl Analyzer {
         generics: &[String],
         this_class: Option<u32>,
     ) -> FunctionSig {
-        let resolver = TypeResolver::new(
+        let mut resolver = TypeResolver::new(
             &self.symbols,
-            &self.types,
+            &mut self.types,
             &self.registry,
-            &self.state(module_id).names,
+            &self.states[module_id.0 as usize].names,
         );
         let params = function
             .params
@@ -862,11 +865,11 @@ impl Analyzer {
         generics: &[String],
         _class_id: u32,
     ) -> FunctionSig {
-        let resolver = TypeResolver::new(
+        let mut resolver = TypeResolver::new(
             &self.symbols,
-            &self.types,
+            &mut self.types,
             &self.registry,
-            &self.state(module_id).names,
+            &self.states[module_id.0 as usize].names,
         );
         let params = constructor
             .params
@@ -1115,7 +1118,7 @@ impl Analyzer {
         body: &Block,
     ) {
         let symbols = &mut self.symbols;
-        let types = &self.types;
+        let types = &mut self.types;
         let registry = &self.registry;
         let diagnostics = &mut self.diagnostics;
         let state = &mut self.states[module_id.0 as usize];
@@ -1161,7 +1164,7 @@ impl Analyzer {
     fn lower_mir(&mut self, module_id: ModuleId) {
         let module = &self.modules[module_id.0 as usize];
         let symbols = &self.symbols;
-        let types = &self.types;
+        let types = &mut self.types;
         let registry = &self.registry;
         let diagnostics = &mut self.diagnostics;
         let state = &mut self.states[module_id.0 as usize];
@@ -1224,7 +1227,7 @@ fn member_span(member: &ClassMember) -> Span {
 #[allow(dead_code)]
 struct TypeResolver<'a> {
     symbols: &'a [Symbol],
-    types: &'a TypeTable,
+    types: &'a mut TypeTable,
     registry: &'a HashMap<String, Type>,
     names: &'a HashMap<String, Vec<SymbolId>>,
 }
@@ -1232,7 +1235,7 @@ struct TypeResolver<'a> {
 impl<'a> TypeResolver<'a> {
     fn new(
         symbols: &'a [Symbol],
-        types: &'a TypeTable,
+        types: &'a mut TypeTable,
         registry: &'a HashMap<String, Type>,
         names: &'a HashMap<String, Vec<SymbolId>>,
     ) -> Self {
@@ -1244,7 +1247,7 @@ impl<'a> TypeResolver<'a> {
         }
     }
 
-    fn lower(&self, ty: &TypeRef, generics: &[String]) -> Type {
+    fn lower(&mut self, ty: &TypeRef, generics: &[String]) -> Type {
         let builtin = |name: &str| -> Option<Type> {
             Some(match name {
                 "void" => Type::Void,
@@ -1282,7 +1285,7 @@ impl<'a> TypeResolver<'a> {
     }
 
     fn lower_segment(
-        &self,
+        &mut self,
         segments: &[TypeSegment],
         generics: &[String],
         builtin: &dyn Fn(&str) -> Option<Type>,
@@ -1307,9 +1310,23 @@ impl<'a> TypeResolver<'a> {
                 if let Some(SymbolId(id)) = ids.first() {
                     if let SymbolKind::Type(kind) = &self.symbols[*id as usize].kind {
                         return match kind {
-                            SymbolType::Struct(id) => Type::Struct(*id),
+                            SymbolType::Struct(id) => {
+                                if !first.generics.is_empty()
+                                    || !self.types.structs[*id as usize].generics.is_empty()
+                                {
+                                    return self.instantiate_struct(*id, &first.generics, generics);
+                                }
+                                Type::Struct(*id)
+                            }
                             SymbolType::Enum(id) => Type::Enum(*id),
-                            SymbolType::Class(id) => Type::Class(*id),
+                            SymbolType::Class(id) => {
+                                if !first.generics.is_empty()
+                                    || !self.types.classes[*id as usize].generics.is_empty()
+                                {
+                                    return self.instantiate_class(*id, &first.generics, generics);
+                                }
+                                Type::Class(*id)
+                            }
                             SymbolType::Interface(id) => Type::Interface(*id),
                             SymbolType::Alias(ty) => ty.clone(),
                         };
@@ -1331,6 +1348,129 @@ impl<'a> TypeResolver<'a> {
         }
         Type::Error
     }
+
+    /// 泛型 struct 实例化：替换字段类型，注册新 struct id。
+    fn instantiate_struct(
+        &mut self,
+        struct_id: u32,
+        arg_refs: &[TypeRef],
+        generics: &[String],
+    ) -> Type {
+        let info = self.types.structs[struct_id as usize].clone();
+        if info.generics.len() != arg_refs.len() {
+            return Type::Error;
+        }
+        let args: Vec<Type> = arg_refs
+            .iter()
+            .map(|arg| self.lower(arg, generics))
+            .collect();
+        let key = (struct_id, args.clone());
+        if let Some(&id) = self.types.generic_struct_instances.get(&key) {
+            return Type::Struct(id);
+        }
+        let type_args: HashMap<String, Type> = info
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        let fields = info
+            .fields
+            .iter()
+            .map(|field| FieldInfo {
+                name: field.name.clone(),
+                ty: substitute_type(&field.ty, &type_args),
+                mutable: field.mutable,
+                span: field.span,
+            })
+            .collect();
+        let id = self.types.structs.len() as u32;
+        self.types.structs.push(StructInfo {
+            module: info.module,
+            name: info.name,
+            generics: Vec::new(),
+            fields,
+        });
+        self.types.generic_struct_instances.insert(key, id);
+        Type::Struct(id)
+    }
+
+    /// 泛型 class 实例化：替换字段与方法签名，注册新 class id（方法体在降级阶段生成）。
+    fn instantiate_class(
+        &mut self,
+        class_id: u32,
+        arg_refs: &[TypeRef],
+        generics: &[String],
+    ) -> Type {
+        let info = self.types.classes[class_id as usize].clone();
+        if info.generics.len() != arg_refs.len() {
+            return Type::Error;
+        }
+        let args: Vec<Type> = arg_refs
+            .iter()
+            .map(|arg| self.lower(arg, generics))
+            .collect();
+        let key = (class_id, args.clone());
+        if let Some(&id) = self.types.generic_class_instances.get(&key) {
+            return Type::Class(id);
+        }
+        let type_args: HashMap<String, Type> = info
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        let fields = info
+            .fields
+            .iter()
+            .map(|field| FieldInfo {
+                name: field.name.clone(),
+                ty: substitute_type(&field.ty, &type_args),
+                mutable: field.mutable,
+                span: field.span,
+            })
+            .collect();
+        let methods = info
+            .methods
+            .iter()
+            .map(|method| MethodInfo {
+                name: method.name.clone(),
+                sig: FunctionSig {
+                    module: method.sig.module,
+                    name: method.sig.name.clone(),
+                    generics: Vec::new(),
+                    params: method
+                        .sig
+                        .params
+                        .iter()
+                        .map(|param| ParamSig {
+                            name: param.name.clone(),
+                            ty: substitute_type(&param.ty, &type_args),
+                            has_default: param.has_default,
+                        })
+                        .collect(),
+                    ret: substitute_type(&method.sig.ret, &type_args),
+                    extern_c: false,
+                    span: method.sig.span,
+                },
+                virtual_: method.virtual_,
+                override_: method.override_,
+                span: method.span,
+            })
+            .collect();
+        let id = self.types.classes.len() as u32;
+        self.types.classes.push(ClassInfo {
+            module: info.module,
+            name: info.name,
+            generics: Vec::new(),
+            base: info.base,
+            fields,
+            methods,
+            final_: info.final_,
+        });
+        self.types.generic_class_instances.insert(key, id);
+        Type::Class(id)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1339,7 +1479,7 @@ impl<'a> TypeResolver<'a> {
 
 struct Checker<'s> {
     symbols: &'s mut Vec<Symbol>,
-    types: &'s TypeTable,
+    types: &'s mut TypeTable,
     registry: &'s HashMap<String, Type>,
     module_names: &'s HashMap<ModuleId, HashMap<String, Vec<SymbolId>>>,
     diagnostics: &'s mut Diagnostics,
@@ -1400,8 +1540,12 @@ impl<'s> Checker<'s> {
     }
 
     fn lower_type(&mut self, ty: &TypeRef) -> Type {
-        let resolver =
-            TypeResolver::new(self.symbols, self.types, self.registry, &self.state.names);
+        let mut resolver = TypeResolver::new(
+            self.symbols,
+            &mut *self.types,
+            self.registry,
+            &self.state.names,
+        );
         resolver.lower(ty, &self.generics)
     }
 
@@ -1988,20 +2132,24 @@ impl<'s> Checker<'s> {
                 };
                 match target {
                     Type::Struct(id) => {
-                        let info = &self.types.structs[id as usize];
+                        let struct_name = self.types.struct_name(id).to_string();
+                        let field_types: Vec<(String, Type)> = self.types.structs[id as usize]
+                            .fields
+                            .iter()
+                            .map(|field| (field.name.clone(), field.ty.clone()))
+                            .collect();
                         for field in fields {
                             let field_name = match &field.key {
                                 ObjectKey::Ident(ident) => ident.name.clone(),
                                 ObjectKey::Str(value) => value.clone(),
                             };
-                            let field_ty = info
-                                .fields
+                            let field_ty = field_types
                                 .iter()
-                                .find(|f| f.name == field_name)
-                                .map(|f| f.ty.clone());
+                                .find(|(name, _)| *name == field_name)
+                                .map(|(_, ty)| ty.clone());
                             if field_ty.is_none() {
                                 self.error(
-                                    format!("结构体 {} 没有字段 `{field_name}`", info.name),
+                                    format!("结构体 {struct_name} 没有字段 `{field_name}`"),
                                     expr.span,
                                 );
                             }
@@ -2019,7 +2167,7 @@ impl<'s> Checker<'s> {
                         Type::Struct(id)
                     }
                     Type::Class(id) => {
-                        let info = &self.types.classes[id as usize];
+                        let class_name = self.types.class_name(id).to_string();
                         for field in fields {
                             let field_name = match &field.key {
                                 ObjectKey::Ident(ident) => ident.name.clone(),
@@ -2027,7 +2175,7 @@ impl<'s> Checker<'s> {
                             };
                             if self.types.find_class_field(id, &field_name).is_none() {
                                 self.error(
-                                    format!("类 {} 没有字段 `{field_name}`", info.name),
+                                    format!("类 {class_name} 没有字段 `{field_name}`"),
                                     expr.span,
                                 );
                             }
@@ -2798,7 +2946,7 @@ fn binary_op_name(op: &BinaryOp) -> &'static str {
 struct MirLowerer<'m, 's> {
     module: &'m Module,
     symbols: &'s [Symbol],
-    types: &'s TypeTable,
+    types: &'s mut TypeTable,
     registry: &'s HashMap<String, Type>,
     diagnostics: &'s mut Diagnostics,
     state: &'s mut ModuleState,
@@ -2973,6 +3121,10 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     Some(id) => id,
                     None => continue,
                 };
+                // 泛型类模板的方法不直接生成，按实例化后的 id 在下方生成。
+                if !self.types.classes[class_id as usize].generics.is_empty() {
+                    continue;
+                }
                 let mut method_index = 0usize;
                 for member in &class.members {
                     let (body, name, sig) = match member {
@@ -3017,6 +3169,73 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     let mir_function = lower.lower_function(Some(body), false);
                     module_mir.functions.push(mir_function);
                 }
+            }
+        }
+
+        // 泛型类实例：为每个实例化生成方法体（this_class = 实例 id，类型实参替换）。
+        let instances: Vec<(u32, u32, Vec<Type>)> = self
+            .types
+            .generic_class_instances
+            .iter()
+            .map(|((orig, args), id)| (*orig, *id, args.clone()))
+            .collect();
+        for (orig_id, instance_id, args) in instances {
+            let orig_info = self.types.classes[orig_id as usize].clone();
+            let Some(class) = items.iter().find_map(|item| match &item.kind {
+                ItemKind::Class(class) if class.name.name == orig_info.name => Some(class),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let type_args: HashMap<String, Type> = orig_info
+                .generics
+                .iter()
+                .cloned()
+                .zip(args.iter().cloned())
+                .collect();
+            let mut method_index = 0usize;
+            for member in &class.members {
+                let (body, name, sig) = match member {
+                    ClassMember::Method(function) => {
+                        let name =
+                            format!("sw_m_{instance_id}_{method_index}_{}", function.name.name);
+                        let sig =
+                            self.class_method_sig(instance_id, method_index, &function.name.name);
+                        method_index += 1;
+                        (function.body.as_ref(), name, sig)
+                    }
+                    ClassMember::Constructor(constructor) => {
+                        let name = format!("sw_ctor_{instance_id}");
+                        let sig = self.class_constructor_sig(instance_id);
+                        method_index += 1;
+                        (Some(&constructor.body), name, sig)
+                    }
+                    _ => continue,
+                };
+                let Some(body) = body else { continue };
+                let mut lower = FnLower {
+                    lowerer: self,
+                    name: name.clone(),
+                    params: vec![MirParam {
+                        name: "self".to_owned(),
+                        ty: Type::Class(instance_id),
+                    }],
+                    ret: sig.ret.clone(),
+                    locals: Vec::new(),
+                    name_scopes: Vec::new(),
+                    global_by_symbol: global_by_symbol.clone(),
+                    this_class: Some(instance_id),
+                    captures: HashMap::new(),
+                    type_args: type_args.clone(),
+                };
+                for param in &sig.params {
+                    lower.params.push(MirParam {
+                        name: param.name.clone(),
+                        ty: param.ty.clone(),
+                    });
+                }
+                let mir_function = lower.lower_function(Some(body), false);
+                module_mir.functions.push(mir_function);
             }
         }
 
@@ -4278,14 +4497,21 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 let target = substitute_type(&target, &self.type_args);
                 match target {
                     Type::Struct(id) => {
-                        let info = &self.lowerer.types.structs[id as usize];
+                        let field_names: Vec<String> = self.lowerer.types.structs[id as usize]
+                            .fields
+                            .iter()
+                            .map(|field| field.name.clone())
+                            .collect();
                         let mut field_values = Vec::new();
                         for field in fields {
                             let name = match &field.key {
                                 ObjectKey::Ident(ident) => ident.name.clone(),
                                 ObjectKey::Str(value) => value.clone(),
                             };
-                            if let Some(index) = info.fields.iter().position(|f| f.name == name) {
+                            if let Some(index) = field_names
+                                .iter()
+                                .position(|field_name| *field_name == name)
+                            {
                                 let value = self.lower_expr(&field.value);
                                 field_values.push((index, value));
                             }
@@ -4795,9 +5021,13 @@ impl<'m, 's> MirLowerer<'m, 's> {
             .sum()
     }
 
-    fn lower_type_for_mir(&self, ty: &TypeRef) -> Type {
-        let resolver =
-            TypeResolver::new(self.symbols, self.types, self.registry, &self.state.names);
+    fn lower_type_for_mir(&mut self, ty: &TypeRef) -> Type {
+        let mut resolver = TypeResolver::new(
+            self.symbols,
+            &mut *self.types,
+            self.registry,
+            &self.state.names,
+        );
         resolver.lower(ty, &[])
     }
 }

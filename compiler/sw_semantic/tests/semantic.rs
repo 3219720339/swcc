@@ -131,6 +131,24 @@ fn checks_interfaces_and_vtable_dispatch() {
     );
 }
 
+#[test]
+fn checks_generic_struct_and_class() {
+    let result = analyze(&fixture("generic-types.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    assert!(
+        !result.type_table.generic_struct_instances.is_empty(),
+        "应实例化泛型 struct"
+    );
+    assert!(
+        !result.type_table.generic_class_instances.is_empty(),
+        "应实例化泛型 class"
+    );
+}
+
 fn collect_expr_kinds(
     statement: &sw_semantic::MirStmt,
     found_assign: &mut bool,
