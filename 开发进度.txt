@@ -1,0 +1,54 @@
+Sw 编译器（swcc）开发进度
+==========================
+
+更新：2026-08-14（commit 45570f9，main）
+
+一、已完成
+
+1. 项目基建
+   - Rust workspace：sw_common / sw_frontend / sw_semantic / sw_codegen_cranelift / swc
+   - 私有仓库：Gitee https://gitee.com/YJTXJH/swcc.git（main）
+   - 规范文档：docs/00~07、docs/grammar/sw.ebnf
+
+2. 前端（纯 Rust，无外部依赖）
+   - 词法器 / 语法分析器 / AST；JS 风格语法（let/const、function、class、
+     箭头函数、模板字符串、import/export）
+
+3. 语义层
+   - 名称解析、类型检查、MIR 生成；import 模块系统
+
+4. 后端（Cranelift 进程内代码生成，零 clang 依赖）
+   - MIR → 机器码 → COFF/ELF/Mach-O 对象 → lld 链接 → 可执行文件
+   - 三元表达式、异常（自包含 setjmp/longjmp，非 CRT）、闭包（值捕获+间接调用）
+   - 数组、类、for-of、模板字符串、复合赋值
+
+5. 跨平台与分发
+   - 按 triple 编译：Windows / Linux / macOS × x86_64 / aarch64
+   - Linux x86_64 / aarch64 musl 静态链接（aarch64 用 rustup compiler-builtins
+     补齐 128 位软浮点辅助函数）
+   - macOS 原生链接（系统 cc 编译运行时并链接，Mach-O 符号自动加下划线）
+   - Windows SDK 打包：swc + lld + MinGW UCRT 库 + 预编译运行时，解压即用
+     （dist/swc-windows-x64.zip，已验证无外部工具链可构建运行）
+
+6. CI（.github/workflows/ci.yml，仓库在 Gitee，需镜像到 GitHub 触发）
+   - Windows / Ubuntu / macOS 三平台矩阵，自动下载 llvm-mingw 20260616
+   - cargo fmt 检查 + 全量测试 + release 构建 + 三平台冒烟 + SDK artifact
+
+7. 测试：35 项全过（词法 10 / 语法 12 / 语义 7 / 代码生成 6），9 个示例端到端验证
+
+二、已知限制
+
+- Windows aarch64（COFF）暂不支持：Cranelift 对象写入器未实现 AArch64 COFF 重定位
+- 后端暂不支持 struct 字面量、** 幂运算（前端/语义已定义）
+- 运行时内存只分配不回收（无 GC / 引用计数），长时间运行会泄漏
+- 单线程：异常帧栈为全局变量，多线程留待后续版本
+- 调试信息与错误诊断体验待完善（v0.2）
+
+三、下一批候选（待排期）
+
+1. 内存管理：引入 GC 或引用计数（当前 malloc 无 free，长期运行程序会泄漏）
+2. 语言完整度：struct 字面量、** 幂、泛型端到端、更多标准库函数
+3. 标准库扩充：字符串/数组方法、文件 IO、进程、JSON
+4. 开发者体验：错误诊断美化、格式化器、LSP、调试信息
+5. 并发：多线程运行时与线程安全的异常机制
+6. 发布：0.1.0 三平台产物、安装包/更新通道
