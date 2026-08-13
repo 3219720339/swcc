@@ -777,7 +777,7 @@ impl Analyzer {
         module_id: ModuleId,
         constructor: &ConstructorDecl,
         generics: &[String],
-        class_id: u32,
+        _class_id: u32,
     ) -> FunctionSig {
         let resolver = TypeResolver::new(
             &self.symbols,
@@ -799,7 +799,7 @@ impl Analyzer {
             name: "constructor".to_owned(),
             generics: generics.to_vec(),
             params,
-            ret: Type::Class(class_id),
+            ret: Type::Void,
             extern_c: false,
             span: constructor.span,
         }
@@ -3078,9 +3078,68 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
 
     fn lower_assign_expr(&mut self, expr: &Expr) -> Option<(MirTarget, MirExpr)> {
         match &expr.kind {
-            ExprKind::Assign { target, value, .. } => {
+            ExprKind::Assign { op, target, value } => {
+                let target_ast = target;
                 let target = self.lower_target(target)?;
                 let value = self.lower_expr(value);
+                let value = match op {
+                    AssignOp::Assign => value,
+                    AssignOp::Add => MirExpr::Binary {
+                        op: MirBinary::Add,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::Sub => MirExpr::Binary {
+                        op: MirBinary::Sub,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::Mul => MirExpr::Binary {
+                        op: MirBinary::Mul,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::Div => MirExpr::Binary {
+                        op: MirBinary::Div,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::Rem => MirExpr::Binary {
+                        op: MirBinary::Rem,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::BitAnd => MirExpr::Binary {
+                        op: MirBinary::BitAnd,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::BitOr => MirExpr::Binary {
+                        op: MirBinary::BitOr,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::BitXor => MirExpr::Binary {
+                        op: MirBinary::BitXor,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::Shl => MirExpr::Binary {
+                        op: MirBinary::Shl,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::Shr => MirExpr::Binary {
+                        op: MirBinary::Shr,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::Coalesce => MirExpr::Binary {
+                        op: MirBinary::Coalesce,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                };
                 Some((target, value))
             }
             ExprKind::Unary {

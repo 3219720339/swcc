@@ -65,6 +65,9 @@ fn main() {
         candidate.is_dir().then_some(candidate)
     });
     let result = analyze(Path::new(path), stdlib_dir.as_deref());
+    if env::var("SW_DEBUG_MIR").is_ok() {
+        eprintln!("{:#?}", result.modules);
+    }
 
     let mut sources: HashMap<PathBuf, Source> = result
         .module_sources

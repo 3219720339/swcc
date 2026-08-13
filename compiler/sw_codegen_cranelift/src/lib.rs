@@ -216,6 +216,9 @@ impl Generator {
         }
         lower.builder.seal_all_blocks();
         lower.builder.finalize(self.module.isa().frontend_config());
+        ctx.verify(self.module.isa()).map_err(|error| {
+            CodegenError::from(format!("函数 {} 的 IR 校验失败：{error}", function.name))
+        })?;
 
         Ok(self
             .module
