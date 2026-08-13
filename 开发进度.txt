@@ -67,7 +67,8 @@ Sw 编译器（swcc）开发进度
    - .github/workflows/release.yml：打 `v*` 标签自动三平台打包并发布 GitHub Release
    - 本地已验证：假 Linux SDK 布局（自带 musl + 预编译运行时）x64/aarch64 静态链接均成功
 
-12. 待办：镜像仓库到 GitHub（见 README），触发 CI 验证 macOS 真机（GC dyld 路径）并出 0.1.0 Release
+12. 已镜像：https://github.com/3219720339/swcc（main + v0.1.0 标签已推送），
+    GitHub Actions 自动验证三平台 CI 与 macOS 真机（GC dyld 路径）并出 0.1.0 Release
 
 二、已知限制
 
