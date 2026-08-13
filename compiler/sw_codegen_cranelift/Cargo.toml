@@ -7,7 +7,7 @@ publish.workspace = true
 [dependencies]
 sw-common.workspace = true
 sw-semantic.workspace = true
-cranelift-codegen = { version = "0.134.3", features = ["arm64"] }
+cranelift-codegen = { version = "0.134.3", features = ["arm64", "x86"] }
 cranelift-frontend = "0.134.3"
 cranelift-module = "0.134.3"
 cranelift-object = "0.134.3"

@@ -66,6 +66,7 @@ jobs:
         env:
           SW_TOOLCHAIN: ${{ github.workspace }}/toolchain/${{ matrix.toolchain_dir }}
         run: |
+          New-Item -ItemType Directory -Force build-check | Out-Null
           ./target/release/swc.exe run examples/fib.sw
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./target/release/swc.exe build examples/fib.sw --emit-object build-check/aarch64-linux.o --target aarch64-unknown-linux-gnu
@@ -77,6 +78,7 @@ jobs:
         env:
           SW_TOOLCHAIN: ${{ github.workspace }}/toolchain/${{ matrix.toolchain_dir }}
         run: |
+          mkdir -p build-check
           ./target/release/swc run examples/fib.sw
           ./target/release/swc build examples/fib.sw --target aarch64-unknown-linux-musl -o build-check/fib-aarch64
           python3 tools/check-object.py build-check/fib-aarch64 elf-aarch64
@@ -87,6 +89,7 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          mkdir -p build-check
           ./target/release/swc run examples/fib.sw
           ./target/release/swc build examples/fib.sw --emit-object build-check/fib-macos.o --target aarch64-apple-darwin
           python3 tools/check-object.py build-check/fib-macos.o macho
