@@ -14,9 +14,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sw-semantic"
+version = "0.1.0"
+dependencies = [
+ "sw-common",
+ "sw-frontend",
+]
+
+[[package]]
 name = "swc"
 version = "0.1.0"
 dependencies = [
  "sw-common",
  "sw-frontend",
+ "sw-semantic",
 ]

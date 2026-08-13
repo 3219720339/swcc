@@ -1,4 +1,5 @@
 use crate::span::Span;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -11,6 +12,7 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub message: String,
     pub span: Option<Span>,
+    pub file: Option<PathBuf>,
 }
 
 /// 诊断集合：一次编译输出全部可发现的错误。
@@ -25,10 +27,20 @@ impl Diagnostics {
     }
 
     pub fn error(&mut self, message: impl Into<String>, span: Option<Span>) {
+        self.error_at(message, span, None);
+    }
+
+    pub fn error_at(
+        &mut self,
+        message: impl Into<String>,
+        span: Option<Span>,
+        file: Option<PathBuf>,
+    ) {
         self.items.push(Diagnostic {
             severity: Severity::Error,
             message: message.into(),
             span,
+            file,
         });
     }
 
@@ -37,6 +49,7 @@ impl Diagnostics {
             severity: Severity::Warning,
             message: message.into(),
             span,
+            file: None,
         });
     }
 

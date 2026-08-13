@@ -1,14 +1,9 @@
 [package]
-name = "swc"
+name = "sw-semantic"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
-[[bin]]
-name = "swc"
-path = "src/main.rs"
-
 [dependencies]
 sw-common.workspace = true
 sw-frontend.workspace = true
-sw-semantic.workspace = true

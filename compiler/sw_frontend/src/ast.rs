@@ -353,6 +353,11 @@ pub enum ExprKind {
         target: Box<Expr>,
         value: Box<Expr>,
     },
+    /// 显式转换 `expr as Type`。
+    Cast {
+        expr: Box<Expr>,
+        ty: TypeRef,
+    },
     Conditional {
         cond: Box<Expr>,
         then: Box<Expr>,

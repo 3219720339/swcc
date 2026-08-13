@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "compiler/sw_common",
     "compiler/sw_frontend",
+    "compiler/sw_semantic",
     "compiler/swc",
 ]
 
@@ -14,3 +15,4 @@ publish = false
 [workspace.dependencies]
 sw-common = { path = "compiler/sw_common" }
 sw-frontend = { path = "compiler/sw_frontend" }
+sw-semantic = { path = "compiler/sw_semantic" }

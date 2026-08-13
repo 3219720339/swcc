@@ -1556,6 +1556,17 @@ impl<'a> Parser<'a> {
                         span: Span::new(start, self.peek().span.start),
                     };
                 }
+                TokenKind::Ident(name) if name == "as" => {
+                    self.advance();
+                    let ty = self.parse_type()?;
+                    expr = Expr {
+                        kind: ExprKind::Cast {
+                            expr: Box::new(expr),
+                            ty,
+                        },
+                        span: Span::new(start, self.peek().span.start),
+                    };
+                }
                 _ => break,
             }
         }
