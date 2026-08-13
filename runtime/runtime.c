@@ -188,6 +188,12 @@ static void sw_gc_init_platform(void) {}
 
 #if !defined(_WIN32)
 static uintptr_t sw_stack_top(void) {
+#if defined(__APPLE__)
+    // macOS 主线程上 pthread_getattr_np 可能失败；用专用 API 取栈顶（高地址）。
+    extern void* pthread_self(void);
+    extern void* pthread_get_stackaddr_np(void* thread);
+    return (uintptr_t)pthread_get_stackaddr_np(pthread_self());
+#else
     char attr[512];
     uintptr_t top = 0;
     extern void* pthread_self(void);
@@ -203,6 +209,7 @@ static uintptr_t sw_stack_top(void) {
         pthread_attr_destroy(attr);
     }
     return top;
+#endif
 }
 #endif
 
