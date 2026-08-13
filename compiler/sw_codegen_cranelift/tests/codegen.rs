@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use sw_codegen_cranelift::compile_module;
+use sw_codegen_cranelift::{compile_module, compile_module_for_target};
 use sw_semantic::analyze;
 
 fn fixture(name: &str) -> PathBuf {
@@ -70,4 +70,39 @@ fn compiles_template_and_extern_calls() {
         })
         .sum();
     assert!(total_bytes > 200);
+}
+
+#[test]
+fn emits_linux_elf_object_from_windows_host() {
+    let result = analyze(&fixture("basic.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let bytes = compile_module_for_target(
+        &result.modules[0],
+        &result.type_table,
+        "x86_64-unknown-linux-gnu",
+    )
+    .expect("编译成功");
+    assert_eq!(&bytes[0..4], &[0x7F, b'E', b'L', b'F'], "应为 ELF 对象");
+}
+
+#[test]
+fn emits_macos_macho_object_from_windows_host() {
+    let result = analyze(&fixture("basic.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let bytes = compile_module_for_target(
+        &result.modules[0],
+        &result.type_table,
+        "x86_64-apple-darwin",
+    )
+    .expect("编译成功");
+    // Mach-O 64 位魔数 FEEDFACF（小端）
+    assert_eq!(&bytes[0..4], &[0xCF, 0xFA, 0xED, 0xFE], "应为 Mach-O 对象");
 }

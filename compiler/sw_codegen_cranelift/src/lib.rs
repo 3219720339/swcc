@@ -20,6 +20,7 @@ use sw_semantic::{
     MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule, MirStmt, MirStmtKind,
     MirTarget, MirUnary, TypeTable,
 };
+use target_lexicon::Triple;
 
 #[derive(Debug)]
 pub struct CodegenError {
@@ -41,7 +42,17 @@ impl From<&str> for CodegenError {
 }
 
 pub fn compile_module(mir: &MirModule, types: &TypeTable) -> Result<Vec<u8>, CodegenError> {
-    let generator = Generator::new()?;
+    let generator = Generator::new(None)?;
+    generator.run(mir, types)
+}
+
+/// 按目标 triple 编译：x86_64/aarch64 的 Windows/Linux/macOS 均可生成对应对象文件。
+pub fn compile_module_for_target(
+    mir: &MirModule,
+    types: &TypeTable,
+    target: &str,
+) -> Result<Vec<u8>, CodegenError> {
+    let generator = Generator::new(Some(target))?;
     generator.run(mir, types)
 }
 
@@ -53,11 +64,19 @@ struct Generator {
 }
 
 impl Generator {
-    fn new() -> Result<Self, CodegenError> {
+    fn new(target: Option<&str>) -> Result<Self, CodegenError> {
         let mut flag_builder = settings::builder();
         flag_builder.set("opt_level", "speed").unwrap();
         let flags = settings::Flags::new(flag_builder);
-        let isa_builder = cranelift_native::builder().map_err(|error| error.to_string())?;
+        let isa_builder = match target {
+            Some(target) => {
+                let triple: Triple = target
+                    .parse()
+                    .map_err(|error| format!("无效的目标 triple `{target}`：{error}"))?;
+                cranelift_codegen::isa::lookup(triple).map_err(|error| error.to_string())?
+            }
+            None => cranelift_native::builder().map_err(|error| error.to_string())?,
+        };
         let isa: Arc<dyn cranelift_codegen::isa::TargetIsa> = isa_builder
             .finish(flags)
             .map_err(|error| error.to_string())?;

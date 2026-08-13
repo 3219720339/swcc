@@ -5,16 +5,26 @@ typedef long long int64_t;
 typedef unsigned long long uint64_t;
 #define NULL ((void*)0)
 
-extern void* malloc(uint64_t size);
+#if defined(_WIN32)
+typedef unsigned long long sw_size;
+#else
+typedef unsigned long sw_size;
+#endif
+
+extern void* malloc(sw_size size);
 extern void free(void* ptr);
-extern void* calloc(uint64_t count, uint64_t size);
-extern void* memcpy(void* dest, const void* src, uint64_t count);
-extern void* memset(void* dest, int value, uint64_t count);
-extern int snprintf(char* buffer, uint64_t size, const char* format, ...);
-extern uint64_t fwrite(const void* data, uint64_t size, uint64_t count, void* stream);
+extern void* calloc(sw_size count, sw_size size);
+extern void* memcpy(void* dest, const void* src, sw_size count);
+extern void* memset(void* dest, int value, sw_size count);
+extern int snprintf(char* buffer, sw_size size, const char* format, ...);
+extern uint64_t fwrite(const void* data, sw_size size, sw_size count, void* stream);
 extern int fputc(int character, void* stream);
+#if defined(_WIN32)
 extern void* __acrt_iob_func(unsigned int index);
 #define stdout __acrt_iob_func(1)
+#else
+extern void* stdout;
+#endif
 
 // 汇编实现的 setjmp/longjmp（runtime.s）
 extern int sw_setjmp(void* buf);
