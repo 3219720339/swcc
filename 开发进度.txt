@@ -70,6 +70,14 @@ Sw 编译器（swcc）开发进度
 12. 已镜像：https://github.com/3219720339/swcc（main + v0.1.0 标签已推送），
     GitHub Actions 自动验证三平台 CI 与 macOS 真机（GC dyld 路径）并出 0.1.0 Release
 
+13. 0.1.0 发布完成（2026-08-14）：
+    - CI 三平台全绿（Windows/Ubuntu/macOS 真机 smoke，含 GC 在 Apple Silicon 上运行验证）
+    - v0.1.0 Release 已发布：swc-windows-x64.zip（33.9MB）、
+      swc-linux-x64.tar.gz（8.2MB）、swc-macos.zip（2.2MB）
+    - 过程中修复：cranelift x86 feature（arm64 主机交叉目标）、Mach-O 双下划线符号、
+      macOS stdin/stdout 符号（___stdinp/___stdoutp）、Mach-O arm64 非法 text-relocation
+      （开启 is_pic 走 GOT）、Windows runner 中文 print 编码崩溃、smoke 缺 build-check 目录
+
 二、已知限制
 
 - Windows aarch64（COFF）暂不支持：Cranelift 对象写入器未实现 AArch64 COFF 重定位
