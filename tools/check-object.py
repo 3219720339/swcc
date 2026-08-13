@@ -6,6 +6,9 @@
 import struct
 import sys
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def main():
     path, expected = sys.argv[1], sys.argv[2]

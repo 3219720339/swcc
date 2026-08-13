@@ -10,6 +10,9 @@ import subprocess
 import sys
 import tarfile
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRIPLES = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
 
