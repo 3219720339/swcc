@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Package ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            llvm_asset: llvm-mingw-20260616-ucrt-x86_64.zip
+            llvm_dir: llvm-mingw-20260616-ucrt-x86_64
+            package: python tools/make-sdk.py "${{ github.workspace }}/toolchain/${{ matrix.llvm_dir }}" dist
+          - os: ubuntu-latest
+            llvm_asset: llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz
+            llvm_dir: llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64
+            package: python3 tools/make-sdk-linux.py "${{ github.workspace }}/toolchain/${{ matrix.llvm_dir }}" dist
+          - os: macos-latest
+            llvm_asset: ""
+            llvm_dir: ""
+            package: python3 tools/make-sdk-macos.py "${{ github.workspace }}/dist"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install musl targets
+        if: runner.os == 'Linux'
+        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+
+      - name: Download llvm-mingw
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          url="https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/${{ matrix.llvm_asset }}"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            curl -fL -o toolchain.archive "$url"
+            unzip -q toolchain.archive -d toolchain
+          else
+            curl -fL -o toolchain.archive "$url"
+            mkdir toolchain
+            tar -xf toolchain.archive -C toolchain
+          fi
+          test -x "toolchain/${{ matrix.llvm_dir }}/bin/ld.lld" -o -f "toolchain/${{ matrix.llvm_dir }}/bin/ld.lld.exe"
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build release swc
+        run: cargo build --release -p swc
+
+      - name: Package SDK
+        shell: bash
+        run: |
+          cd "${{ github.workspace }}"
+          ${{ matrix.package }}
+
+      - name: Upload SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-sdk
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.zip
+            artifacts/**/*.tar.gz
+          generate_release_notes: true

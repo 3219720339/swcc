@@ -59,6 +59,16 @@ Sw 编译器（swcc）开发进度
 
 10.（本批后）测试：38 项全过（词法 10 / 语法 12 / 语义 8 / 代码生成 8）
 
+11. 发布 0.1.0（本批）
+   - swc 支持 Linux 解压即用 SDK 布局：<root>/musl/<triple> 自带 crt/libc/compiler-builtins，
+     <root>/lib 自带 x86_64/aarch64 预编译运行时对象，无需 clang 即可静态链接
+   - 打包脚本：tools/make-sdk.py（Windows）、tools/make-sdk-linux.py（Linux tar.gz）、
+     tools/make-sdk-macos.py（macOS zip）
+   - .github/workflows/release.yml：打 `v*` 标签自动三平台打包并发布 GitHub Release
+   - 本地已验证：假 Linux SDK 布局（自带 musl + 预编译运行时）x64/aarch64 静态链接均成功
+
+12. 待办：镜像仓库到 GitHub（见 README），触发 CI 验证 macOS 真机（GC dyld 路径）并出 0.1.0 Release
+
 二、已知限制
 
 - Windows aarch64（COFF）暂不支持：Cranelift 对象写入器未实现 AArch64 COFF 重定位

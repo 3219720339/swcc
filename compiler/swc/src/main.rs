@@ -300,11 +300,17 @@ fn link_linux(target: &str, objects: &[PathBuf], output: &Path) {
         eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
         std::process::exit(2);
     });
-    let clang = sdk
-        .mingw_clang
-        .as_ref()
-        .expect("Linux 交叉链接需要工具链 clang 编译运行时");
-    let runtime_objects = compile_runtime_objects(clang, target, "linux");
+    let (runtime_objects, need_compile) = match runtime_objects_for(&sdk, target) {
+        Some(objects) => (objects, false),
+        None => {
+            let clang = sdk.mingw_clang.as_ref().unwrap_or_else(|| {
+                eprintln!("缺少 clang 且无预编译运行时，无法链接 Linux 目标");
+                std::process::exit(2);
+            });
+            (compile_runtime_objects(clang, target, "linux"), true)
+        }
+    };
+    let _ = need_compile;
     let lld = sdk.lld.as_path();
     let musl_dir = musl_self_contained_dir(target).unwrap_or_else(|| {
         eprintln!(
@@ -502,7 +508,7 @@ fn sdk_candidate_for_layout(root: PathBuf, target: &str) -> Option<Sdk> {
         mingw_lib,
         builtins: builtins.is_file().then_some(builtins),
         mingw_clang: clang.is_file().then_some(clang),
-        prebuilt_runtime: runtime_objects_for_root(&root, arch).is_some(),
+        prebuilt_runtime: runtime_objects_for_root(&root, target).is_some(),
     })
 }
 
@@ -530,29 +536,41 @@ fn sdk_candidate_for_mingw(root: PathBuf, target: &str) -> Option<Sdk> {
     })
 }
 
-fn runtime_objects_for_root(root: &Path, arch: &str) -> Option<Vec<PathBuf>> {
+fn runtime_objects_for_root(root: &Path, target: &str) -> Option<Vec<PathBuf>> {
     let lib = root.join("lib");
-    let (runtime, asm, startup) = if arch == "aarch64" {
-        (
-            lib.join("runtime_aarch64.obj"),
-            lib.join("runtime_asm_aarch64.obj"),
-            lib.join("startup_aarch64.obj"),
-        )
-    } else {
-        (
-            lib.join("runtime.obj"),
-            lib.join("runtime_asm.obj"),
-            lib.join("startup.obj"),
-        )
-    };
-    (runtime.is_file() && asm.is_file() && startup.is_file()).then(|| vec![runtime, asm, startup])
+    let arch = arch_of(target);
+    match target_family(target) {
+        "windows" => {
+            let (runtime, asm, startup) = if arch == "aarch64" {
+                (
+                    lib.join("runtime_aarch64.obj"),
+                    lib.join("runtime_asm_aarch64.obj"),
+                    lib.join("startup_aarch64.obj"),
+                )
+            } else {
+                (
+                    lib.join("runtime.obj"),
+                    lib.join("runtime_asm.obj"),
+                    lib.join("startup.obj"),
+                )
+            };
+            (runtime.is_file() && asm.is_file() && startup.is_file())
+                .then(|| vec![runtime, asm, startup])
+        }
+        "linux" => {
+            let runtime = lib.join(format!("runtime_{arch}.o"));
+            let asm = lib.join(format!("runtime_asm_{arch}.o"));
+            (runtime.is_file() && asm.is_file()).then(|| vec![runtime, asm])
+        }
+        _ => None,
+    }
 }
 
 fn runtime_objects_for(sdk: &Sdk, target: &str) -> Option<Vec<PathBuf>> {
     if !sdk.prebuilt_runtime {
         return None;
     }
-    runtime_objects_for_root(sdk.mingw_lib.parent()?, arch_of(target))
+    runtime_objects_for_root(sdk.mingw_lib.parent()?, target)
 }
 
 fn musl_self_contained_dir(target: &str) -> Option<PathBuf> {
@@ -561,6 +579,17 @@ fn musl_self_contained_dir(target: &str) -> Option<PathBuf> {
     } else {
         musl_target(target)
     };
+    // 1) SDK 自带 musl 库（<root>/musl/<triple>，解压即用）
+    if let Some(exe_dir) = env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        let sdk_candidate = exe_dir.join("musl").join(triple);
+        if sdk_candidate.is_dir() {
+            return Some(sdk_candidate);
+        }
+    }
+    // 2) rustup 目标库
     let candidate = rustup_toolchain_dir()?
         .join("lib")
         .join("rustlib")
@@ -573,18 +602,24 @@ fn musl_self_contained_dir(target: &str) -> Option<PathBuf> {
 /// rustup 的 <triple>/lib 下 compiler-builtins rlib（ELF 归档），
 /// aarch64 Linux 静态链接时给 lld 补齐软浮点辅助函数。
 fn compiler_builtins_rlib(musl_dir: &Path) -> Option<PathBuf> {
-    fs::read_dir(musl_dir.parent()?)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .map(|name| {
-                    let name = name.to_string_lossy();
-                    name.starts_with("libcompiler_builtins-") && name.ends_with(".rlib")
-                })
-                .unwrap_or(false)
-        })
+    for dir in [musl_dir, musl_dir.parent()?] {
+        let found = fs::read_dir(dir)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .map(|name| {
+                        let name = name.to_string_lossy();
+                        name.starts_with("libcompiler_builtins-") && name.ends_with(".rlib")
+                    })
+                    .unwrap_or(false)
+            });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
 }
 
 fn rustup_toolchain_dir() -> Option<PathBuf> {
