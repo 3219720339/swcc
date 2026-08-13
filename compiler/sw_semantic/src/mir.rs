@@ -1,5 +1,6 @@
 //! 最小 MIR：语义检查通过后的稳定中间表示，供 Cranelift 后端消费。
 
+use crate::symbols::FunctionSig;
 use crate::types::Type;
 
 #[derive(Clone, Debug)]
@@ -154,10 +155,23 @@ pub enum MirExpr {
 
 #[derive(Clone, Debug)]
 pub enum MirCallee {
-    Function { module: u32, name: String },
-    Method { class: u32, method: usize },
-    Extern { name: String },
-    Intrinsic { name: String },
+    Function {
+        module: u32,
+        name: String,
+        sig: FunctionSig,
+    },
+    Method {
+        class: u32,
+        name: String,
+        sig: FunctionSig,
+    },
+    Extern {
+        name: String,
+        sig: FunctionSig,
+    },
+    Intrinsic {
+        name: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

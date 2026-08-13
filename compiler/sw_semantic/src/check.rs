@@ -1063,6 +1063,15 @@ impl Analyzer {
             if checker.saw_return_value {
                 checker.error("无法推导函数返回类型：return 表达式类型不一致", span);
             }
+        } else if checker.ret != Type::Void
+            && !checker.saw_return_value
+            && !matches!(checker.ret, Type::Class(_))
+            && !sig.extern_c
+        {
+            checker.error(
+                format!("函数缺少 return，返回类型为 {}", checker.ret.display()),
+                span,
+            );
         }
     }
 
@@ -3291,11 +3300,13 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         if sig.extern_c {
                             MirCallee::Extern {
                                 name: sig.name.clone(),
+                                sig: sig.clone(),
                             }
                         } else {
                             MirCallee::Function {
                                 module: sig.module.0,
                                 name: stable_function_name(&sig),
+                                sig: sig.clone(),
                             }
                         }
                     }
@@ -3312,9 +3323,24 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             ExprKind::Super => {}
                             _ => {}
                         }
+                        let class_info = self.lowerer.types.classes.get(class as usize);
+                        let method_name = class_info
+                            .and_then(|info| info.methods.get(index))
+                            .map(|method| method.name.clone())
+                            .unwrap_or_default();
+                        let method_sig = class_info
+                            .and_then(|info| info.methods.get(index))
+                            .map(|method| method.sig.clone())
+                            .unwrap_or_else(placeholder_sig);
+                        let callee_name = if method_name == "constructor" {
+                            format!("sw_ctor_{class}")
+                        } else {
+                            format!("sw_m_{class}_{index}_{method_name}")
+                        };
                         MirCallee::Method {
                             class,
-                            method: index,
+                            name: callee_name,
+                            sig: method_sig,
                         }
                     }
                     None => {
@@ -3534,6 +3560,9 @@ impl<'m, 's> MirLowerer<'m, 's> {
 }
 
 fn stable_function_name(sig: &FunctionSig) -> String {
+    if sig.name == "main" {
+        return "main".to_owned();
+    }
     format!("sw_fn_{}_{}_{}", sig.module.0, sig.name, sig.span.start)
 }
 

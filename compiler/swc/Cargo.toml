@@ -12,3 +12,4 @@ path = "src/main.rs"
 sw-common.workspace = true
 sw-frontend.workspace = true
 sw-semantic.workspace = true
+sw-codegen-cranelift.workspace = true

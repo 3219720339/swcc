@@ -4,6 +4,7 @@ members = [
     "compiler/sw_common",
     "compiler/sw_frontend",
     "compiler/sw_semantic",
+    "compiler/sw_codegen_cranelift",
     "compiler/swc",
 ]
 
@@ -16,3 +17,4 @@ publish = false
 sw-common = { path = "compiler/sw_common" }
 sw-frontend = { path = "compiler/sw_frontend" }
 sw-semantic = { path = "compiler/sw_semantic" }
+sw-codegen-cranelift = { path = "compiler/sw_codegen_cranelift" }

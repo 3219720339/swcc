@@ -6,6 +6,9 @@ pub mod symbols;
 pub mod types;
 
 pub use check::{AnalysisResult, analyze};
-pub use mir::{MirExpr, MirFunction, MirModule, MirStmt, MirTarget};
+pub use mir::{
+    MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule, MirParam, MirStmt,
+    MirStmtKind, MirTarget, MirUnary,
+};
 pub use symbols::{FunctionSig, SymbolId, TypeTable};
 pub use types::Type;
