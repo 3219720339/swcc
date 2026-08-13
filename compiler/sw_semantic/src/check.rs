@@ -105,6 +105,7 @@ struct CheckResult {
 enum CallTarget {
     Function(SymbolId),
     Method { class: u32, index: usize },
+    InterfaceMethod { interface: u32, index: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -493,6 +494,16 @@ impl Analyzer {
                     if let Some(SymbolKind::Type(SymbolType::Struct(id))) = id {
                         self.types.structs[id as usize].generics = generics;
                         self.types.structs[id as usize].fields = fields;
+                        if self.types.structs[id as usize]
+                            .fields
+                            .iter()
+                            .any(|field| matches!(field.ty, Type::Struct(inner) if inner == id))
+                        {
+                            self.error(
+                                "struct 不能包含自身的值类型字段（会造成无限大小）",
+                                structure.span,
+                            );
+                        }
                     }
                 }
                 ItemKind::Enum(enumeration) => {
@@ -558,9 +569,61 @@ impl Analyzer {
                         class_id.unwrap_or(0),
                     );
                     if let Some(id) = class_id {
-                        let info = &mut self.types.classes[id as usize];
-                        info.fields = fields;
-                        info.methods = methods;
+                        {
+                            let info = &mut self.types.classes[id as usize];
+                            info.fields = fields;
+                            info.methods = methods;
+                        }
+                        // 接口实现：解析 implements 并校验方法覆盖。
+                        let resolver = TypeResolver::new(
+                            &self.symbols,
+                            &self.types,
+                            &self.registry,
+                            &self.state(module_id).names,
+                        );
+                        let resolved: Vec<(Type, &TypeRef)> = class
+                            .implements
+                            .iter()
+                            .map(|iface_ref| (resolver.lower(iface_ref, &generics), iface_ref))
+                            .collect();
+                        let mut implemented = Vec::new();
+                        for (ty, iface_ref) in resolved {
+                            match ty {
+                                Type::Interface(iface_id) => {
+                                    let iface_methods: Vec<String> = self.types.interfaces
+                                        [iface_id as usize]
+                                        .methods
+                                        .iter()
+                                        .map(|method| method.name.clone())
+                                        .collect();
+                                    let class_name = self.types.class_name(id).to_string();
+                                    let iface_name =
+                                        self.types.interfaces[iface_id as usize].name.clone();
+                                    for method_name in &iface_methods {
+                                        if self.types.find_class_method(id, method_name).is_none() {
+                                            self.error(
+                                                format!(
+                                                    "类 {} 未实现接口 {} 的方法 `{}`",
+                                                    class_name, iface_name, method_name
+                                                ),
+                                                class.span,
+                                            );
+                                        }
+                                    }
+                                    implemented.push(iface_id);
+                                }
+                                other => {
+                                    self.error(
+                                        format!(
+                                            "`implements` 目标必须是接口，实际为 {}",
+                                            other.display()
+                                        ),
+                                        iface_ref.span,
+                                    );
+                                }
+                            }
+                        }
+                        self.types.class_interfaces.insert(id, implemented);
                     }
                 }
                 ItemKind::Interface(interface) => {
@@ -665,7 +728,7 @@ impl Analyzer {
             .collect();
         let mut result = Vec::new();
         for (field, (ty, span)) in fields.iter().zip(lowered) {
-            self.reject_complex_field(&ty, span);
+            self.reject_complex_field(&ty, span, true);
             result.push(FieldInfo {
                 name: field.name.name.clone(),
                 ty,
@@ -676,12 +739,15 @@ impl Analyzer {
         result
     }
 
-    /// 后端按 8 字节槽位存储字段；struct 嵌套/数组会破坏按值拷贝语义，v0.1 先拒绝。
-    fn reject_complex_field(&mut self, ty: &Type, span: Span) {
-        let bad = matches!(ty, Type::Struct(_))
+    /// struct 字段允许嵌套 struct 值字段；class 字段 v0.1 仅允许标量；struct 数组暂不支持。
+    fn reject_complex_field(&mut self, ty: &Type, span: Span, allow_struct_value: bool) {
+        let bad = (!allow_struct_value && matches!(ty, Type::Struct(_)))
             || matches!(ty, Type::Array(inner) if matches!(**inner, Type::Struct(_)));
         if bad {
-            self.error("v0.1 暂不支持 struct 作为字段类型（含 struct 数组）", span);
+            self.error(
+                "v0.1 暂不支持该字段类型（struct 数组/class 的 struct 值字段）",
+                span,
+            );
         }
     }
 
@@ -704,7 +770,7 @@ impl Analyzer {
                         &self.state(module_id).names,
                     );
                     let ty = resolver.lower(&field.ty, generics);
-                    self.reject_complex_field(&ty, field.span);
+                    self.reject_complex_field(&ty, field.span, false);
                     fields.push(FieldInfo {
                         name: field.name.name.clone(),
                         ty,
@@ -1354,9 +1420,26 @@ impl<'s> Checker<'s> {
             (Type::Class(from_id), Type::Class(to_id)) => {
                 self.types.is_class_assignable_to(*from_id, *to_id)
             }
+            (Type::Class(from_id), Type::Interface(to_id)) => {
+                let mut current = Some(*from_id);
+                while let Some(class_id) = current {
+                    if self
+                        .types
+                        .class_interfaces
+                        .get(&class_id)
+                        .map(|list| list.contains(to_id))
+                        .unwrap_or(false)
+                    {
+                        return true;
+                    }
+                    current = self.types.classes[class_id as usize].base;
+                }
+                false
+            }
             (Type::Array(from_inner), Type::Array(to_inner)) => {
                 self.is_assignable(from_inner, to_inner)
             }
+            (_, Type::Nullable(to_inner)) => self.is_assignable(from, to_inner),
             (Type::Nullable(from_inner), Type::Nullable(to_inner)) => {
                 self.is_assignable(from_inner, to_inner)
             }
@@ -1911,11 +1994,25 @@ impl<'s> Checker<'s> {
                                 ObjectKey::Ident(ident) => ident.name.clone(),
                                 ObjectKey::Str(value) => value.clone(),
                             };
-                            if !info.fields.iter().any(|f| f.name == field_name) {
+                            let field_ty = info
+                                .fields
+                                .iter()
+                                .find(|f| f.name == field_name)
+                                .map(|f| f.ty.clone());
+                            if field_ty.is_none() {
                                 self.error(
                                     format!("结构体 {} 没有字段 `{field_name}`", info.name),
                                     expr.span,
                                 );
+                            }
+                            // 嵌套结构体字面量：按字段类型传播目标类型。
+                            if let (Some(Type::Struct(_)), ExprKind::Object(_)) =
+                                (&field_ty, &field.value.kind)
+                            {
+                                self.state
+                                    .result
+                                    .object_types
+                                    .insert(field.value.span.start, field_ty.clone().unwrap());
                             }
                             self.check_expr(&field.value);
                         }
@@ -2245,6 +2342,29 @@ impl<'s> Checker<'s> {
                     Type::Error
                 }
             }
+            Type::Interface(id) => {
+                if let Some(index) = self
+                    .types
+                    .interfaces
+                    .get(*id as usize)
+                    .and_then(|info| info.methods.iter().position(|m| m.name == name.name))
+                {
+                    let sig = &self.types.interfaces[*id as usize].methods[index];
+                    Type::Function {
+                        params: sig.params.iter().map(|param| param.ty.clone()).collect(),
+                        ret: Box::new(sig.ret.clone()),
+                    }
+                } else {
+                    self.error(
+                        format!(
+                            "接口 {} 没有方法 `{}`",
+                            self.types.interfaces[*id as usize].name, name.name
+                        ),
+                        name.span,
+                    );
+                    Type::Error
+                }
+            }
             Type::Enum(id) => {
                 let has_member = self
                     .types
@@ -2438,10 +2558,14 @@ impl<'s> Checker<'s> {
                 );
                 self.record_call_result(span, Type::Class(base))
             }
-            ExprKind::Member { object, name, .. } => {
+            ExprKind::Member {
+                object,
+                name,
+                optional,
+            } => {
                 let object_ty = self.check_expr(object);
                 let args_ty: Vec<Type> = args.iter().map(|arg| self.check_expr(arg)).collect();
-                match object_ty.without_nullable() {
+                let result = match object_ty.without_nullable() {
                     Type::Class(id) => {
                         let Some((class_id, index)) = self.types.find_class_method(*id, &name.name)
                         else {
@@ -2466,7 +2590,34 @@ impl<'s> Checker<'s> {
                                 index,
                             },
                         );
-                        self.record_call_result(span, sig.ret)
+                        sig.ret
+                    }
+                    Type::Interface(id) => {
+                        if let Some(index) =
+                            self.types.interfaces.get(*id as usize).and_then(|info| {
+                                info.methods.iter().position(|m| m.name == name.name)
+                            })
+                        {
+                            let sig = self.types.interfaces[*id as usize].methods[index].clone();
+                            self.match_call_args(&sig, &args_ty, span, true);
+                            self.state.result.call_targets.insert(
+                                span.start,
+                                CallTarget::InterfaceMethod {
+                                    interface: *id,
+                                    index,
+                                },
+                            );
+                            sig.ret
+                        } else {
+                            self.error(
+                                format!(
+                                    "接口 {} 没有方法 `{}`",
+                                    self.types.interfaces[*id as usize].name, name.name
+                                ),
+                                name.span,
+                            );
+                            Type::Error
+                        }
                     }
                     Type::Error => Type::Error,
                     other => {
@@ -2476,7 +2627,13 @@ impl<'s> Checker<'s> {
                         );
                         Type::Error
                     }
-                }
+                };
+                let result = if *optional || matches!(object_ty, Type::Nullable(_)) {
+                    Type::Nullable(Box::new(result))
+                } else {
+                    result
+                };
+                self.record_call_result(span, result)
             }
             _ => {
                 self.error("调用目标必须是函数名或方法", callee.span);
@@ -2696,6 +2853,14 @@ fn infer_type_arg(param: &Type, arg: &Type, known: &mut HashMap<String, Type>) {
             infer_type_arg(param_inner, arg_inner, known);
         }
         _ => {}
+    }
+}
+
+fn optional_fallback(ty: &Type) -> MirExpr {
+    match ty.without_nullable() {
+        Type::F32 | Type::F64 => MirExpr::Float(0.0),
+        ty if ty.is_reference() => MirExpr::Null,
+        _ => MirExpr::Int(0),
     }
 }
 
@@ -3618,13 +3783,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 None
             }
             ExprKind::Member { object, name, .. } => {
-                let field = self
-                    .lowerer
-                    .state
-                    .result
-                    .field_targets
-                    .get(&expr.span.start)
-                    .cloned()?;
+                let field = self.resolve_field_target(object, &name.name)?;
                 let object = self.lower_expr(object);
                 let index = match field {
                     FieldTarget::Struct(_, index) => index,
@@ -3808,6 +3967,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 else_: Box::new(self.lower_expr(else_)),
             },
             ExprKind::Call { callee, args } => {
+                let optional_receiver =
+                    matches!(&callee.kind, ExprKind::Member { optional: true, .. });
                 // 闭包调用：callee 是 lambda，或 callee 是函数类型的局部/参数/全局
                 let closure_ty = match &callee.kind {
                     ExprKind::Lambda { .. } => self.expr_type(callee),
@@ -3936,6 +4097,24 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             sig: method_sig,
                         }
                     }
+                    Some(CallTarget::InterfaceMethod { interface, index }) => {
+                        match &callee.kind {
+                            ExprKind::Member { object, .. } => {
+                                args.insert(0, self.lower_expr(object));
+                            }
+                            _ => {}
+                        }
+                        let iface_info = self.lowerer.types.interfaces.get(interface as usize);
+                        let method_sig = iface_info
+                            .and_then(|info| info.methods.get(index))
+                            .cloned()
+                            .unwrap_or_else(placeholder_sig);
+                        MirCallee::InterfaceMethod {
+                            interface,
+                            index,
+                            sig: method_sig,
+                        }
+                    }
                     None => {
                         self.error("调用目标未解析", expr.span);
                         MirCallee::Intrinsic {
@@ -3943,62 +4122,120 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         }
                     }
                 };
-                MirExpr::Call { callee, args }
+                let call = MirExpr::Call { callee, args };
+                if optional_receiver {
+                    if let MirExpr::Call { args, .. } = &call {
+                        if let Some(receiver) = args.first().cloned() {
+                            let zero = MirExpr::Int(0);
+                            let cond = MirExpr::Binary {
+                                op: MirBinary::Ne,
+                                left: Box::new(receiver),
+                                right: Box::new(zero),
+                            };
+                            let fallback = optional_fallback(&self.expr_type(expr));
+                            return MirExpr::Select {
+                                cond: Box::new(cond),
+                                then: Box::new(call),
+                                else_: Box::new(fallback),
+                            };
+                        }
+                    }
+                }
+                call
             }
-            ExprKind::Member { object, name, .. } => {
-                if name.name == "length"
+            ExprKind::Member {
+                object,
+                name,
+                optional,
+            } => {
+                let access = if name.name == "length"
                     && matches!(self.expr_type(object), Type::Array(_) | Type::Str)
                 {
                     let is_string = self.expr_type(object) == Type::Str;
-                    return MirExpr::Len {
+                    MirExpr::Len {
                         object: Box::new(self.lower_expr(object)),
                         string: is_string,
-                    };
-                }
-                let field = self
-                    .lowerer
-                    .state
-                    .result
-                    .field_targets
-                    .get(&expr.span.start)
-                    .cloned();
-                match field {
-                    Some(FieldTarget::Struct(_, index)) => MirExpr::Field {
-                        object: Box::new(self.lower_expr(object)),
-                        index,
-                    },
-                    Some(FieldTarget::Class(class_id, index)) => MirExpr::Field {
-                        object: Box::new(self.lower_expr(object)),
-                        index: self.lowerer.ancestor_field_count(class_id) + index,
-                    },
-                    None => {
-                        // 枚举成员访问 Color.Red
-                        let object_ty = self.expr_type(object);
-                        if let Type::Enum(enum_id) = object_ty {
-                            let value =
-                                self.lowerer
-                                    .types
-                                    .enums
-                                    .get(enum_id as usize)
-                                    .and_then(|info| {
-                                        info.members
-                                            .iter()
-                                            .find(|(member, _)| member == &name.name)
-                                            .map(|(_, value)| *value)
-                                    });
-                            if let Some(value) = value {
-                                return MirExpr::Int(value);
-                            }
+                    }
+                } else if let Some(field) = self.resolve_field_target(object, &name.name) {
+                    match field {
+                        FieldTarget::Struct(_, index) => MirExpr::Field {
+                            object: Box::new(self.lower_expr(object)),
+                            index,
+                        },
+                        FieldTarget::Class(class_id, index) => MirExpr::Field {
+                            object: Box::new(self.lower_expr(object)),
+                            index: self.lowerer.ancestor_field_count(class_id) + index,
+                        },
+                    }
+                } else {
+                    // 枚举成员访问 Color.Red
+                    let object_ty = self.expr_type(object);
+                    if let Type::Enum(enum_id) = object_ty {
+                        let value =
+                            self.lowerer
+                                .types
+                                .enums
+                                .get(enum_id as usize)
+                                .and_then(|info| {
+                                    info.members
+                                        .iter()
+                                        .find(|(member, _)| member == &name.name)
+                                        .map(|(_, value)| *value)
+                                });
+                        if let Some(value) = value {
+                            MirExpr::Int(value)
+                        } else {
+                            self.error("成员访问未解析", expr.span);
+                            MirExpr::Int(0)
                         }
+                    } else {
                         self.error("成员访问未解析", expr.span);
                         MirExpr::Int(0)
                     }
+                };
+                if *optional {
+                    let object_mir = self.lower_expr(object);
+                    let zero = MirExpr::Int(0);
+                    let cond = MirExpr::Binary {
+                        op: MirBinary::Ne,
+                        left: Box::new(object_mir),
+                        right: Box::new(zero),
+                    };
+                    let fallback = optional_fallback(&self.expr_type(expr));
+                    return MirExpr::Select {
+                        cond: Box::new(cond),
+                        then: Box::new(access),
+                        else_: Box::new(fallback),
+                    };
                 }
+                access
             }
-            ExprKind::Index { object, index, .. } => MirExpr::Index {
-                object: Box::new(self.lower_expr(object)),
-                index: Box::new(self.lower_expr(index)),
-            },
+            ExprKind::Index {
+                object,
+                index,
+                optional,
+            } => {
+                let access = MirExpr::Index {
+                    object: Box::new(self.lower_expr(object)),
+                    index: Box::new(self.lower_expr(index)),
+                };
+                if *optional {
+                    let object_mir = self.lower_expr(object);
+                    let zero = MirExpr::Int(0);
+                    let cond = MirExpr::Binary {
+                        op: MirBinary::Ne,
+                        left: Box::new(object_mir),
+                        right: Box::new(zero),
+                    };
+                    let fallback = optional_fallback(&self.expr_type(expr));
+                    return MirExpr::Select {
+                        cond: Box::new(cond),
+                        then: Box::new(access),
+                        else_: Box::new(fallback),
+                    };
+                }
+                access
+            }
             ExprKind::Postfix { expr: inner, op } => {
                 if let Some(target) = self.lower_target(inner) {
                     let mir_op = match op {
@@ -4448,6 +4685,11 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         // 成员访问表达式与对象标识符共用起始偏移，expr_types 会被覆盖；
         // Ident 直接从符号表取类型，避免碰撞。
         match &expr.kind {
+            ExprKind::This => {
+                if let Some(class_id) = self.this_class {
+                    return Type::Class(class_id);
+                }
+            }
             ExprKind::Ident(_) => {
                 if let Some(id) = self
                     .lowerer
@@ -4481,42 +4723,35 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         return Type::Int;
                     }
                 }
-                if let Some(target) = self
-                    .lowerer
-                    .state
-                    .result
-                    .field_targets
-                    .get(&expr.span.start)
-                    .cloned()
-                {
-                    let ty = match target {
-                        FieldTarget::Struct(id, index) => self
+                let object_ty = self.expr_type(object);
+                match object_ty.without_nullable() {
+                    Type::Struct(id) => {
+                        if let Some(field) = self
                             .lowerer
                             .types
                             .structs
-                            .get(id as usize)
-                            .and_then(|info| info.fields.get(index))
-                            .map(|field| field.ty.clone()),
-                        FieldTarget::Class(class_id, index) => {
-                            let mut chain = vec![class_id];
-                            let mut base = self.lowerer.types.classes[class_id as usize].base;
-                            while let Some(id) = base {
-                                chain.push(id);
-                                base = self.lowerer.types.classes[id as usize].base;
-                            }
-                            chain.reverse();
-                            let mut fields: Vec<Type> = Vec::new();
-                            for id in chain {
-                                for field in &self.lowerer.types.classes[id as usize].fields {
-                                    fields.push(field.ty.clone());
-                                }
-                            }
-                            fields.get(index).cloned()
+                            .get(*id as usize)
+                            .and_then(|info| info.fields.iter().find(|f| f.name == name.name))
+                        {
+                            return substitute_type(&field.ty, &self.type_args);
                         }
-                    };
-                    if let Some(ty) = ty {
-                        return substitute_type(&ty, &self.type_args);
                     }
+                    Type::Class(id) => {
+                        if let Some((class_id, index)) =
+                            self.lowerer.types.find_class_field(*id, &name.name)
+                        {
+                            if let Some(field) = self
+                                .lowerer
+                                .types
+                                .classes
+                                .get(class_id as usize)
+                                .and_then(|info| info.fields.get(index))
+                            {
+                                return substitute_type(&field.ty, &self.type_args);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -4528,6 +4763,25 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             .get(&expr.span.start)
             .cloned()
             .unwrap_or(Type::Error)
+    }
+
+    /// 按对象类型 + 字段名解析字段目标（不依赖 span 表，避免嵌套成员链的起始偏移碰撞）。
+    fn resolve_field_target(&self, object: &Expr, name: &str) -> Option<FieldTarget> {
+        match self.expr_type(object).without_nullable() {
+            Type::Struct(id) => self
+                .lowerer
+                .types
+                .structs
+                .get(*id as usize)
+                .and_then(|info| info.fields.iter().position(|f| f.name == name))
+                .map(|index| FieldTarget::Struct(*id, index)),
+            Type::Class(id) => self
+                .lowerer
+                .types
+                .find_class_field(*id, name)
+                .map(|(class_id, index)| FieldTarget::Class(class_id, index)),
+            _ => None,
+        }
     }
 }
 

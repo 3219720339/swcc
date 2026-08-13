@@ -602,6 +602,429 @@ sw_string* substring(sw_string* text, int64_t start, int64_t length) {
     return sw_string_from_literal(text->data + start, length);
 }
 
+// ---------------------------------------------------------------------------
+// unicode：UTF-8 按字符（码点）语义的工具函数。
+// ---------------------------------------------------------------------------
+
+static int64_t sw_utf8_char_length(const char* text, int64_t index, int64_t len) {
+    unsigned char first = (unsigned char)text[index];
+    if (first < 0x80) {
+        return 1;
+    }
+    if ((first & 0xE0) == 0xC0 && index + 1 < len) {
+        return 2;
+    }
+    if ((first & 0xF0) == 0xE0 && index + 2 < len) {
+        return 3;
+    }
+    if ((first & 0xF8) == 0xF0 && index + 3 < len) {
+        return 4;
+    }
+    return 1;
+}
+
+static int64_t sw_utf8_decode(const char* text, int64_t index, int64_t char_len) {
+    unsigned char first = (unsigned char)text[index];
+    if (char_len == 1) {
+        return first;
+    }
+    if (char_len == 2) {
+        return ((first & 0x1F) << 6) | ((unsigned char)text[index + 1] & 0x3F);
+    }
+    if (char_len == 3) {
+        return ((first & 0x0F) << 12) | (((unsigned char)text[index + 1] & 0x3F) << 6) |
+               ((unsigned char)text[index + 2] & 0x3F);
+    }
+    return ((first & 0x07) << 18) | (((unsigned char)text[index + 1] & 0x3F) << 12) |
+           (((unsigned char)text[index + 2] & 0x3F) << 6) |
+           ((unsigned char)text[index + 3] & 0x3F);
+}
+
+int64_t utf8_len(sw_string* text) {
+    int64_t count = 0;
+    int64_t index = 0;
+    while (index < text->len) {
+        index += sw_utf8_char_length(text->data, index, text->len);
+        count++;
+    }
+    return count;
+}
+
+int64_t utf8_char_at(sw_string* text, int64_t index) {
+    int64_t position = 0;
+    int64_t offset = 0;
+    while (offset < text->len && position < index) {
+        offset += sw_utf8_char_length(text->data, offset, text->len);
+        position++;
+    }
+    if (offset >= text->len) {
+        return -1;
+    }
+    int64_t char_len = sw_utf8_char_length(text->data, offset, text->len);
+    return sw_utf8_decode(text->data, offset, char_len);
+}
+
+sw_string* utf8_substring(sw_string* text, int64_t start, int64_t count) {
+    int64_t offset = 0;
+    int64_t position = 0;
+    while (offset < text->len && position < start) {
+        offset += sw_utf8_char_length(text->data, offset, text->len);
+        position++;
+    }
+    if (position < start) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t end = offset;
+    int64_t taken = 0;
+    while (end < text->len && taken < count) {
+        end += sw_utf8_char_length(text->data, end, text->len);
+        taken++;
+    }
+    return sw_string_from_literal(text->data + offset, end - offset);
+}
+
+// ---------------------------------------------------------------------------
+// time：毫秒时间戳与睡眠。
+// ---------------------------------------------------------------------------
+
+#if defined(_WIN32)
+extern void GetSystemTimeAsFileTime(void* file_time);
+extern void Sleep(unsigned long milliseconds);
+
+int64_t now_ms(void) {
+    unsigned char ft[8];
+    GetSystemTimeAsFileTime(ft);
+    uint64_t since_1601 =
+        ((uint64_t)(*(unsigned int*)(ft + 4)) << 32) | (*(unsigned int*)ft);
+    // 1601-01-01 到 1970-01-01 的 100ns 间隔数。
+    uint64_t unix_100ns = since_1601 - 116444736000000000ULL;
+    return (int64_t)(unix_100ns / 10000);
+}
+#else
+extern int clock_gettime(int clock_id, void* timespec);
+extern int nanosleep(const void* req, void* rem);
+
+int64_t now_ms(void) {
+    unsigned char ts[16];
+    clock_gettime(0, ts);
+    int64_t seconds = *(int64_t*)ts;
+    int64_t nanos = *(int64_t*)(ts + 8);
+    return seconds * 1000 + nanos / 1000000;
+}
+#endif
+
+void sleep_ms(int64_t milliseconds) {
+    if (milliseconds <= 0) {
+        return;
+    }
+#if defined(_WIN32)
+    Sleep((unsigned long)milliseconds);
+#else
+    unsigned char req[16];
+    *(int64_t*)req = milliseconds / 1000;
+    *(int64_t*)(req + 8) = (milliseconds % 1000) * 1000000;
+    nanosleep(req, NULL);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// json：最小 JSON 解析器（GC 分配的标记值）。
+// ---------------------------------------------------------------------------
+
+typedef struct sw_json {
+    int64_t kind; // 0 null 1 bool 2 int 3 float 4 string 5 array 6 object
+    int64_t int_value;
+    double float_value;
+    char* string_value;
+    struct sw_json** items;
+    char** keys;
+    int64_t length;
+} sw_json;
+
+static int sw_json_skip_space(const char* text, int64_t len, int64_t* pos);
+static sw_json* sw_json_parse_value(const char* text, int64_t len, int64_t* pos);
+
+static int sw_json_skip_space(const char* text, int64_t len, int64_t* pos) {
+    while (*pos < len && (text[*pos] == ' ' || text[*pos] == '\t' || text[*pos] == '\n' ||
+                          text[*pos] == '\r')) {
+        (*pos)++;
+    }
+    return *pos < len;
+}
+
+static sw_json* sw_json_make(int64_t kind) {
+    sw_json* value = (sw_json*)sw_gc_alloc(sizeof(sw_json));
+    value->kind = kind;
+    value->int_value = 0;
+    value->float_value = 0;
+    value->string_value = NULL;
+    value->items = NULL;
+    value->keys = NULL;
+    value->length = 0;
+    return value;
+}
+
+static sw_json* sw_json_parse_string(const char* text, int64_t len, int64_t* pos) {
+    // text[*pos] == '"'
+    int64_t start = *pos + 1;
+    int64_t end = start;
+    while (end < len && text[end] != '"') {
+        if (text[end] == '\\') {
+            end++;
+        }
+        end++;
+    }
+    if (end >= len) {
+        return NULL;
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)(end - start) + 1);
+    int64_t out = 0;
+    for (int64_t i = start; i < end; i++) {
+        if (text[i] == '\\' && i + 1 < end) {
+            char next = text[i + 1];
+            switch (next) {
+                case 'n': buffer[out++] = '\n'; break;
+                case 't': buffer[out++] = '\t'; break;
+                case 'r': buffer[out++] = '\r'; break;
+                case '\\': buffer[out++] = '\\'; break;
+                case '"': buffer[out++] = '"'; break;
+                case '/': buffer[out++] = '/'; break;
+                default: buffer[out++] = next; break;
+            }
+            i++;
+        } else {
+            buffer[out++] = text[i];
+        }
+    }
+    buffer[out] = 0;
+    *pos = end + 1;
+    sw_json* value = sw_json_make(4);
+    value->string_value = buffer;
+    value->length = out;
+    return value;
+}
+
+static sw_json* sw_json_parse_value(const char* text, int64_t len, int64_t* pos) {
+    if (!sw_json_skip_space(text, len, pos)) {
+        return NULL;
+    }
+    char c = text[*pos];
+    if (c == '"') {
+        return sw_json_parse_string(text, len, pos);
+    }
+    if (c == '{') {
+        (*pos)++;
+        sw_json* object = sw_json_make(6);
+        int64_t capacity = 4;
+        object->items = (sw_json**)sw_gc_alloc((uint64_t)capacity * sizeof(sw_json*));
+        object->keys = (char**)sw_gc_alloc((uint64_t)capacity * sizeof(char*));
+        while (sw_json_skip_space(text, len, pos) && text[*pos] != '}') {
+            if (text[*pos] != '"') {
+                return NULL;
+            }
+            sw_json* key = sw_json_parse_string(text, len, pos);
+            if (key == NULL || !sw_json_skip_space(text, len, pos) || text[*pos] != ':') {
+                return NULL;
+            }
+            (*pos)++;
+            sw_json* value = sw_json_parse_value(text, len, pos);
+            if (value == NULL) {
+                return NULL;
+            }
+            if (object->length >= capacity) {
+                int64_t old_capacity = capacity;
+                capacity *= 2;
+                sw_json** new_items =
+                    (sw_json**)sw_gc_alloc((uint64_t)capacity * sizeof(sw_json*));
+                char** new_keys = (char**)sw_gc_alloc((uint64_t)capacity * sizeof(char*));
+                memcpy(new_items, object->items, (sw_size)(old_capacity * sizeof(sw_json*)));
+                memcpy(new_keys, object->keys, (sw_size)(old_capacity * sizeof(char*)));
+                object->items = new_items;
+                object->keys = new_keys;
+            }
+            object->keys[object->length] = key->string_value;
+            object->items[object->length] = value;
+            object->length++;
+            if (!sw_json_skip_space(text, len, pos)) {
+                return NULL;
+            }
+            if (text[*pos] == ',') {
+                (*pos)++;
+            } else if (text[*pos] != '}') {
+                return NULL;
+            }
+        }
+        if (*pos >= len || text[*pos] != '}') {
+            return NULL;
+        }
+        (*pos)++;
+        return object;
+    }
+    if (c == '[') {
+        (*pos)++;
+        sw_json* array = sw_json_make(5);
+        int64_t capacity = 4;
+        array->items = (sw_json**)sw_gc_alloc((uint64_t)capacity * sizeof(sw_json*));
+        while (sw_json_skip_space(text, len, pos) && text[*pos] != ']') {
+            sw_json* value = sw_json_parse_value(text, len, pos);
+            if (value == NULL) {
+                return NULL;
+            }
+            if (array->length >= capacity) {
+                int64_t old_capacity = capacity;
+                capacity *= 2;
+                sw_json** new_items =
+                    (sw_json**)sw_gc_alloc((uint64_t)capacity * sizeof(sw_json*));
+                memcpy(new_items, array->items, (sw_size)(old_capacity * sizeof(sw_json*)));
+                array->items = new_items;
+            }
+            array->items[array->length++] = value;
+            if (!sw_json_skip_space(text, len, pos)) {
+                return NULL;
+            }
+            if (text[*pos] == ',') {
+                (*pos)++;
+            } else if (text[*pos] != ']') {
+                return NULL;
+            }
+        }
+        if (*pos >= len || text[*pos] != ']') {
+            return NULL;
+        }
+        (*pos)++;
+        return array;
+    }
+    if (c == 't' && *pos + 4 <= len) {
+        if (text[*pos + 1] == 'r' && text[*pos + 2] == 'u' && text[*pos + 3] == 'e') {
+            *pos += 4;
+            sw_json* value = sw_json_make(1);
+            value->int_value = 1;
+            return value;
+        }
+    }
+    if (c == 'f' && *pos + 5 <= len) {
+        if (text[*pos + 1] == 'a' && text[*pos + 2] == 'l' && text[*pos + 3] == 's' &&
+            text[*pos + 4] == 'e') {
+            *pos += 5;
+            sw_json* value = sw_json_make(1);
+            value->int_value = 0;
+            return value;
+        }
+    }
+    if (c == 'n' && *pos + 4 <= len) {
+        if (text[*pos + 1] == 'u' && text[*pos + 2] == 'l' && text[*pos + 3] == 'l') {
+            *pos += 4;
+            return sw_json_make(0);
+        }
+    }
+    // 数字
+    int64_t start = *pos;
+    int64_t is_float = 0;
+    while (*pos < len) {
+        char digit = text[*pos];
+        if (digit == '.' || digit == 'e' || digit == 'E' || digit == '+' || digit == '-') {
+            is_float = 1;
+        } else if (!(digit >= '0' && digit <= '9')) {
+            break;
+        }
+        (*pos)++;
+    }
+    if (*pos == start) {
+        return NULL;
+    }
+    char* number = (char*)sw_gc_alloc((uint64_t)(*pos - start) + 1);
+    for (int64_t i = start; i < *pos; i++) {
+        number[i - start] = text[i];
+    }
+    number[*pos - start] = 0;
+    sw_json* value = sw_json_make(is_float ? 3 : 2);
+    if (is_float) {
+        extern double atof(const char* text);
+        value->float_value = atof(number);
+    } else {
+        int64_t parsed = 0;
+        int64_t negative = 0;
+        int64_t i = 0;
+        if (number[0] == '-') {
+            negative = 1;
+            i = 1;
+        }
+        while (number[i] != 0) {
+            parsed = parsed * 10 + (number[i] - '0');
+            i++;
+        }
+        value->int_value = negative ? -parsed : parsed;
+    }
+    return value;
+}
+
+void* json_parse(sw_string* text) {
+    int64_t pos = 0;
+    return (void*)sw_json_parse_value(text->data, text->len, &pos);
+}
+
+int64_t json_kind(void* value) {
+    return value == NULL ? 0 : ((sw_json*)value)->kind;
+}
+
+int64_t json_bool(void* value) {
+    return value == NULL ? 0 : ((sw_json*)value)->int_value;
+}
+
+int64_t json_int(void* value) {
+    return value == NULL ? 0 : ((sw_json*)value)->int_value;
+}
+
+double json_float(void* value) {
+    return value == NULL ? 0.0 : ((sw_json*)value)->float_value;
+}
+
+sw_string* json_string(void* value) {
+    if (value == NULL || ((sw_json*)value)->string_value == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(((sw_json*)value)->string_value, ((sw_json*)value)->length);
+}
+
+int64_t json_array_len(void* value) {
+    return value == NULL ? 0 : ((sw_json*)value)->length;
+}
+
+void* json_array_at(void* value, int64_t index) {
+    sw_json* array = (sw_json*)value;
+    if (array == NULL || array->kind != 5 || index < 0 || index >= array->length) {
+        return NULL;
+    }
+    return array->items[index];
+}
+
+void* json_object_get(void* value, sw_string* key) {
+    sw_json* object = (sw_json*)value;
+    if (object == NULL || object->kind != 6) {
+        return NULL;
+    }
+    // 按键名线性查找（长度通过临时字符串计算）。
+    for (int64_t index = 0; index < object->length; index++) {
+        int64_t key_len = 0;
+        while (object->keys[index][key_len] != 0) {
+            key_len++;
+        }
+        int64_t match = key_len == key->len ? 1 : 0;
+        if (match) {
+            for (int64_t i = 0; i < key_len; i++) {
+                if (object->keys[index][i] != key->data[i]) {
+                    match = 0;
+                    break;
+                }
+            }
+        }
+        if (match) {
+            return object->items[index];
+        }
+    }
+    return NULL;
+}
+
 sw_array* sw_array_new(int64_t elem_size, int64_t count) {
     (void)elem_size;
     if (count < 0) {

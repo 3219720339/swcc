@@ -182,3 +182,25 @@ fn compiles_generic_function_instances() {
         .sum();
     assert!(total > 200, "对象过小：{total} 字节");
 }
+
+#[test]
+fn compiles_optional_chain_and_interfaces() {
+    for name in ["optional.sw", "interface.sw"] {
+        let result = analyze(&fixture(name), None);
+        assert!(
+            !result.diagnostics.has_errors(),
+            "{name}: {:?}",
+            result.diagnostics.items
+        );
+        let total: usize = result
+            .modules
+            .iter()
+            .map(|module| {
+                compile_module_for_target(module, &result.type_table, "x86_64-unknown-linux-gnu")
+                    .expect("编译成功")
+                    .len()
+            })
+            .sum();
+        assert!(total > 200, "{name} 对象过小：{total} 字节");
+    }
+}

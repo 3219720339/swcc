@@ -103,6 +103,34 @@ fn checks_expr_lowering_with_pow_and_struct() {
     assert!(found_struct, "应有 struct 字面量节点");
 }
 
+#[test]
+fn checks_optional_chain() {
+    let result = analyze(&fixture("optional.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+}
+
+#[test]
+fn checks_interfaces_and_vtable_dispatch() {
+    let result = analyze(&fixture("interface.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    assert!(
+        result
+            .type_table
+            .class_interfaces
+            .values()
+            .any(|list| !list.is_empty()),
+        "应记录类实现的接口"
+    );
+}
+
 fn collect_expr_kinds(
     statement: &sw_semantic::MirStmt,
     found_assign: &mut bool,

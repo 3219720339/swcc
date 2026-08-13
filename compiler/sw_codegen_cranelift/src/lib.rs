@@ -63,6 +63,8 @@ struct Generator {
     imports: HashMap<String, cranelift_module::FuncId>,
     string_data: HashMap<usize, cranelift_module::DataId>,
     global_data: HashMap<u32, cranelift_module::DataId>,
+    /// class id → vtable 数据（类对象头部引用）。
+    vtable_data: HashMap<u32, cranelift_module::DataId>,
 }
 
 impl Generator {
@@ -95,6 +97,7 @@ impl Generator {
             imports: HashMap::new(),
             string_data: HashMap::new(),
             global_data: HashMap::new(),
+            vtable_data: HashMap::new(),
         })
     }
 
@@ -137,6 +140,52 @@ impl Generator {
                 .declare_function(&function.name, Linkage::Export, &sig)
                 .map_err(|error| error.to_string())?;
             exports.insert(function.name.clone(), func_id);
+        }
+
+        // 接口 vtable：按全局接口槽位布局生成每个类的派发表。
+        let (interface_slot_bases, interface_slot_total) = interface_slot_bases(types);
+        if interface_slot_total > 0 {
+            for (class_id, class) in types.classes.iter().enumerate() {
+                let data_id = self
+                    .module
+                    .declare_data(
+                        format!("sw_vt_{class_id}").as_str(),
+                        Linkage::Local,
+                        false,
+                        false,
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut desc = DataDescription::new();
+                desc.define(vec![0u8; interface_slot_total * 8].into_boxed_slice());
+                if let Some(interfaces) = types.class_interfaces.get(&(class_id as u32)) {
+                    for interface_id in interfaces {
+                        let Some(&base) = interface_slot_bases.get(interface_id) else {
+                            continue;
+                        };
+                        let interface = &types.interfaces[*interface_id as usize];
+                        for (method_index, method) in interface.methods.iter().enumerate() {
+                            if let Some((impl_class, impl_index)) =
+                                types.find_class_method(class_id as u32, &method.name)
+                            {
+                                let fn_name =
+                                    format!("sw_m_{impl_class}_{impl_index}_{}", method.name);
+                                if let Some(func_id) = exports.get(&fn_name) {
+                                    let func_ref =
+                                        self.module.declare_func_in_data(*func_id, &mut desc);
+                                    desc.write_function_addr(
+                                        ((base + method_index) * 8) as u32,
+                                        func_ref,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                self.module
+                    .define_data(data_id, &desc)
+                    .map_err(|error| error.to_string())?;
+                self.vtable_data.insert(class_id as u32, data_id);
+            }
         }
 
         // 定义函数体
@@ -228,9 +277,12 @@ impl Generator {
             module: &self.module,
             types,
             class_field_counts: class_field_counts(types),
-            struct_field_counts: struct_field_counts(types),
+            struct_field_offsets: struct_layout(types).0,
+            struct_sizes: struct_layout(types).1,
             struct_field_types: struct_field_types(types),
             class_field_types: class_field_types(types),
+            vtable_data: self.vtable_data.clone(),
+            interface_slot_bases: interface_slot_bases(types).0,
             local_types,
             ret_ty: function.ret.clone(),
             sret: None,
@@ -411,6 +463,13 @@ fn visit_expr(
             refs.global_refs.insert(*index, gv);
         }
         MirExpr::Call { callee, args } => {
+            // 接口方法经 vtable 间接调用，无需直接符号导入。
+            if let MirCallee::InterfaceMethod { .. } = callee {
+                for arg in args {
+                    visit_expr(arg, generator, mir, exports, ctx, refs)?;
+                }
+                return Ok(());
+            }
             if let MirCallee::Closure { sig } = callee {
                 let key = format!("{:?}", sig);
                 let cranelift_sig = signature_of_sig(sig, generator.module.isa())?;
@@ -563,6 +622,9 @@ fn callee_signature_for(
             (runtime_name.to_owned(), sig)
         }
         MirCallee::Closure { sig } => ("$closure".to_owned(), signature_of_sig(sig, isa)?),
+        MirCallee::InterfaceMethod { sig, .. } => {
+            ("$iface".to_owned(), signature_of_sig(sig, isa)?)
+        }
     })
 }
 
@@ -719,8 +781,8 @@ fn abi_type(ty: &Type) -> Result<cranelift_codegen::ir::Type, CodegenError> {
     Ok(match ty {
         Type::F32 | Type::F64 => types::F64,
         Type::Void => return Err("void 不能作为参数或返回值类型".into()),
-        Type::Struct(_) => types::I64,
-        Type::Interface(_) | Type::TypeParam(_) | Type::Unknown | Type::Error => {
+        Type::Struct(_) | Type::Interface(_) => types::I64,
+        Type::TypeParam(_) | Type::Unknown | Type::Error => {
             return Err(format!("后端暂不支持类型 {}", ty.display()).into());
         }
         _ => types::I64,
@@ -778,13 +840,54 @@ fn class_field_counts(types: &TypeTable) -> HashMap<u32, usize> {
         .collect()
 }
 
-fn struct_field_counts(types: &TypeTable) -> HashMap<u32, usize> {
-    types
-        .structs
-        .iter()
-        .enumerate()
-        .map(|(index, info)| (index as u32, info.fields.len()))
-        .collect()
+/// struct 布局：每个字段的字节偏移（标量 8 字节，嵌套 struct 内联其大小）。
+/// 返回 (字段偏移表, 总大小表)。
+fn struct_layout(types: &TypeTable) -> (HashMap<u32, Vec<usize>>, HashMap<u32, usize>) {
+    let mut offsets: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut sizes: HashMap<u32, usize> = HashMap::new();
+    let total = types.structs.len();
+    let mut resolved = vec![false; total];
+    let mut progressed = true;
+    while progressed {
+        progressed = false;
+        for id in 0..total {
+            if resolved[id] {
+                continue;
+            }
+            let info = &types.structs[id];
+            let mut ok = true;
+            let mut off = 0usize;
+            let mut field_offsets = Vec::with_capacity(info.fields.len());
+            for field in &info.fields {
+                field_offsets.push(off);
+                match &field.ty {
+                    Type::Struct(inner) => match sizes.get(inner) {
+                        Some(size) => off += size,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    },
+                    _ => off += 8,
+                }
+            }
+            if ok {
+                offsets.insert(id as u32, field_offsets);
+                sizes.insert(id as u32, off);
+                resolved[id] = true;
+                progressed = true;
+            }
+        }
+    }
+    // 循环依赖兜底：按每字段 8 字节布局（语义层应已拦截直接自引用）。
+    for id in 0..total {
+        if !resolved[id] {
+            let count = types.structs[id].fields.len();
+            sizes.insert(id as u32, count * 8);
+            offsets.insert(id as u32, (0..count).map(|index| index * 8).collect());
+        }
+    }
+    (offsets, sizes)
 }
 
 fn struct_field_types(types: &TypeTable) -> HashMap<u32, Vec<Type>> {
@@ -825,6 +928,17 @@ fn class_field_types(types: &TypeTable) -> HashMap<u32, Vec<Type>> {
         .collect()
 }
 
+/// 接口方法在全局 vtable 槽位中的起始偏移：按接口声明顺序累加方法数。
+fn interface_slot_bases(types: &TypeTable) -> (HashMap<u32, usize>, usize) {
+    let mut bases = HashMap::new();
+    let mut total = 0usize;
+    for (id, info) in types.interfaces.iter().enumerate() {
+        bases.insert(id as u32, total);
+        total += info.methods.len();
+    }
+    (bases, total)
+}
+
 struct LowerCtx<'a, 'f> {
     builder: FunctionBuilder<'f>,
     refs: RefTable,
@@ -834,9 +948,14 @@ struct LowerCtx<'a, 'f> {
     module: &'a ObjectModule,
     types: &'a TypeTable,
     class_field_counts: HashMap<u32, usize>,
-    struct_field_counts: HashMap<u32, usize>,
+    struct_field_offsets: HashMap<u32, Vec<usize>>,
+    struct_sizes: HashMap<u32, usize>,
     struct_field_types: HashMap<u32, Vec<Type>>,
     class_field_types: HashMap<u32, Vec<Type>>,
+    /// class id → vtable 数据。
+    vtable_data: HashMap<u32, cranelift_module::DataId>,
+    /// interface id → vtable 槽位起始偏移。
+    interface_slot_bases: HashMap<u32, usize>,
     /// 参数 + 局部变量的类型（槽索引与 MIR 局部索引一致）。
     local_types: Vec<Type>,
     ret_ty: Type,
@@ -1061,8 +1180,23 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
 
     fn struct_size(&self, ty: &Type) -> usize {
         match ty {
-            Type::Struct(id) => self.struct_field_counts.get(id).copied().unwrap_or(0) * 8,
+            Type::Struct(id) => self.struct_sizes.get(id).copied().unwrap_or(8),
             _ => 8,
+        }
+    }
+
+    /// 字段字节偏移：struct 用内联偏移表；class 暂按每字段 8 字节（vtable 头在接口批次引入）。
+    fn field_offset(&self, owner: &Type, index: usize) -> usize {
+        match owner {
+            Type::Struct(id) => self
+                .struct_field_offsets
+                .get(id)
+                .and_then(|offsets| offsets.get(index))
+                .copied()
+                .unwrap_or(index * 8),
+            // 类对象头部第 0 个字是 vtable 指针，字段从 +8 开始。
+            Type::Class(_) => 8 + index * 8,
+            _ => index * 8,
         }
     }
 
@@ -1123,9 +1257,10 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .load(types::I64, MemFlagsData::new(), address, 0))
             }
             MirTarget::Field { object, index } => {
+                let owner = self.expr_owner_type(object).unwrap_or(Type::Error);
+                let offset = self.field_offset(&owner, *index) as i32;
                 let float = self.field_is_float(object, *index);
                 let object = self.expr(object)?;
-                let offset = (*index as i32) * 8;
                 let ty = if float { types::F64 } else { types::I64 };
                 Ok(self
                     .builder
@@ -1179,12 +1314,19 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 Ok(())
             }
             MirTarget::Field { object, index } => {
+                let owner = self.expr_owner_type(object).unwrap_or(Type::Error);
+                let offset = self.field_offset(&owner, *index) as i32;
                 let object = self.expr(object)?;
-                let offset = (*index as i32) * 8;
-                self.builder
-                    .ins()
-                    .store(MemFlagsData::new(), value, object, offset);
-                Ok(())
+                if let Some(Type::Struct(_)) = self.field_type(&owner, *index) {
+                    let dst = self.builder.ins().iadd_imm(object, offset as i64);
+                    let field_ty = self.field_type(&owner, *index).unwrap();
+                    self.copy_struct(&field_ty, value, dst)
+                } else {
+                    self.builder
+                        .ins()
+                        .store(MemFlagsData::new(), value, object, offset);
+                    Ok(())
+                }
             }
             MirTarget::Index { object, index } => {
                 let object = self.expr(object)?;
@@ -1351,6 +1493,12 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     MirCallee::Function { sig, .. }
                     | MirCallee::Method { sig, .. }
                     | MirCallee::Extern { sig, .. } => (sig.ret.clone(), false),
+                    MirCallee::InterfaceMethod { sig, .. } => {
+                        if is_struct_ret(&sig.ret) {
+                            return Err("接口方法暂不支持 struct 返回值".into());
+                        }
+                        (Type::Void, false)
+                    }
                     MirCallee::Intrinsic { .. } => (Type::Void, false),
                 };
                 if closure_struct {
@@ -1402,6 +1550,42 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                             .ins()
                             .call_indirect(sig_ref, fn_ptr, &final_args)
                     }
+                    MirCallee::InterfaceMethod {
+                        interface,
+                        index,
+                        sig,
+                    } => {
+                        let mut values = call_args.into_iter();
+                        let receiver = values.next().ok_or("接口调用缺少接收者")?;
+                        let vt =
+                            self.builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::new(), receiver, 0);
+                        let base = self
+                            .interface_slot_bases
+                            .get(interface)
+                            .copied()
+                            .unwrap_or(0);
+                        let slot = ((base + index) * 8) as i32;
+                        let fn_ptr =
+                            self.builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::new(), vt, slot);
+                        let mut call_sig = Signature::new(self.module.isa().default_call_conv());
+                        call_sig.params.push(AbiParam::new(types::I64));
+                        for param in &sig.params {
+                            call_sig.params.push(AbiParam::new(abi_type(&param.ty)?));
+                        }
+                        if sig.ret != Type::Void && sig.ret != Type::Unknown {
+                            call_sig.returns.push(AbiParam::new(abi_type(&sig.ret)?));
+                        }
+                        let sig_ref = self.builder.import_signature(call_sig);
+                        let mut final_args = vec![receiver];
+                        final_args.extend(values);
+                        self.builder
+                            .ins()
+                            .call_indirect(sig_ref, fn_ptr, &final_args)
+                    }
                     _ => {
                         let name = match callee {
                             MirCallee::Function { name, .. }
@@ -1409,6 +1593,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                             | MirCallee::Extern { name, .. } => name.clone(),
                             MirCallee::Intrinsic { name } => intrinsic_name(name).to_owned(),
                             MirCallee::Closure { .. } => unreachable!(),
+                            MirCallee::InterfaceMethod { .. } => unreachable!(),
                         };
                         let func_ref = self
                             .refs
@@ -1429,9 +1614,14 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 }
             }
             MirExpr::Field { object, index } => {
+                let owner = self.expr_owner_type(object).unwrap_or(Type::Error);
+                let offset = self.field_offset(&owner, *index) as i32;
                 let float = self.field_is_float(object, *index);
                 let object = self.expr(object)?;
-                let offset = (*index as i32) * 8;
+                if let Some(field_ty @ Type::Struct(_)) = self.field_type(&owner, *index) {
+                    let _ = field_ty;
+                    return Ok(self.builder.ins().iadd_imm(object, offset as i64));
+                }
                 let ty = if float { types::F64 } else { types::I64 };
                 self.builder
                     .ins()
@@ -1501,24 +1691,37 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 self.zero_struct(ty, address)?;
                 for (index, field) in fields {
                     let value = self.expr(field)?;
-                    let offset = (*index as i32) * 8;
-                    self.builder
-                        .ins()
-                        .store(MemFlagsData::new(), value, address, offset);
+                    let offset = self.field_offset(ty, *index) as i32;
+                    if let Some(field_ty @ Type::Struct(_)) = self.field_type(ty, *index) {
+                        let dst = self.builder.ins().iadd_imm(address, offset as i64);
+                        self.copy_struct(&field_ty, value, dst)?;
+                    } else {
+                        self.builder
+                            .ins()
+                            .store(MemFlagsData::new(), value, address, offset);
+                    }
                 }
                 address
             }
             MirExpr::New { class, args } => {
                 let field_count = self.class_field_counts.get(class).copied().unwrap_or(0);
+                // 对象头部第 0 个字是 vtable 指针。
                 let size = self
                     .builder
                     .ins()
-                    .iconst(types::I64, (field_count * 8) as i64);
+                    .iconst(types::I64, ((field_count + 1) * 8) as i64);
                 let object = self.call_import(
                     "sw_object_new",
                     object_new_signature(self.module.isa()),
                     &[size],
                 )?;
+                if let Some(data_id) = self.vtable_data.get(class) {
+                    let gv = self
+                        .module
+                        .declare_data_in_func(*data_id, &mut self.builder.func);
+                    let vt = self.builder.ins().symbol_value(types::I64, gv);
+                    self.builder.ins().store(MemFlagsData::new(), vt, object, 0);
+                }
                 let slot = self.new_slot();
                 self.builder.ins().stack_store(types::I64, object, slot, 0);
                 let mut values = vec![object];
@@ -1541,7 +1744,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 let value = self.expr(inner)?;
                 if to.is_float() {
                     self.builder.ins().fcvt_from_sint(types::F64, value)
-                } else if self.expr_is_float(inner) {
+                } else if self.builder.func.dfg.value_type(value) == types::F64 {
                     self.builder.ins().fcvt_to_sint(types::I64, value)
                 } else {
                     value

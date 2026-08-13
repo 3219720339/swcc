@@ -76,7 +76,20 @@ Sw 编译器（swcc）开发进度
       swc-linux-x64.tar.gz（8.2MB）、swc-macos.zip（2.2MB）
     - 过程中修复：cranelift x86 feature（arm64 主机交叉目标）、Mach-O 双下划线符号、
       macOS stdin/stdout 符号（___stdinp/___stdoutp）、Mach-O arm64 非法 text-relocation
-      （开启 is_pic 走 GOT）、Windows runner 中文 print 编码崩溃、smoke 缺 build-check 目录
+    （开启 is_pic 走 GOT）、Windows runner 中文 print 编码崩溃、smoke 缺 build-check 目录
+
+14. 语言完整度 + 标准库批次（2026-08-14）
+    2026-08-14 07:20  环境变量：swc 加入用户 PATH、SW_TOOLCHAIN、SW_STDLIB（新终端生效）
+    2026-08-14 07:22  修复任意目录执行：runtime 源目录改为 SW_RUNTIME/当前目录/可执行文件附近查找
+    2026-08-14 07:25  可选链 ?. 空值短路（字段/索引/方法调用），可空赋值规则补齐（值→可空）
+    2026-08-14 07:30  struct 嵌套：字段内联展平（偏移表+递归大小），深拷贝值语义，嵌套字面量目标类型传播
+    2026-08-14 07:35  修复成员链 span 碰撞：字段解析改为"对象类型+字段名"直查，不再依赖 span 表
+    2026-08-14 07:42  接口 vtable：implements 校验、类→接口赋值、全局接口槽位布局、类对象 vtable 头、
+                       经 vtable 间接派发；顺带修复 float→int 显式转换按值类型判断
+    2026-08-14 07:51  标准库：std/json（最小 JSON 解析）、std/time（now_ms/sleep_ms）、
+                       std/unicode（utf8_len/utf8_char_at/utf8_substring）
+
+    待办（下一批）：泛型 struct/class 实例化（需类型表可变重构，独立成批）
 
 二、已知限制
 

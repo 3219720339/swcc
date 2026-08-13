@@ -193,6 +193,12 @@ pub enum MirCallee {
         name: String,
         sig: FunctionSig,
     },
+    /// 接口方法调用：经 vtable 间接派发（args[0] 为接收者对象）。
+    InterfaceMethod {
+        interface: u32,
+        index: usize,
+        sig: FunctionSig,
+    },
     /// 通过闭包对象间接调用：args[0] 是闭包指针。
     Closure {
         sig: FunctionSig,

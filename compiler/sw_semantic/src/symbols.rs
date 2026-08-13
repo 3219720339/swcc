@@ -1,6 +1,7 @@
 use sw_common::Span;
 
 use crate::types::Type;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SymbolId(pub u32);
@@ -84,6 +85,8 @@ pub struct TypeTable {
     pub enums: Vec<EnumInfo>,
     pub classes: Vec<ClassInfo>,
     pub interfaces: Vec<InterfaceInfo>,
+    /// class id → 其实现的接口 id 列表。
+    pub class_interfaces: HashMap<u32, Vec<u32>>,
 }
 
 impl TypeTable {

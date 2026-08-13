@@ -117,7 +117,7 @@ impl Type {
     pub fn is_reference(&self) -> bool {
         matches!(
             self,
-            Type::Str | Type::Array(_) | Type::Class(_) | Type::Null
+            Type::Str | Type::Array(_) | Type::Class(_) | Type::Ptr(_) | Type::Null
         )
     }
 

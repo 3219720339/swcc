@@ -381,9 +381,10 @@ fn run_cc(cc: &Path, args: &[std::ffi::OsString]) {
 
 fn compile_runtime_objects(clang: &Path, target: &str, family: &str) -> Vec<PathBuf> {
     let cache_dir = PathBuf::from(".swcache").join("obj");
-    let runtime_dir = env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("runtime");
+    let runtime_dir = locate_runtime_dir().unwrap_or_else(|| {
+        eprintln!("找不到 runtime 源目录；请设置 SW_RUNTIME 指向 swcc/runtime 目录");
+        std::process::exit(2);
+    });
     let runtime_c = runtime_dir.join("runtime.c");
     let runtime_s = runtime_dir.join(runtime_asm_file(arch_of(target)));
     let suffix = if family == "windows" { "obj" } else { "o" };
@@ -424,6 +425,29 @@ fn compile_runtime_objects(clang: &Path, target: &str, family: &str) -> Vec<Path
         result.push(object.clone());
     }
     result
+}
+
+/// 定位 runtime 源目录：优先 SW_RUNTIME，其次当前目录/可执行文件附近的 runtime/。
+fn locate_runtime_dir() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("SW_RUNTIME") {
+        let candidate = PathBuf::from(path);
+        if candidate.join("runtime.c").is_file() {
+            return Some(candidate);
+        }
+    }
+    let cwd = env::current_dir().ok()?;
+    if cwd.join("runtime").join("runtime.c").is_file() {
+        return Some(cwd.join("runtime"));
+    }
+    let mut anchor = env::current_exe().ok()?.parent()?.to_path_buf();
+    for _ in 0..6 {
+        let candidate = anchor.join("runtime");
+        if candidate.join("runtime.c").is_file() {
+            return Some(candidate);
+        }
+        anchor = anchor.parent()?.to_path_buf();
+    }
+    None
 }
 
 fn compile_if_stale(
