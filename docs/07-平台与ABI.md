@@ -14,7 +14,7 @@
 | `aarch64-apple-darwin` | arm64 | Mach-O | lld + 系统 libSystem |
 
 - v0.1 支持编译为当前主机目标；交叉目标对象（`--emit-object`）支持 ELF/COFF/Mach-O 任意组合生成。
-- macOS 目标建议在 macOS 上原生链接（交叉链接无签名，仅限开发）。
+- macOS 目标建议在 macOS 上原生链接（本机用系统 `cc` 编译运行时并链接；交叉链接无签名，仅限开发）。
 - Windows 使用随 SDK 分发的 MinGW-w64 运行库，不依赖 Visual Studio；UCRT 由 Windows 10+ 系统提供。
 
 ## 2. 数据布局

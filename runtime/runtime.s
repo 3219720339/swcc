@@ -3,9 +3,12 @@
 // sw_longjmp(buf, value): 恢复并跳回 sw_setjmp 调用点，返回 value
     .text
     .globl sw_setjmp
+    .globl _sw_setjmp
     .globl sw_longjmp
+    .globl _sw_longjmp
 
 sw_setjmp:
+_sw_setjmp:
     // rcx = buf
     movq %rbx, 0x00(%rcx)
     movq %rbp, 0x08(%rcx)
@@ -33,6 +36,7 @@ sw_setjmp:
     ret
 
 sw_longjmp:
+_sw_longjmp:
     // rcx = buf, rdx = value
     movq 0x00(%rcx), %rbx
     movq 0x08(%rcx), %rbp

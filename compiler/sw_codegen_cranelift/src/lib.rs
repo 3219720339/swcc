@@ -61,6 +61,8 @@ struct Generator {
     imports: HashMap<String, cranelift_module::FuncId>,
     string_data: HashMap<usize, cranelift_module::DataId>,
     global_data: HashMap<u32, cranelift_module::DataId>,
+    /// Mach-O 汇编层符号带下划线前缀（Darwin 的 C ABI），ELF/COFF 不需要。
+    symbol_prefix: &'static str,
 }
 
 impl Generator {
@@ -92,7 +94,15 @@ impl Generator {
             imports: HashMap::new(),
             string_data: HashMap::new(),
             global_data: HashMap::new(),
+            symbol_prefix: match target {
+                Some(target) if target.contains("darwin") => "_",
+                _ => "",
+            },
         })
+    }
+
+    fn prefixed(&self, name: &str) -> String {
+        format!("{}{}", self.symbol_prefix, name)
     }
 
     fn run(mut self, mir: &MirModule, types: &TypeTable) -> Result<Vec<u8>, CodegenError> {
@@ -131,7 +141,11 @@ impl Generator {
             let sig = signature_of(&function.params, &function.ret, self.module.isa())?;
             let func_id = self
                 .module
-                .declare_function(&function.name, Linkage::Export, &sig)
+                .declare_function(
+                    self.prefixed(&function.name).as_str(),
+                    Linkage::Export,
+                    &sig,
+                )
                 .map_err(|error| error.to_string())?;
             exports.insert(function.name.clone(), func_id);
         }
@@ -181,7 +195,7 @@ impl Generator {
         }
         let func_id = self
             .module
-            .declare_function(name, Linkage::Import, sig)
+            .declare_function(self.prefixed(name).as_str(), Linkage::Import, sig)
             .map_err(|error| error.to_string())?;
         self.imports.insert(name.to_owned(), func_id);
         Ok(func_id)

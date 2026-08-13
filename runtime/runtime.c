@@ -229,3 +229,10 @@ int64_t sw_exception_type(void* exception) {
 void* sw_exception_value(void* exception) {
     return ((sw_exception*)exception)->value;
 }
+
+// aarch64 Linux 静态链接 musl 时需要 compiler-rt 的 128 位软浮点辅助函数；
+// 这些函数来自 rustup 的 libcompiler_builtins.rlib，其对象引用了
+// rust_eh_personality（本运行时无 Rust 异常，桩实现即可满足链接）。
+#if defined(__aarch64__) && !defined(_WIN32)
+void rust_eh_personality(void) {}
+#endif

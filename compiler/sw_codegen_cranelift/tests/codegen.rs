@@ -106,3 +106,40 @@ fn emits_macos_macho_object_from_windows_host() {
     // Mach-O 64 位魔数 FEEDFACF（小端）
     assert_eq!(&bytes[0..4], &[0xCF, 0xFA, 0xED, 0xFE], "应为 Mach-O 对象");
 }
+
+#[test]
+fn emits_aarch64_linux_elf_object() {
+    let result = analyze(&fixture("basic.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let bytes = compile_module_for_target(
+        &result.modules[0],
+        &result.type_table,
+        "aarch64-unknown-linux-gnu",
+    )
+    .expect("编译成功");
+    assert_eq!(&bytes[0..4], &[0x7F, b'E', b'L', b'F'], "应为 ELF 对象");
+    // e_machine = 183（EM_AARCH64，小端）
+    assert_eq!(&bytes[18..20], &[0xB7, 0x00], "应为 AArch64 机器类型");
+}
+
+#[test]
+fn emits_aarch64_macos_macho_object() {
+    let result = analyze(&fixture("basic.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let bytes = compile_module_for_target(
+        &result.modules[0],
+        &result.type_table,
+        "aarch64-apple-darwin",
+    )
+    .expect("编译成功");
+    // Mach-O 64 位魔数 FEEDFACF（小端）
+    assert_eq!(&bytes[0..4], &[0xCF, 0xFA, 0xED, 0xFE], "应为 Mach-O 对象");
+}

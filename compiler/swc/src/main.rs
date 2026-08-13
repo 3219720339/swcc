@@ -200,10 +200,7 @@ fn main() {
     match target_family(&options.target) {
         "windows" => link_windows(&options.target, &objects, &output),
         "linux" => link_linux(&options.target, &objects, &output),
-        "macos" => {
-            eprintln!("macOS 目标请在其平台原生构建（本机可 --emit-object 生成 Mach-O 对象）");
-            std::process::exit(2);
-        }
+        "macos" => link_macos(&options.target, &objects, &output),
         other => {
             eprintln!("暂不支持链接目标 `{other}`；可用 --emit-object 生成对象文件");
             std::process::exit(2);
@@ -228,11 +225,11 @@ fn main() {
 }
 
 fn link_windows(target: &str, objects: &[PathBuf], output: &Path) {
-    let sdk = locate_sdk().unwrap_or_else(|| {
+    let sdk = locate_sdk(target).unwrap_or_else(|| {
         eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
         std::process::exit(2);
     });
-    let (runtime_objects, need_compile) = match runtime_objects_for(&sdk) {
+    let (runtime_objects, need_compile) = match runtime_objects_for(&sdk, target) {
         Some(objects) => (objects, false),
         None => {
             let clang = sdk.mingw_clang.as_ref().expect("工具链缺少 clang");
@@ -243,7 +240,7 @@ fn link_windows(target: &str, objects: &[PathBuf], output: &Path) {
     let lld = sdk.lld.as_path();
     let lib_dir = sdk.mingw_lib.as_path();
     let builtins = sdk.builtins.as_ref().expect("缺少 compiler-rt");
-    let mut args: Vec<std::ffi::OsString> = vec!["-m".into(), "i386pep".into()];
+    let mut args: Vec<std::ffi::OsString> = vec!["-m".into(), pe_emulation(arch_of(target)).into()];
     for object in objects {
         args.push(object.as_os_str().to_os_string());
     }
@@ -262,7 +259,7 @@ fn link_windows(target: &str, objects: &[PathBuf], output: &Path) {
 }
 
 fn link_linux(target: &str, objects: &[PathBuf], output: &Path) {
-    let sdk = locate_sdk().unwrap_or_else(|| {
+    let sdk = locate_sdk(target).unwrap_or_else(|| {
         eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
         std::process::exit(2);
     });
@@ -272,12 +269,18 @@ fn link_linux(target: &str, objects: &[PathBuf], output: &Path) {
         .expect("Linux 交叉链接需要工具链 clang 编译运行时");
     let runtime_objects = compile_runtime_objects(clang, target, "linux");
     let lld = sdk.lld.as_path();
-    let musl_dir = musl_self_contained_dir().unwrap_or_else(|| {
-        eprintln!("缺少 musl 目标库；请执行：rustup target add x86_64-unknown-linux-musl");
+    let musl_dir = musl_self_contained_dir(target).unwrap_or_else(|| {
+        eprintln!(
+            "缺少 musl 目标库；请执行：rustup target add {}",
+            musl_target(target)
+        );
         std::process::exit(2);
     });
-    let mut args: Vec<std::ffi::OsString> =
-        vec!["-m".into(), "elf_x86_64".into(), "-static".into()];
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "-m".into(),
+        elf_emulation(arch_of(target)).into(),
+        "-static".into(),
+    ];
     for object in objects {
         args.push(object.as_os_str().to_os_string());
     }
@@ -288,9 +291,33 @@ fn link_linux(target: &str, objects: &[PathBuf], output: &Path) {
         args.push(musl_dir.join(startup).as_os_str().to_os_string());
     }
     args.push(musl_dir.join("libc.a").as_os_str().to_os_string());
+    if arch_of(target) == "aarch64" {
+        // musl 的 128 位软浮点路径需要 compiler-rt（x86_64 用不到，aarch64 必需）。
+        let builtins = compiler_builtins_rlib(&musl_dir).unwrap_or_else(|| {
+            eprintln!("缺少 compiler-builtins（aarch64 musl）");
+            std::process::exit(2);
+        });
+        args.push(builtins.as_os_str().to_os_string());
+    }
     args.push("-o".into());
     args.push(output.as_os_str().to_os_string());
     run_linker(lld, &args);
+}
+
+/// macOS 原生链接：用系统 clang（cc）编译运行时并链接，目标机直接出可执行文件。
+fn link_macos(target: &str, objects: &[PathBuf], output: &Path) {
+    let cc = Path::new("cc");
+    let runtime_objects = compile_runtime_objects(cc, target, "macos");
+    let mut args: Vec<std::ffi::OsString> = vec!["-target".into(), target.into()];
+    for object in objects {
+        args.push(object.as_os_str().to_os_string());
+    }
+    for object in &runtime_objects {
+        args.push(object.as_os_str().to_os_string());
+    }
+    args.push("-o".into());
+    args.push(output.as_os_str().to_os_string());
+    run_cc(cc, &args);
 }
 
 fn run_linker(lld: &Path, args: &[std::ffi::OsString]) {
@@ -301,13 +328,21 @@ fn run_linker(lld: &Path, args: &[std::ffi::OsString]) {
     }
 }
 
+fn run_cc(cc: &Path, args: &[std::ffi::OsString]) {
+    let status = Command::new(cc).args(args).status();
+    if !status.map(|status| status.success()).unwrap_or(false) {
+        eprintln!("链接失败（cc）");
+        std::process::exit(1);
+    }
+}
+
 fn compile_runtime_objects(clang: &Path, target: &str, family: &str) -> Vec<PathBuf> {
     let cache_dir = PathBuf::from(".swcache").join("obj");
     let runtime_dir = env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("runtime");
     let runtime_c = runtime_dir.join("runtime.c");
-    let runtime_s = runtime_dir.join("runtime.s");
+    let runtime_s = runtime_dir.join(runtime_asm_file(arch_of(target)));
     let suffix = if family == "windows" { "obj" } else { "o" };
     let target_tag = target.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
     let runtime_obj = cache_dir.join(format!("runtime_{target_tag}.{suffix}"));
@@ -332,7 +367,7 @@ fn compile_runtime_objects(clang: &Path, target: &str, family: &str) -> Vec<Path
         ),
     ];
     if family == "windows" {
-        let startup_s = runtime_dir.join("startup.s");
+        let startup_s = runtime_dir.join(startup_file(arch_of(target)));
         tasks.push((
             startup_s,
             startup_obj.clone(),
@@ -390,32 +425,16 @@ struct Sdk {
     prebuilt_runtime: bool,
 }
 
-fn locate_sdk() -> Option<Sdk> {
+fn locate_sdk(target: &str) -> Option<Sdk> {
     let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
-    let sdk_candidate = |root: PathBuf| -> Option<Sdk> {
-        let lld = root.join("bin").join("ld.lld.exe");
-        let mingw_lib = root.join("lib");
-        if !lld.is_file() || !mingw_lib.is_dir() {
-            return None;
-        }
-        let builtins = mingw_lib.join("libclang_rt.builtins-x86_64.a");
-        let clang = root.join("bin").join("clang.exe");
-        Some(Sdk {
-            lld,
-            mingw_lib,
-            builtins: builtins.is_file().then_some(builtins),
-            mingw_clang: clang.is_file().then_some(clang),
-            prebuilt_runtime: runtime_objects_for_root(&root).is_some(),
-        })
-    };
     // 1) 可执行文件旁的 SDK 布局
-    if let Some(sdk) = sdk_candidate(exe_dir.clone()) {
+    if let Some(sdk) = sdk_candidate_for_layout(exe_dir, target) {
         return Some(sdk);
     }
     // 2) SW_TOOLCHAIN 指向的 llvm-mingw
     if let Some(path) = env::var_os("SW_TOOLCHAIN") {
         let root = PathBuf::from(path);
-        if let Some(sdk) = sdk_candidate_for_mingw(root) {
+        if let Some(sdk) = sdk_candidate_for_mingw(root, target) {
             return Some(sdk);
         }
     }
@@ -425,16 +444,35 @@ fn locate_sdk() -> Option<Sdk> {
         r"C:\llvm-mingw-20260616-ucrt-x86_64",
         r"C:\llvm-mingw",
     ] {
-        if let Some(sdk) = sdk_candidate_for_mingw(PathBuf::from(candidate)) {
+        if let Some(sdk) = sdk_candidate_for_mingw(PathBuf::from(candidate), target) {
             return Some(sdk);
         }
     }
     None
 }
 
-fn sdk_candidate_for_mingw(root: PathBuf) -> Option<Sdk> {
-    let lld = root.join("bin").join("ld.lld.exe");
-    let mingw_lib = root.join("x86_64-w64-mingw32").join("lib");
+fn sdk_candidate_for_layout(root: PathBuf, target: &str) -> Option<Sdk> {
+    let arch = arch_of(target);
+    let lld = root.join("bin").join(host_exe_name("ld.lld"));
+    let mingw_lib = root.join("lib");
+    if !lld.is_file() || !mingw_lib.is_dir() {
+        return None;
+    }
+    let builtins = mingw_lib.join(builtins_stem(arch));
+    let clang = root.join("bin").join(host_exe_name("clang"));
+    Some(Sdk {
+        lld,
+        mingw_lib,
+        builtins: builtins.is_file().then_some(builtins),
+        mingw_clang: clang.is_file().then_some(clang),
+        prebuilt_runtime: runtime_objects_for_root(&root, arch).is_some(),
+    })
+}
+
+fn sdk_candidate_for_mingw(root: PathBuf, target: &str) -> Option<Sdk> {
+    let arch = arch_of(target);
+    let lld = root.join("bin").join(host_exe_name("ld.lld"));
+    let mingw_lib = root.join(mingw_arch_dir(arch)).join("lib");
     if !lld.is_file() || !mingw_lib.is_dir() {
         return None;
     }
@@ -444,8 +482,8 @@ fn sdk_candidate_for_mingw(root: PathBuf) -> Option<Sdk> {
         .join("22")
         .join("lib")
         .join("windows")
-        .join("libclang_rt.builtins-x86_64.a");
-    let clang = root.join("bin").join("clang.exe");
+        .join(builtins_stem(arch));
+    let clang = root.join("bin").join(host_exe_name("clang"));
     Some(Sdk {
         lld,
         mingw_lib,
@@ -455,34 +493,95 @@ fn sdk_candidate_for_mingw(root: PathBuf) -> Option<Sdk> {
     })
 }
 
-fn runtime_objects_for_root(root: &Path) -> Option<Vec<PathBuf>> {
+fn runtime_objects_for_root(root: &Path, arch: &str) -> Option<Vec<PathBuf>> {
     let lib = root.join("lib");
-    let runtime = lib.join("runtime.obj");
-    let asm = lib.join("runtime_asm.obj");
-    let startup = lib.join("startup.obj");
+    let (runtime, asm, startup) = if arch == "aarch64" {
+        (
+            lib.join("runtime_aarch64.obj"),
+            lib.join("runtime_asm_aarch64.obj"),
+            lib.join("startup_aarch64.obj"),
+        )
+    } else {
+        (
+            lib.join("runtime.obj"),
+            lib.join("runtime_asm.obj"),
+            lib.join("startup.obj"),
+        )
+    };
     (runtime.is_file() && asm.is_file() && startup.is_file()).then(|| vec![runtime, asm, startup])
 }
 
-fn runtime_objects_for(sdk: &Sdk) -> Option<Vec<PathBuf>> {
+fn runtime_objects_for(sdk: &Sdk, target: &str) -> Option<Vec<PathBuf>> {
     if !sdk.prebuilt_runtime {
         return None;
     }
-    runtime_objects_for_root(sdk.mingw_lib.parent()?)
+    runtime_objects_for_root(sdk.mingw_lib.parent()?, arch_of(target))
 }
 
-fn musl_self_contained_dir() -> Option<PathBuf> {
-    let home = env::var("RUSTUP_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Administrator\.rustup"));
-    let candidate = home
-        .join("toolchains")
-        .join("stable-x86_64-pc-windows-msvc")
+fn musl_self_contained_dir(target: &str) -> Option<PathBuf> {
+    let triple = if target.contains("musl") {
+        target
+    } else {
+        musl_target(target)
+    };
+    let candidate = rustup_toolchain_dir()?
         .join("lib")
         .join("rustlib")
-        .join("x86_64-unknown-linux-musl")
+        .join(triple)
         .join("lib")
         .join("self-contained");
     candidate.is_dir().then_some(candidate)
+}
+
+/// rustup 的 <triple>/lib 下 compiler-builtins rlib（ELF 归档），
+/// aarch64 Linux 静态链接时给 lld 补齐软浮点辅助函数。
+fn compiler_builtins_rlib(musl_dir: &Path) -> Option<PathBuf> {
+    fs::read_dir(musl_dir.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .map(|name| {
+                    let name = name.to_string_lossy();
+                    name.starts_with("libcompiler_builtins-") && name.ends_with(".rlib")
+                })
+                .unwrap_or(false)
+        })
+}
+
+fn rustup_toolchain_dir() -> Option<PathBuf> {
+    let home = env::var("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            if env::consts::OS == "windows" {
+                PathBuf::from(r"C:\Users\Administrator\.rustup")
+            } else {
+                PathBuf::from(env::var("HOME").unwrap_or_default()).join(".rustup")
+            }
+        });
+    let mut entries = fs::read_dir(home.join("toolchains"))
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path());
+    let mut chosen = entries.next()?;
+    if !chosen.to_string_lossy().contains("stable") {
+        for path in entries {
+            if path.to_string_lossy().contains("stable") {
+                chosen = path;
+                break;
+            }
+        }
+    }
+    Some(chosen)
+}
+
+fn musl_target(target: &str) -> &str {
+    if arch_of(target) == "aarch64" {
+        "aarch64-unknown-linux-musl"
+    } else {
+        "x86_64-unknown-linux-musl"
+    }
 }
 
 fn parse_options(args: &[String]) -> BuildOptions {
@@ -538,6 +637,61 @@ fn target_family(target: &str) -> &str {
         "macos"
     } else {
         "unknown"
+    }
+}
+
+fn arch_of(target: &str) -> &str {
+    if target.contains("aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    }
+}
+
+fn pe_emulation(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "aarch64pe",
+        _ => "i386pep",
+    }
+}
+
+fn elf_emulation(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "aarch64elf",
+        _ => "elf_x86_64",
+    }
+}
+
+fn mingw_arch_dir(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "aarch64-w64-mingw32",
+        _ => "x86_64-w64-mingw32",
+    }
+}
+
+fn builtins_stem(arch: &str) -> String {
+    format!("libclang_rt.builtins-{arch}.a")
+}
+
+fn host_exe_name(basename: &str) -> String {
+    if env::consts::OS == "windows" {
+        format!("{basename}.exe")
+    } else {
+        basename.to_owned()
+    }
+}
+
+fn runtime_asm_file(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "runtime_aarch64.s",
+        _ => "runtime.s",
+    }
+}
+
+fn startup_file(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "startup_aarch64.s",
+        _ => "startup.s",
     }
 }
 
