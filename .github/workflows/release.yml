@@ -14,19 +14,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
         include:
           - os: windows-latest
             llvm_asset: llvm-mingw-20260616-ucrt-x86_64.zip
             llvm_dir: llvm-mingw-20260616-ucrt-x86_64
-            package: python tools/make-sdk.py "${{ github.workspace }}/toolchain/${{ matrix.llvm_dir }}" dist
           - os: ubuntu-latest
             llvm_asset: llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz
             llvm_dir: llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64
-            package: python3 tools/make-sdk-linux.py "${{ github.workspace }}/toolchain/${{ matrix.llvm_dir }}" dist
           - os: macos-latest
             llvm_asset: ""
             llvm_dir: ""
-            package: python3 tools/make-sdk-macos.py "${{ github.workspace }}/dist"
 
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +62,13 @@ jobs:
         shell: bash
         run: |
           cd "${{ github.workspace }}"
-          ${{ matrix.package }}
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            python tools/make-sdk.py "toolchain/${{ matrix.llvm_dir }}" dist
+          elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            python3 tools/make-sdk-linux.py "toolchain/${{ matrix.llvm_dir }}" dist
+          else
+            python3 tools/make-sdk-macos.py dist
+          fi
 
       - name: Upload SDK artifact
         uses: actions/upload-artifact@v4
