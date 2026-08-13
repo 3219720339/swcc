@@ -69,6 +69,7 @@ impl Generator {
     fn new(target: Option<&str>) -> Result<Self, CodegenError> {
         let mut flag_builder = settings::builder();
         flag_builder.set("opt_level", "speed").unwrap();
+        flag_builder.set("is_pic", "true").unwrap();
         let flags = settings::Flags::new(flag_builder);
         let isa_builder = match target {
             Some(target) => {
