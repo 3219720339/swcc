@@ -1,0 +1,8 @@
+[package]
+name = "sw-frontend"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sw-common.workspace = true

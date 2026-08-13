@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = [
+    "compiler/sw_common",
+    "compiler/sw_frontend",
+    "compiler/swc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+sw-common = { path = "compiler/sw_common" }
+sw-frontend = { path = "compiler/sw_frontend" }
