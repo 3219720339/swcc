@@ -1,0 +1,264 @@
+(* Sw v0.1 词法与语法 EBNF。优先级以 02-语法规则.md 的表格为准。 *)
+
+source_file          = { item }, EOF ;
+item                 = { attribute },
+                       ( import_declaration
+                       | [ "export" ], function_declaration
+                       | [ "export" ], struct_declaration
+                       | [ "export" ], enum_declaration
+                       | [ "export" ], class_declaration
+                       | [ "export" ], interface_declaration
+                       | [ "export" ], type_alias_declaration
+                       | [ "export" ], variable_declaration, ";" ) ;
+
+attribute            = "@", identifier,
+                       [ "(", [ attribute_argument,
+                         { ",", attribute_argument }, [ "," ] ], ")" ] ;
+attribute_argument   = identifier, [ "=", attribute_value ] ;
+attribute_value      = identifier | string_literal | integer_literal
+                     | float_literal | "true" | "false" | "null" ;
+
+import_declaration   = "import",
+                       ( string_literal
+                       | named_import, "from", string_literal
+                       | namespace_import, "from", string_literal ), ";" ;
+named_import         = "{", [ import_specifier,
+                       { ",", import_specifier }, [ "," ] ], "}" ;
+import_specifier     = identifier, [ "as", identifier ] ;
+namespace_import     = "*", "as", identifier ;
+
+type_alias_declaration = "type", identifier, "=", type_reference, ";" ;
+
+function_declaration = [ function_modifier ], "function", identifier,
+                       [ generic_parameters ],
+                       "(", [ parameter, { ",", parameter }, [ "," ] ], ")",
+                       [ ":", type_reference ], [ generic_where_clause ],
+                       ( block | ";" ) ;
+function_modifier    = "async" | ( "extern", [ "c" ] ) ;
+parameter            = [ "..." ], identifier, ":", type_reference,
+                       [ "=", expression ] ;
+generic_parameters   = "<", identifier,
+                       { ",", identifier }, [ "," ], ">" ;
+generic_where_clause = "where", generic_constraint,
+                       { ",", generic_constraint } ;
+generic_constraint   = identifier, ":", type_reference ;
+
+struct_declaration   = "struct", identifier, [ generic_parameters ],
+                       [ generic_where_clause ], "{",
+                       { field_declaration }, "}" ;
+field_declaration    = { member_modifier }, { attribute }, identifier,
+                       ":", type_reference, [ "=", expression ], ";" ;
+
+class_declaration    = [ "final" ], "class", identifier,
+                       [ generic_parameters ],
+                       [ "extends", type_reference ],
+                       [ "implements", type_reference,
+                         { ",", type_reference } ],
+                       [ generic_where_clause ],
+                       "{", { class_member }, "}" ;
+interface_declaration = "interface", identifier,
+                       [ generic_parameters ],
+                       [ "extends", type_reference,
+                         { ",", type_reference } ],
+                       [ generic_where_clause ],
+                       "{", { interface_member }, "}" ;
+class_member         = { member_modifier },
+                       ( field_declaration
+                       | constructor_declaration
+                       | destructor_declaration
+                       | property_declaration
+                       | function_declaration ) ;
+interface_member     = function_declaration ;
+member_modifier      = "public" | "private" | "protected" | "internal"
+                     | "static" | "virtual" | "override" | "final" ;
+constructor_declaration = "constructor", "(",
+                       [ parameter, { ",", parameter }, [ "," ] ], ")", block ;
+destructor_declaration = "destructor", "(", ")", block ;
+property_declaration = "property", identifier, ":", type_reference,
+                       "{", { accessor_declaration }, "}" ;
+accessor_declaration = ( "get" | "set" ), block ;
+
+enum_declaration     = "enum", identifier, "{",
+                       [ enum_member, { ",", enum_member }, [ "," ] ], "}" ;
+enum_member          = identifier, [ "=", expression ] ;
+
+variable_declaration = ( "let" | "const" ), identifier,
+                       ( ":", type_reference, [ "=", expression ]
+                       | "=", expression ) ;
+
+type_reference       = ( type_segment, { ".", type_segment } ),
+                       { "[", "]" | "?" } ;
+type_segment         = identifier,
+                       [ "<", type_reference,
+                         { ",", type_reference }, [ "," ], ">" ] ;
+
+block                = "{", { statement }, "}" ;
+statement            = block
+                     | variable_declaration, ";"
+                     | if_statement
+                     | while_statement
+                     | for_statement
+                     | for_each_statement
+                     | switch_statement
+                     | try_statement
+                     | throw_statement
+                     | "defer", expression, ";"
+                     | "break", ";"
+                     | "continue", ";"
+                     | "return", [ expression ], ";"
+                     | expression, ";"
+                     | ";" ;
+
+if_statement         = "if", "(", expression, ")", statement,
+                       [ "else", statement ] ;
+while_statement      = "while", "(", expression, ")", statement ;
+for_statement        = "for", "(",
+                       [ variable_declaration | expression ], ";",
+                       [ expression ], ";", [ expression ], ")", statement ;
+for_each_statement   = "for", "(", ( "let" | "const" ), identifier,
+                       "of", expression, ")", statement ;
+switch_statement     = "switch", "(", expression, ")", "{",
+                       { "case", expression, ":", { statement } },
+                       [ "default", ":", { statement } ], "}" ;
+try_statement        = "try", block,
+                       { "catch", "(", identifier,
+                         [ ":", type_reference ], ")", block },
+                       [ "finally", block ] ;
+throw_statement      = "throw", expression, ";" ;
+
+expression           = assignment_expression ;
+assignment_expression = conditional_expression,
+                       [ assignment_operator, assignment_expression ] ;
+conditional_expression = nullish_expression,
+                       [ "?", assignment_expression, ":",
+                         assignment_expression ] ;
+nullish_expression   = logical_or_expression,
+                       { "??", logical_or_expression } ;
+logical_or_expression = logical_and_expression,
+                       { "||", logical_and_expression } ;
+logical_and_expression = bitwise_or_expression,
+                       { "&&", bitwise_or_expression } ;
+bitwise_or_expression = bitwise_xor_expression,
+                       { "|", bitwise_xor_expression } ;
+bitwise_xor_expression = bitwise_and_expression,
+                       { "^", bitwise_and_expression } ;
+bitwise_and_expression = equality_expression,
+                       { "&", equality_expression } ;
+equality_expression  = relational_expression,
+                       { ( "==" | "!=" ), relational_expression } ;
+relational_expression = shift_expression,
+                       { ( "<" | "<=" | ">" | ">=" ), shift_expression } ;
+shift_expression     = additive_expression,
+                       { ( "<<" | ">>" ), additive_expression } ;
+additive_expression  = multiplicative_expression,
+                       { ( "+" | "-" ), multiplicative_expression } ;
+multiplicative_expression = unary_expression,
+                       { ( "*" | "/" | "%" ), unary_expression } ;
+unary_expression     = { "await" | "!" | "~" | "+" | "-" | "++" | "--" },
+                       power_expression ;
+power_expression     = postfix_expression,
+                       [ "**", unary_expression ] ;
+postfix_expression   = primary_expression,
+                       { argument_list
+                       | ".", identifier
+                       | "?.", identifier
+                       | "?.", "[", expression, "]"
+                       | "[", expression, "]"
+                       | "++" | "--" } ;
+
+primary_expression   = literal
+                     | identifier
+                     | "this"
+                     | "super"
+                     | lambda_expression
+                     | "(", expression, ")"
+                     | array_literal
+                     | object_literal
+                     | new_expression ;
+
+literal              = integer_literal | float_literal
+                     | string_literal | template_literal
+                     | character_literal | "true" | "false" | "null" ;
+argument_list        = "(", [ expression, { ",", expression }, [ "," ] ], ")" ;
+array_literal        = "[", [ expression, { ",", expression }, [ "," ] ], "]" ;
+object_literal       = "{", [ object_field, { ",", object_field }, [ "," ] ], "}" ;
+object_field         = ( identifier | string_literal ), [ ":", expression ] ;
+new_expression       = "new", type_reference, argument_list ;
+lambda_expression    = "(", [ lambda_parameter,
+                       { ",", lambda_parameter }, [ "," ] ], ")",
+                       "=>", ( expression | block ) ;
+lambda_parameter     = identifier, [ ":", type_reference ] ;
+
+assignment_operator  = "=" | "+=" | "-=" | "*=" | "/=" | "%="
+                     | "&=" | "|=" | "^=" | "<<=" | ">>=" | "??=" ;
+
+(* 词法 *)
+identifier           = ( "_" | "$" | unicode_xid_start ),
+                       { "_" | "$" | unicode_xid_continue } ;
+integer_literal      = decimal_integer, [ integer_suffix ]
+                     | binary_integer, [ integer_suffix ]
+                     | octal_integer, [ integer_suffix ]
+                     | hexadecimal_integer, [ integer_suffix ] ;
+decimal_integer      = decimal_digits ;
+binary_integer       = "0", ( "b" | "B" ), binary_digits ;
+octal_integer        = "0", ( "o" | "O" ), octal_digits ;
+hexadecimal_integer  = "0", ( "x" | "X" ), hexadecimal_digits ;
+float_literal        = decimal_fraction, [ exponent ], [ float_suffix ]
+                     | decimal_integer, exponent, [ float_suffix ]
+                     | decimal_integer, float_suffix ;
+decimal_fraction     = decimal_digits, ".", decimal_digits ;
+exponent             = ( "e" | "E" ), [ "+" | "-" ], decimal_digits ;
+integer_suffix       = "i8" | "i16" | "i32" | "i64" | "isize"
+                     | "u8" | "u16" | "u32" | "u64" | "usize" ;
+float_suffix         = "f32" | "f64" ;
+binary_digits        = binary_digit, { [ digit_separator ], binary_digit } ;
+octal_digits         = octal_digit, { [ digit_separator ], octal_digit } ;
+decimal_digits       = decimal_digit, { [ digit_separator ], decimal_digit } ;
+hexadecimal_digits   = hexadecimal_digit,
+                       { [ digit_separator ], hexadecimal_digit } ;
+digit_separator      = "_" ;
+binary_digit         = "0" | "1" ;
+octal_digit          = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
+decimal_digit        = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7"
+                     | "8" | "9" ;
+hexadecimal_digit    = decimal_digit | "a" | "b" | "c" | "d" | "e" | "f"
+                     | "A" | "B" | "C" | "D" | "E" | "F" ;
+
+string_literal       = '"', { string_character | escape_sequence }, '"'
+                     | "'", { string_character | escape_sequence }, "'" ;
+template_literal     = "`", { template_character | escape_sequence
+                       | interpolation }, "`" ;
+interpolation        = "${", expression, "}" ;
+character_literal    = "'", ( character_value | escape_sequence ), "'" ;
+escape_sequence      = "\\", ( "0" | "t" | "n" | "r" | '"' | "'" | "`" | "\\" )
+                     | "\\x", hexadecimal_digit, hexadecimal_digit
+                     | "\\u{", hexadecimal_digit,
+                       [ hexadecimal_digit,
+                         [ hexadecimal_digit,
+                           [ hexadecimal_digit,
+                             [ hexadecimal_digit,
+                               [ hexadecimal_digit ] ] ] ] ], "}" ;
+
+keyword              = "async" | "await" | "break" | "case" | "catch"
+                     | "class" | "const" | "constructor" | "continue"
+                     | "default" | "defer" | "destructor" | "else" | "enum"
+                     | "export" | "extends" | "false" | "final" | "finally"
+                     | "for" | "function" | "if" | "implements" | "import"
+                     | "interface" | "internal" | "let" | "new" | "null"
+                     | "of" | "override" | "private" | "property"
+                     | "protected" | "public" | "return" | "static"
+                     | "struct" | "super" | "switch" | "this" | "throw"
+                     | "true" | "try" | "type" | "using" | "virtual"
+                     | "while" ;
+
+delimiter            = "(" | ")" | "{" | "}" | "[" | "]"
+                     | "," | ";" | ":" | "." | "@" ;
+operator             = "+" | "-" | "*" | "/" | "%" | "**" | "++" | "--"
+                     | "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**="
+                     | "==" | "!=" | "<" | "<=" | ">" | ">="
+                     | "&&" | "||" | "!" | "&" | "|" | "^" | "~"
+                     | "<<" | ">>" | "&=" | "|=" | "^=" | "<<=" | ">>="
+                     | "?" | "??" | "??=" | "?." | "=>" | "..." ;
+
+(* 上下文关键字 as、c、extern、from、get、native、set、where
+   由语法分析器按位置识别。 *)
