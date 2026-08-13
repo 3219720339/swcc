@@ -73,6 +73,134 @@ fn checks_struct_literals() {
 }
 
 #[test]
+fn checks_expr_lowering_with_pow_and_struct() {
+    let result = analyze(&fixture("exprs.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let mut found_assign = false;
+    let mut found_postfix = false;
+    let mut found_pow = false;
+    let mut found_struct = false;
+    for module in &result.modules {
+        for function in &module.functions {
+            for statement in &function.body {
+                collect_expr_kinds(
+                    statement,
+                    &mut found_assign,
+                    &mut found_postfix,
+                    &mut found_pow,
+                    &mut found_struct,
+                );
+            }
+        }
+    }
+    assert!(found_assign, "应有赋值表达式节点");
+    assert!(found_postfix, "应有后缀 ++/-- 节点");
+    assert!(found_pow, "应有幂内建调用");
+    assert!(found_struct, "应有 struct 字面量节点");
+}
+
+fn collect_expr_kinds(
+    statement: &sw_semantic::MirStmt,
+    found_assign: &mut bool,
+    found_postfix: &mut bool,
+    found_pow: &mut bool,
+    found_struct: &mut bool,
+) {
+    use sw_semantic::mir::{MirExpr, MirStmtKind};
+    fn visit_expr(
+        expr: &MirExpr,
+        found_assign: &mut bool,
+        found_postfix: &mut bool,
+        found_pow: &mut bool,
+        found_struct: &mut bool,
+    ) {
+        match expr {
+            MirExpr::Assign { value, .. } => {
+                *found_assign = true;
+                visit_expr(value, found_assign, found_postfix, found_pow, found_struct);
+            }
+            MirExpr::Postfix { .. } => *found_postfix = true,
+            MirExpr::Struct { fields, .. } => {
+                *found_struct = true;
+                for (_, field) in fields {
+                    visit_expr(field, found_assign, found_postfix, found_pow, found_struct);
+                }
+            }
+            MirExpr::Call { callee, args } => {
+                if let sw_semantic::MirCallee::Intrinsic { name } = callee {
+                    if name == "pow_f64" || name == "pow_i64" {
+                        *found_pow = true;
+                    }
+                }
+                for arg in args {
+                    visit_expr(arg, found_assign, found_postfix, found_pow, found_struct);
+                }
+            }
+            MirExpr::Unary { expr, .. }
+            | MirExpr::Cast { expr, .. }
+            | MirExpr::Len { object: expr }
+            | MirExpr::Field { object: expr, .. }
+            | MirExpr::Index { object: expr, .. } => {
+                visit_expr(expr, found_assign, found_postfix, found_pow, found_struct);
+            }
+            MirExpr::Binary { left, right, .. } => {
+                visit_expr(left, found_assign, found_postfix, found_pow, found_struct);
+                visit_expr(right, found_assign, found_postfix, found_pow, found_struct);
+            }
+            MirExpr::Select { cond, then, else_ } => {
+                visit_expr(cond, found_assign, found_postfix, found_pow, found_struct);
+                visit_expr(then, found_assign, found_postfix, found_pow, found_struct);
+                visit_expr(else_, found_assign, found_postfix, found_pow, found_struct);
+            }
+            MirExpr::Array { items, .. } => {
+                for item in items {
+                    visit_expr(item, found_assign, found_postfix, found_pow, found_struct);
+                }
+            }
+            MirExpr::New { args, .. } => {
+                for arg in args {
+                    visit_expr(arg, found_assign, found_postfix, found_pow, found_struct);
+                }
+            }
+            MirExpr::ClosureNew { captures, .. } => {
+                for capture in captures {
+                    visit_expr(
+                        capture,
+                        found_assign,
+                        found_postfix,
+                        found_pow,
+                        found_struct,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    match &statement.kind {
+        MirStmtKind::VarDecl {
+            init: Some(init), ..
+        } => {
+            visit_expr(init, found_assign, found_postfix, found_pow, found_struct);
+        }
+        MirStmtKind::Assign { target, value } => {
+            visit_expr(value, found_assign, found_postfix, found_pow, found_struct);
+            let _ = target;
+        }
+        MirStmtKind::Return(Some(value)) => {
+            visit_expr(value, found_assign, found_postfix, found_pow, found_struct);
+        }
+        MirStmtKind::Expr(expr) => {
+            visit_expr(expr, found_assign, found_postfix, found_pow, found_struct);
+        }
+        _ => {}
+    }
+}
+
+#[test]
 fn reports_type_and_name_errors() {
     let result = analyze(&fixture("errors.sw"), None);
     assert!(result.diagnostics.has_errors());

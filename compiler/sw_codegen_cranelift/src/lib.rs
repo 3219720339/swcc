@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use cranelift_codegen::ir::{
     AbiParam, Block, InstBuilder, MemFlagsData, Signature, StackSlot, StackSlotData, StackSlotKind,
-    UserFuncName, Value, condcodes::IntCC, types,
+    UserFuncName, Value,
+    condcodes::{FloatCC, IntCC},
+    types,
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -224,28 +226,57 @@ impl Generator {
         builder.switch_to_block(entry);
         builder.append_block_params_for_function_params(entry);
 
+        let mut local_types: Vec<Type> = function
+            .params
+            .iter()
+            .map(|param| param.ty.clone())
+            .collect();
+        local_types.extend(function.locals.iter().map(|local| local.ty.clone()));
+
         let mut lower = LowerCtx {
             builder,
             refs,
             slots: Vec::new(),
             loops: Vec::new(),
             module: &self.module,
+            types,
             class_field_counts: class_field_counts(types),
+            struct_field_counts: struct_field_counts(types),
+            struct_field_types: struct_field_types(types),
+            class_field_types: class_field_types(types),
+            local_types,
+            ret_ty: function.ret.clone(),
+            sret: None,
             strings: &mir.strings,
             last_terminated: false,
         };
 
         // 参数入槽
         let param_values = lower.builder.block_params(entry).to_vec();
-        for (index, _param) in function.params.iter().enumerate() {
-            let slot = lower.new_slot();
-            let value = param_values[index];
-            lower.builder.ins().stack_store(types::I64, value, slot, 0);
+        let has_sret = is_struct_ret(&function.ret);
+        if has_sret {
+            lower.sret = Some(param_values[0]);
+        }
+        let param_offset = usize::from(has_sret);
+        for (index, param) in function.params.iter().enumerate() {
+            let slot = lower.slot_for(index);
+            let value = param_values[index + param_offset];
+            if matches!(param.ty, Type::Struct(_)) {
+                let address = lower.builder.ins().stack_addr(types::I64, slot, 0);
+                lower.copy_struct(&param.ty, value, address)?;
+            } else if matches!(param.ty, Type::F32 | Type::F64) {
+                lower.builder.ins().stack_store(types::I64, value, slot, 0);
+            } else {
+                lower.builder.ins().stack_store(types::I64, value, slot, 0);
+            }
         }
         lower.stmts(&function.body)?;
         // 空函数体兜底：补一个 void 返回，避免“块未填充”。
         if !lower.last_terminated {
-            if function.ret == Type::Void || function.ret == Type::Unknown {
+            if function.ret == Type::Void
+                || function.ret == Type::Unknown
+                || is_struct_ret(&function.ret)
+            {
                 lower.builder.ins().return_(&[]);
             } else if function.ret.is_float() {
                 let zero = lower.builder.ins().f64const(0.0);
@@ -462,6 +493,13 @@ fn visit_expr(
             visit_expr(then, generator, mir, exports, ctx, refs)?;
             visit_expr(else_, generator, mir, exports, ctx, refs)?;
         }
+        MirExpr::Assign { target, value } => {
+            visit_target(target, generator, mir, exports, ctx, refs)?;
+            visit_expr(value, generator, mir, exports, ctx, refs)?;
+        }
+        MirExpr::Postfix { target, .. } => {
+            visit_target(target, generator, mir, exports, ctx, refs)?;
+        }
         MirExpr::Array { items, .. } => {
             let array_new = generator
                 .declare_import("sw_array_new", &array_new_signature(generator.module.isa()))?;
@@ -521,25 +559,23 @@ fn callee_signature(
     callee: &MirCallee,
     generator: &Generator,
 ) -> Result<(String, Signature), CodegenError> {
+    callee_signature_for(callee, generator.module.isa())
+}
+
+fn callee_signature_for(
+    callee: &MirCallee,
+    isa: &dyn cranelift_codegen::isa::TargetIsa,
+) -> Result<(String, Signature), CodegenError> {
     Ok(match callee {
-        MirCallee::Function { name, sig, .. } => {
-            (name.clone(), signature_of_sig(sig, generator.module.isa())?)
-        }
-        MirCallee::Method { name, sig, .. } => {
-            (name.clone(), signature_of_sig(sig, generator.module.isa())?)
-        }
-        MirCallee::Extern { name, sig } => {
-            (name.clone(), signature_of_sig(sig, generator.module.isa())?)
-        }
+        MirCallee::Function { name, sig, .. } => (name.clone(), signature_of_sig(sig, isa)?),
+        MirCallee::Method { name, sig, .. } => (name.clone(), signature_of_sig(sig, isa)?),
+        MirCallee::Extern { name, sig } => (name.clone(), signature_of_sig(sig, isa)?),
         MirCallee::Intrinsic { name } => {
             let runtime_name = intrinsic_name(name);
-            let sig = intrinsic_signature(runtime_name, generator.module.isa());
+            let sig = intrinsic_signature(runtime_name, isa);
             (runtime_name.to_owned(), sig)
         }
-        MirCallee::Closure { sig } => (
-            "$closure".to_owned(),
-            signature_of_sig(sig, generator.module.isa())?,
-        ),
+        MirCallee::Closure { sig } => ("$closure".to_owned(), signature_of_sig(sig, isa)?),
     })
 }
 
@@ -562,6 +598,9 @@ fn env_set_signature(isa: &dyn cranelift_codegen::isa::TargetIsa) -> Signature {
 fn intrinsic_name(name: &str) -> &str {
     match name {
         "string_concat" => "sw_string_concat",
+        "pow_f64" => "sw_pow_f64",
+        "pow_i64" => "sw_pow_i64",
+        "frem_f64" => "sw_frem_f64",
         "int_to_string" => "sw_int_to_string",
         "uint_to_string" => "sw_uint_to_string",
         "float_to_string" => "sw_float_to_string",
@@ -612,6 +651,25 @@ fn intrinsic_signature(name: &str, isa: &dyn cranelift_codegen::isa::TargetIsa) 
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
+        "sw_pow_f64" => {
+            sig.params.push(AbiParam::new(types::F64));
+            sig.params.push(AbiParam::new(types::F64));
+            sig.returns.push(AbiParam::new(types::F64));
+        }
+        "sw_frem_f64" => {
+            sig.params.push(AbiParam::new(types::F64));
+            sig.params.push(AbiParam::new(types::F64));
+            sig.returns.push(AbiParam::new(types::F64));
+        }
+        "sw_pow_i64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "sw_float_to_string" => {
+            sig.params.push(AbiParam::new(types::F64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
         _ => {
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
@@ -634,10 +692,14 @@ fn signature_of(
     isa: &dyn cranelift_codegen::isa::TargetIsa,
 ) -> Result<Signature, CodegenError> {
     let mut sig = Signature::new(isa.default_call_conv());
+    // 结构体返回值：隐藏 sret 指针参数，函数本身返回 void。
+    if is_struct_ret(ret) {
+        sig.params.push(AbiParam::new(types::I64));
+    }
     for param in params {
         sig.params.push(AbiParam::new(abi_type(&param.ty)?));
     }
-    if *ret != Type::Void && *ret != Type::Unknown {
+    if *ret != Type::Void && *ret != Type::Unknown && !is_struct_ret(ret) {
         sig.returns.push(AbiParam::new(abi_type(ret)?));
     }
     Ok(sig)
@@ -648,12 +710,15 @@ fn signature_of_sig(
     isa: &dyn cranelift_codegen::isa::TargetIsa,
 ) -> Result<Signature, CodegenError> {
     let mut cranelift_sig = Signature::new(isa.default_call_conv());
+    if is_struct_ret(&sig.ret) {
+        cranelift_sig.params.push(AbiParam::new(types::I64));
+    }
     for param in &sig.params {
         cranelift_sig
             .params
             .push(AbiParam::new(abi_type(&param.ty)?));
     }
-    if sig.ret != Type::Void && sig.ret != Type::Unknown {
+    if sig.ret != Type::Void && sig.ret != Type::Unknown && !is_struct_ret(&sig.ret) {
         cranelift_sig
             .returns
             .push(AbiParam::new(abi_type(&sig.ret)?));
@@ -661,17 +726,22 @@ fn signature_of_sig(
     Ok(cranelift_sig)
 }
 
-/// 标量统一按 64 位表示；浮点按 64 位；指针/引用按 64 位。
+/// 标量统一按 64 位表示；浮点按 64 位；指针/引用按 64 位；
+/// struct 参数按地址传递（调用方持有副本，被调方入口复制进自己的槽）。
 fn abi_type(ty: &Type) -> Result<cranelift_codegen::ir::Type, CodegenError> {
     Ok(match ty {
         Type::F32 | Type::F64 => types::F64,
         Type::Void => return Err("void 不能作为参数或返回值类型".into()),
-        Type::Struct(_) => return Err("后端暂不支持 struct 传参/返回值".into()),
+        Type::Struct(_) => types::I64,
         Type::Interface(_) | Type::TypeParam(_) | Type::Unknown | Type::Error => {
             return Err(format!("后端暂不支持类型 {}", ty.display()).into());
         }
         _ => types::I64,
     })
+}
+
+fn is_struct_ret(ret: &Type) -> bool {
+    matches!(ret, Type::Struct(_))
 }
 
 fn const_i64(expr: &MirExpr) -> Option<i64> {
@@ -721,6 +791,53 @@ fn class_field_counts(types: &TypeTable) -> HashMap<u32, usize> {
         .collect()
 }
 
+fn struct_field_counts(types: &TypeTable) -> HashMap<u32, usize> {
+    types
+        .structs
+        .iter()
+        .enumerate()
+        .map(|(index, info)| (index as u32, info.fields.len()))
+        .collect()
+}
+
+fn struct_field_types(types: &TypeTable) -> HashMap<u32, Vec<Type>> {
+    types
+        .structs
+        .iter()
+        .enumerate()
+        .map(|(index, info)| {
+            (
+                index as u32,
+                info.fields.iter().map(|field| field.ty.clone()).collect(),
+            )
+        })
+        .collect()
+}
+
+/// 类字段按基类优先展平（与 MIR 字段序号一致）。
+fn class_field_types(types: &TypeTable) -> HashMap<u32, Vec<Type>> {
+    types
+        .classes
+        .iter()
+        .enumerate()
+        .map(|(index, class)| {
+            let mut chain = vec![class];
+            let mut base = class.base;
+            while let Some(id) = base {
+                chain.push(&types.classes[id as usize]);
+                base = types.classes[id as usize].base;
+            }
+            chain.reverse();
+            let fields = chain
+                .iter()
+                .flat_map(|class| class.fields.iter())
+                .map(|field| field.ty.clone())
+                .collect();
+            (index as u32, fields)
+        })
+        .collect()
+}
+
 struct LowerCtx<'a, 'f> {
     builder: FunctionBuilder<'f>,
     refs: RefTable,
@@ -728,7 +845,16 @@ struct LowerCtx<'a, 'f> {
     /// (循环头块, 循环出口块)
     loops: Vec<(Block, Block)>,
     module: &'a ObjectModule,
+    types: &'a TypeTable,
     class_field_counts: HashMap<u32, usize>,
+    struct_field_counts: HashMap<u32, usize>,
+    struct_field_types: HashMap<u32, Vec<Type>>,
+    class_field_types: HashMap<u32, Vec<Type>>,
+    /// 参数 + 局部变量的类型（槽索引与 MIR 局部索引一致）。
+    local_types: Vec<Type>,
+    ret_ty: Type,
+    /// 结构体返回值的隐藏 sret 指针（入口参数）。
+    sret: Option<Value>,
     strings: &'a [String],
     /// 最后一条 MIR 语句是否以终止指令（return/break/continue）结束。
     last_terminated: bool,
@@ -757,16 +883,35 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
         match &statement.kind {
             MirStmtKind::VarDecl { local, init } => {
                 let slot = self.slot_for(*local);
+                let is_struct = self.is_struct_local(*local);
+                let is_float = self.is_float_local(*local);
                 match init {
                     Some(init) => {
                         let value = self.expr(init)?;
-                        self.builder.ins().stack_store(types::I64, value, slot, 0);
+                        if is_struct {
+                            let address = self.builder.ins().stack_addr(types::I64, slot, 0);
+                            self.copy_struct(&self.local_types[*local].clone(), value, address)?;
+                        } else if is_float {
+                            self.builder.ins().stack_store(types::I64, value, slot, 0);
+                        } else {
+                            self.builder.ins().stack_store(types::I64, value, slot, 0);
+                        }
                         Ok(())
                     }
                     None => {
-                        let zero = self.builder.ins().iconst(types::I64, 0);
-                        self.builder.ins().stack_store(types::I64, zero, slot, 0);
-                        Ok(())
+                        if is_struct {
+                            let address = self.builder.ins().stack_addr(types::I64, slot, 0);
+                            let ty = self.local_types[*local].clone();
+                            self.zero_struct(&ty, address)
+                        } else if is_float {
+                            let zero = self.builder.ins().f64const(0.0);
+                            self.builder.ins().stack_store(types::I64, zero, slot, 0);
+                            Ok(())
+                        } else {
+                            let zero = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.ins().stack_store(types::I64, zero, slot, 0);
+                            Ok(())
+                        }
                     }
                 }
             }
@@ -819,7 +964,14 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 match value {
                     Some(value) => {
                         let value = self.expr(value)?;
-                        self.builder.ins().return_(&[value]);
+                        if is_struct_ret(&self.ret_ty) {
+                            let sret = self.sret.ok_or("结构体返回值缺少 sret 参数")?;
+                            let ret_ty = self.ret_ty.clone();
+                            self.copy_struct(&ret_ty, value, sret)?;
+                            self.builder.ins().return_(&[]);
+                        } else {
+                            self.builder.ins().return_(&[value]);
+                        }
                     }
                     None => {
                         self.builder.ins().return_(&[]);
@@ -867,17 +1019,164 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
 
     fn slot_for(&mut self, local: usize) -> StackSlot {
         while self.slots.len() <= local {
-            self.new_slot();
+            let size = self
+                .local_types
+                .get(self.slots.len())
+                .map(|ty| self.struct_size(ty))
+                .unwrap_or(8);
+            let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size as u32,
+                3,
+            ));
+            self.slots.push(slot);
         }
         self.slots[local]
+    }
+
+    fn is_struct_local(&self, local: usize) -> bool {
+        matches!(self.local_types.get(local), Some(Type::Struct(_)))
+    }
+
+    fn is_float_local(&self, local: usize) -> bool {
+        matches!(
+            self.local_types.get(local),
+            Some(Type::F32) | Some(Type::F64)
+        )
+    }
+
+    fn expr_owner_type(&self, expr: &MirExpr) -> Option<Type> {
+        match expr {
+            MirExpr::Local(local) => self.local_types.get(*local).cloned(),
+            MirExpr::Field { object, index } => {
+                let owner = self.expr_owner_type(object)?;
+                self.field_type(&owner, *index)
+            }
+            MirExpr::New { class, .. } => Some(Type::Class(*class)),
+            _ => None,
+        }
+    }
+
+    fn field_type(&self, owner: &Type, index: usize) -> Option<Type> {
+        match owner {
+            Type::Struct(id) => self.struct_field_types.get(id)?.get(index).cloned(),
+            Type::Class(id) => self.class_field_types.get(id)?.get(index).cloned(),
+            _ => None,
+        }
+    }
+
+    fn field_is_float(&self, object: &MirExpr, index: usize) -> bool {
+        self.expr_owner_type(object)
+            .and_then(|owner| self.field_type(&owner, index))
+            .map(|ty| matches!(ty, Type::F32 | Type::F64))
+            .unwrap_or(false)
+    }
+
+    fn struct_size(&self, ty: &Type) -> usize {
+        match ty {
+            Type::Struct(id) => self.struct_field_counts.get(id).copied().unwrap_or(0) * 8,
+            _ => 8,
+        }
+    }
+
+    fn copy_struct(&mut self, ty: &Type, src: Value, dst: Value) -> Result<(), CodegenError> {
+        let size = self.struct_size(ty);
+        for offset in (0..size).step_by(8) {
+            let offset = offset as i32;
+            let word = self
+                .builder
+                .ins()
+                .load(types::I64, MemFlagsData::new(), src, offset);
+            self.builder
+                .ins()
+                .store(MemFlagsData::new(), word, dst, offset);
+        }
+        Ok(())
+    }
+
+    fn zero_struct(&mut self, ty: &Type, dst: Value) -> Result<(), CodegenError> {
+        let size = self.struct_size(ty);
+        for offset in (0..size).step_by(8) {
+            let offset = offset as i32;
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            self.builder
+                .ins()
+                .store(MemFlagsData::new(), zero, dst, offset);
+        }
+        Ok(())
+    }
+
+    fn load_target(&mut self, target: &MirTarget) -> Result<Value, CodegenError> {
+        match target {
+            MirTarget::Local(local) => {
+                let slot = self.slot_for(*local);
+                if self.is_float_local(*local) {
+                    Ok(self
+                        .builder
+                        .ins()
+                        .stack_load(types::I64, types::F64, slot, 0))
+                } else {
+                    Ok(self
+                        .builder
+                        .ins()
+                        .stack_load(types::I64, types::I64, slot, 0))
+                }
+            }
+            MirTarget::Global(index) => {
+                let gv = self
+                    .refs
+                    .global_refs
+                    .get(index)
+                    .copied()
+                    .ok_or("全局未声明")?;
+                let address = self.builder.ins().symbol_value(types::I64, gv);
+                Ok(self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), address, 0))
+            }
+            MirTarget::Field { object, index } => {
+                let float = self.field_is_float(object, *index);
+                let object = self.expr(object)?;
+                let offset = (*index as i32) * 8;
+                let ty = if float { types::F64 } else { types::I64 };
+                Ok(self
+                    .builder
+                    .ins()
+                    .load(ty, MemFlagsData::new(), object, offset))
+            }
+            MirTarget::Index { object, index } => {
+                let object = self.expr(object)?;
+                let index = self.expr(index)?;
+                let data = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), object, 16);
+                let eight = self.builder.ins().iconst(types::I64, 8);
+                let scaled = self.builder.ins().imul(index, eight);
+                let address = self.builder.ins().iadd(data, scaled);
+                Ok(self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), address, 0))
+            }
+        }
     }
 
     fn store_target(&mut self, target: &MirTarget, value: Value) -> Result<(), CodegenError> {
         match target {
             MirTarget::Local(local) => {
                 let slot = self.slot_for(*local);
-                self.builder.ins().stack_store(types::I64, value, slot, 0);
-                Ok(())
+                if self.is_struct_local(*local) {
+                    let address = self.builder.ins().stack_addr(types::I64, slot, 0);
+                    self.copy_struct(&self.local_types[*local].clone(), value, address)
+                } else if self.is_float_local(*local) {
+                    self.builder.ins().stack_store(types::I64, value, slot, 0);
+                    Ok(())
+                } else {
+                    self.builder.ins().stack_store(types::I64, value, slot, 0);
+                    Ok(())
+                }
             }
             MirTarget::Global(index) => {
                 let gv = self
@@ -944,9 +1243,17 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
             }
             MirExpr::Local(local) => {
                 let slot = self.slot_for(*local);
-                self.builder
-                    .ins()
-                    .stack_load(types::I64, types::I64, slot, 0)
+                if self.is_struct_local(*local) {
+                    self.builder.ins().stack_addr(types::I64, slot, 0)
+                } else if self.is_float_local(*local) {
+                    self.builder
+                        .ins()
+                        .stack_load(types::I64, types::F64, slot, 0)
+                } else {
+                    self.builder
+                        .ins()
+                        .stack_load(types::I64, types::I64, slot, 0)
+                }
             }
             MirExpr::Global(index) => {
                 let gv = self
@@ -963,7 +1270,13 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
             MirExpr::Unary { op, expr: inner } => {
                 let value = self.expr(inner)?;
                 match op {
-                    MirUnary::Neg => self.builder.ins().ineg(value),
+                    MirUnary::Neg => {
+                        if self.builder.func.dfg.value_type(value) == types::F64 {
+                            self.builder.ins().fneg(value)
+                        } else {
+                            self.builder.ins().ineg(value)
+                        }
+                    }
                     MirUnary::Pos => value,
                     MirUnary::Not => {
                         let zero = self.builder.ins().iconst(types::I64, 0);
@@ -982,12 +1295,43 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
             MirExpr::Binary { op, left, right } => {
                 let left = self.expr(left)?;
                 let right = self.expr(right)?;
+                let is_float = self.builder.func.dfg.value_type(left) == types::F64
+                    || self.builder.func.dfg.value_type(right) == types::F64;
                 match op {
-                    MirBinary::Add => self.builder.ins().iadd(left, right),
-                    MirBinary::Sub => self.builder.ins().isub(left, right),
-                    MirBinary::Mul => self.builder.ins().imul(left, right),
-                    MirBinary::Div => self.builder.ins().sdiv(left, right),
-                    MirBinary::Rem => self.builder.ins().srem(left, right),
+                    MirBinary::Add => {
+                        if is_float {
+                            self.builder.ins().fadd(left, right)
+                        } else {
+                            self.builder.ins().iadd(left, right)
+                        }
+                    }
+                    MirBinary::Sub => {
+                        if is_float {
+                            self.builder.ins().fsub(left, right)
+                        } else {
+                            self.builder.ins().isub(left, right)
+                        }
+                    }
+                    MirBinary::Mul => {
+                        if is_float {
+                            self.builder.ins().fmul(left, right)
+                        } else {
+                            self.builder.ins().imul(left, right)
+                        }
+                    }
+                    MirBinary::Div => {
+                        if is_float {
+                            self.builder.ins().fdiv(left, right)
+                        } else {
+                            self.builder.ins().sdiv(left, right)
+                        }
+                    }
+                    MirBinary::Rem => {
+                        if is_float {
+                            return Err("浮点取模应已降级为内建调用".into());
+                        }
+                        self.builder.ins().srem(left, right)
+                    }
                     MirBinary::Pow => return Err("`**` 后端暂不支持".into()),
                     MirBinary::And => self.builder.ins().band(left, right),
                     MirBinary::Or => self.builder.ins().bor(left, right),
@@ -1010,9 +1354,36 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 }
             }
             MirExpr::Call { callee, args } => {
-                let mut values = Vec::new();
+                // 结构体返回值：签名首参数为 sret 指针，调用后返回该地址；
+                // 结构体实参：表达式本身产出地址，直接按 I64 传入（被调方入口复制）。
+                let (ret_type, closure_struct) = match callee {
+                    MirCallee::Closure { sig } => (
+                        sig.ret.clone(),
+                        sig.params.iter().any(|p| matches!(p.ty, Type::Struct(_))),
+                    ),
+                    MirCallee::Function { sig, .. }
+                    | MirCallee::Method { sig, .. }
+                    | MirCallee::Extern { sig, .. } => (sig.ret.clone(), false),
+                    MirCallee::Intrinsic { .. } => (Type::Void, false),
+                };
+                if closure_struct {
+                    return Err("闭包暂不支持 struct 参数".into());
+                }
+                let mut call_args = Vec::new();
+                let mut sret = None;
+                if is_struct_ret(&ret_type) {
+                    let size = self.struct_size(&ret_type);
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        size as u32,
+                        3,
+                    ));
+                    let address = self.builder.ins().stack_addr(types::I64, slot, 0);
+                    call_args.push(address);
+                    sret = Some(address);
+                }
                 for arg in args {
-                    values.push(self.expr(arg)?);
+                    call_args.push(self.expr(arg)?);
                 }
                 let call = match callee {
                     MirCallee::Closure { sig } => {
@@ -1023,7 +1394,8 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                             .get(&key)
                             .copied()
                             .ok_or("闭包签名未导入")?;
-                        let mut values = values.into_iter();
+                        let mut values = call_args.into_iter();
+                        let sret_arg = if sret.is_some() { values.next() } else { None };
                         let closure = values.next().ok_or("闭包调用缺少接收者")?;
                         let fn_ptr =
                             self.builder
@@ -1033,11 +1405,15 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                             self.builder
                                 .ins()
                                 .load(types::I64, MemFlagsData::new(), closure, 8);
-                        let mut call_args = vec![env];
-                        call_args.extend(values);
+                        let mut final_args = Vec::new();
+                        if let Some(sret_arg) = sret_arg {
+                            final_args.push(sret_arg);
+                        }
+                        final_args.push(env);
+                        final_args.extend(values);
                         self.builder
                             .ins()
-                            .call_indirect(sig_ref, fn_ptr, &call_args)
+                            .call_indirect(sig_ref, fn_ptr, &final_args)
                     }
                     _ => {
                         let name = match callee {
@@ -1053,22 +1429,26 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                             .get(&name)
                             .copied()
                             .ok_or("调用目标未声明")?;
-                        self.builder.ins().call(func_ref, &values)
+                        self.builder.ins().call(func_ref, &call_args)
                     }
                 };
                 let results = self.builder.inst_results(call);
-                if results.is_empty() {
+                if let Some(sret) = sret {
+                    sret
+                } else if results.is_empty() {
                     self.builder.ins().iconst(types::I64, 0)
                 } else {
                     results[0]
                 }
             }
             MirExpr::Field { object, index } => {
+                let float = self.field_is_float(object, *index);
                 let object = self.expr(object)?;
                 let offset = (*index as i32) * 8;
+                let ty = if float { types::F64 } else { types::I64 };
                 self.builder
                     .ins()
-                    .load(types::I64, MemFlagsData::new(), object, offset)
+                    .load(ty, MemFlagsData::new(), object, offset)
             }
             MirExpr::Index { object, index } => {
                 let object = self.expr(object)?;
@@ -1122,8 +1502,23 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .ins()
                     .stack_load(types::I64, types::I64, slot, 0)
             }
-            MirExpr::Struct { .. } => {
-                return Err("后端暂不支持 struct 字面量".into());
+            MirExpr::Struct { ty, fields } => {
+                let size = self.struct_size(ty);
+                let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    size as u32,
+                    3,
+                ));
+                let address = self.builder.ins().stack_addr(types::I64, slot, 0);
+                self.zero_struct(ty, address)?;
+                for (index, field) in fields {
+                    let value = self.expr(field)?;
+                    let offset = (*index as i32) * 8;
+                    self.builder
+                        .ins()
+                        .store(MemFlagsData::new(), value, address, offset);
+                }
+                address
             }
             MirExpr::New { class, args } => {
                 let field_count = self.class_field_counts.get(class).copied().unwrap_or(0);
@@ -1177,6 +1572,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 let slot = self.new_slot();
                 self.builder.switch_to_block(then_block);
                 let then_value = self.expr(then)?;
+                let value_ty = self.builder.func.dfg.value_type(then_value);
                 self.builder
                     .ins()
                     .stack_store(types::I64, then_value, slot, 0);
@@ -1189,9 +1585,40 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 self.builder.ins().jump(join_block, &[]);
                 self.builder.switch_to_block(join_block);
                 self.builder.seal_block(join_block);
-                self.builder
-                    .ins()
-                    .stack_load(types::I64, types::I64, slot, 0)
+                self.builder.ins().stack_load(types::I64, value_ty, slot, 0)
+            }
+            MirExpr::Assign { target, value } => {
+                let value = self.expr(value)?;
+                self.store_target(target, value)?;
+                value
+            }
+            MirExpr::Postfix { target, op } => {
+                let old = self.load_target(target)?;
+                let float = self.builder.func.dfg.value_type(old) == types::F64;
+                let one = if float {
+                    self.builder.ins().f64const(1.0)
+                } else {
+                    self.builder.ins().iconst(types::I64, 1)
+                };
+                let new = match op {
+                    MirUnary::Inc => {
+                        if float {
+                            self.builder.ins().fadd(old, one)
+                        } else {
+                            self.builder.ins().iadd(old, one)
+                        }
+                    }
+                    MirUnary::Dec => {
+                        if float {
+                            self.builder.ins().fsub(old, one)
+                        } else {
+                            self.builder.ins().isub(old, one)
+                        }
+                    }
+                    _ => return Err("Postfix 只支持 ++/--".into()),
+                };
+                self.store_target(target, new)?;
+                old
             }
             MirExpr::ClosureNew { name, captures, .. } => {
                 let func_ref = self
@@ -1249,7 +1676,24 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
     }
 
     fn bool_cmp(&mut self, cond: IntCC, left: Value, right: Value) -> Value {
-        let result = self.builder.ins().icmp(cond, left, right);
+        let is_float = self.builder.func.dfg.value_type(left) == types::F64
+            || self.builder.func.dfg.value_type(right) == types::F64;
+        let result = if is_float {
+            let cc = match cond {
+                IntCC::Equal => FloatCC::Equal,
+                IntCC::NotEqual => FloatCC::NotEqual,
+                IntCC::SignedLessThan => FloatCC::LessThan,
+                IntCC::SignedLessThanOrEqual => FloatCC::LessThanOrEqual,
+                IntCC::SignedGreaterThan => FloatCC::GreaterThan,
+                IntCC::SignedGreaterThanOrEqual => FloatCC::GreaterThanOrEqual,
+                _ => {
+                    return self.builder.ins().iconst(types::I64, 0);
+                }
+            };
+            self.builder.ins().fcmp(cc, left, right)
+        } else {
+            self.builder.ins().icmp(cond, left, right)
+        };
         self.builder.ins().uextend(types::I64, result)
     }
 

@@ -171,6 +171,34 @@ int64_t sw_env_get(void* closure, int64_t slot) {
     return ((int64_t*)(((sw_closure*)closure)->env))[slot];
 }
 
+// `**` 幂运算：整数用快速幂循环（负指数返回 0），浮点走 libm pow。
+int64_t sw_pow_i64(int64_t base, int64_t exp) {
+    if (exp < 0) {
+        return 0;
+    }
+    int64_t result = 1;
+    while (exp > 0) {
+        if (exp & 1) {
+            result *= base;
+        }
+        base *= base;
+        exp >>= 1;
+    }
+    return result;
+}
+
+extern double pow(double base, double exp);
+
+double sw_pow_f64(double base, double exp) {
+    return pow(base, exp);
+}
+
+extern double fmod(double numerator, double denominator);
+
+double sw_frem_f64(double numerator, double denominator) {
+    return fmod(numerator, denominator);
+}
+
 // ---------------------------------------------------------------------------
 // 异常：setjmp/longjmp 传播（不展开平台栈）
 // ---------------------------------------------------------------------------

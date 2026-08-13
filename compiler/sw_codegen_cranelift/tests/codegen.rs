@@ -143,3 +143,22 @@ fn emits_aarch64_macos_macho_object() {
     // Mach-O 64 位魔数 FEEDFACF（小端）
     assert_eq!(&bytes[0..4], &[0xCF, 0xFA, 0xED, 0xFE], "应为 Mach-O 对象");
 }
+
+#[test]
+fn compiles_structs_pow_and_expression_lowering() {
+    let result = analyze(&fixture("exprs.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let mut total = 0usize;
+    for module in &result.modules {
+        let bytes =
+            compile_module_for_target(module, &result.type_table, "x86_64-unknown-linux-gnu")
+                .expect("编译成功");
+        assert_eq!(&bytes[0..4], &[0x7F, b'E', b'L', b'F'], "应为 ELF 对象");
+        total += bytes.len();
+    }
+    assert!(total > 400, "对象过小：{total} 字节");
+}

@@ -152,6 +152,16 @@ pub enum MirExpr {
         then: Box<MirExpr>,
         else_: Box<MirExpr>,
     },
+    /// 赋值表达式：求值 value、写入 target，整体返回被赋的值。
+    Assign {
+        target: MirTarget,
+        value: Box<MirExpr>,
+    },
+    /// 后缀 ++/--：先取旧值，写回新值，整体返回旧值。
+    Postfix {
+        target: MirTarget,
+        op: MirUnary,
+    },
     /// 创建闭包对象：运行时分配 { fn 指针, 环境槽数组 }。
     ClosureNew {
         name: String,

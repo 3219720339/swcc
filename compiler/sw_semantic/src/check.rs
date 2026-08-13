@@ -659,15 +659,30 @@ impl Analyzer {
             &self.registry,
             &self.state(module_id).names,
         );
-        fields
+        let lowered: Vec<(Type, Span)> = fields
             .iter()
-            .map(|field| FieldInfo {
+            .map(|field| (resolver.lower(&field.ty, generics), field.span))
+            .collect();
+        let mut result = Vec::new();
+        for (field, (ty, span)) in fields.iter().zip(lowered) {
+            self.reject_complex_field(&ty, span);
+            result.push(FieldInfo {
                 name: field.name.name.clone(),
-                ty: resolver.lower(&field.ty, generics),
+                ty,
                 mutable: !field.modifiers.contains(&MemberModifier::Final),
                 span: field.span,
-            })
-            .collect()
+            });
+        }
+        result
+    }
+
+    /// 后端按 8 字节槽位存储字段；struct 嵌套/数组会破坏按值拷贝语义，v0.1 先拒绝。
+    fn reject_complex_field(&mut self, ty: &Type, span: Span) {
+        let bad = matches!(ty, Type::Struct(_))
+            || matches!(ty, Type::Array(inner) if matches!(**inner, Type::Struct(_)));
+        if bad {
+            self.error("v0.1 暂不支持 struct 作为字段类型（含 struct 数组）", span);
+        }
     }
 
     fn finalize_class_members(
@@ -688,9 +703,11 @@ impl Analyzer {
                         &self.registry,
                         &self.state(module_id).names,
                     );
+                    let ty = resolver.lower(&field.ty, generics);
+                    self.reject_complex_field(&ty, field.span);
                     fields.push(FieldInfo {
                         name: field.name.name.clone(),
-                        ty: resolver.lower(&field.ty, generics),
+                        ty,
                         mutable: !field.modifiers.contains(&MemberModifier::Final),
                         span: field.span,
                     });
@@ -1748,6 +1765,14 @@ impl<'s> Checker<'s> {
                 }
                 let target_ty = self.check_expr(target);
                 let value_ty = self.check_expr(value);
+                if matches!(target_ty, Type::Struct(_))
+                    && matches!(
+                        &target.kind,
+                        ExprKind::Member { .. } | ExprKind::Index { .. }
+                    )
+                {
+                    self.error("v0.1 暂不支持 struct 存入数组元素/类字段", target.span);
+                }
                 if *op == AssignOp::Assign {
                     if !self.is_assignable(&value_ty, &target_ty)
                         && !self.literal_target_ok(value, &target_ty)
@@ -1851,7 +1876,12 @@ impl<'s> Checker<'s> {
                     }
                 }
                 match element {
-                    Some(element) => Type::Array(Box::new(element)),
+                    Some(element) => {
+                        if matches!(element, Type::Struct(_)) {
+                            self.error("v0.1 暂不支持 struct 数组字面量", expr.span);
+                        }
+                        Type::Array(Box::new(element))
+                    }
                     None => Type::Array(Box::new(Type::Error)),
                 }
             }
@@ -2023,6 +2053,10 @@ impl<'s> Checker<'s> {
                 Type::Error
             }
             BinaryOp::Eq | BinaryOp::Ne => {
+                if matches!(left_ty, Type::Struct(_)) {
+                    self.error("v0.1 暂不支持 struct 相等比较", span);
+                    return Type::Bool;
+                }
                 if left_ty == right_ty
                     || (left_ty == Type::Null
                         && (right_ty.is_reference() || matches!(right_ty, Type::Nullable(_))))
@@ -3297,7 +3331,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
     }
 
     fn lower_expr_stmt(&mut self, expr: &Expr, output: &mut Vec<MirStmt>) {
-        if let Some((target, value)) = self.lower_assign_expr(expr) {
+        if let Some((target, value)) = self.lower_assign_parts(expr) {
             output.push(MirStmt::new(MirStmtKind::Assign { target, value }));
             return;
         }
@@ -3305,7 +3339,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         output.push(MirStmt::new(MirStmtKind::Expr(mir)));
     }
 
-    fn lower_assign_expr(&mut self, expr: &Expr) -> Option<(MirTarget, MirExpr)> {
+    fn lower_assign_parts(&mut self, expr: &Expr) -> Option<(MirTarget, MirExpr)> {
         match &expr.kind {
             ExprKind::Assign { op, target, value } => {
                 let target_ast = target;
@@ -3529,19 +3563,39 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
             }
             ExprKind::Unary { op, expr: inner } => {
+                match op {
+                    UnaryOp::Inc | UnaryOp::Dec => {
+                        if let Some(target) = self.lower_target(inner) {
+                            let op = if *op == UnaryOp::Dec {
+                                MirBinary::Sub
+                            } else {
+                                MirBinary::Add
+                            };
+                            let value = MirExpr::Binary {
+                                op,
+                                left: Box::new(self.lower_expr(inner)),
+                                right: Box::new(MirExpr::Int(1)),
+                            };
+                            return MirExpr::Assign {
+                                target,
+                                value: Box::new(value),
+                            };
+                        }
+                        self.error("`++`/`--` 需要可赋值的数值目标", inner.span);
+                        return MirExpr::Int(0);
+                    }
+                    _ => {}
+                };
                 let mir_op = match op {
                     UnaryOp::Not => MirUnary::Not,
                     UnaryOp::Neg => MirUnary::Neg,
                     UnaryOp::Pos => MirUnary::Pos,
                     UnaryOp::BitNot => MirUnary::BitNot,
-                    UnaryOp::Inc | UnaryOp::Dec => {
-                        self.error("`++`/`--` 表达式降级暂不支持，请用作语句", expr.span);
-                        MirUnary::Inc
-                    }
                     UnaryOp::Await => {
                         self.error("await 降级暂不支持", expr.span);
                         MirUnary::Not
                     }
+                    UnaryOp::Inc | UnaryOp::Dec => unreachable!(),
                 };
                 MirExpr::Unary {
                     op: mir_op,
@@ -3559,6 +3613,24 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         args: vec![left, right],
                     };
                 }
+                if *op == BinaryOp::Pow {
+                    let is_float = self.expr_type(left).is_float();
+                    let name = if is_float { "pow_f64" } else { "pow_i64" };
+                    return MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: name.to_owned(),
+                        },
+                        args: vec![self.lower_expr(left), self.lower_expr(right)],
+                    };
+                }
+                if *op == BinaryOp::Rem && self.expr_type(left).is_float() {
+                    return MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "frem_f64".to_owned(),
+                        },
+                        args: vec![self.lower_expr(left), self.lower_expr(right)],
+                    };
+                }
                 MirExpr::Binary {
                     op: mir_binary(op),
                     left: Box::new(self.lower_expr(left)),
@@ -3566,7 +3638,13 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
             }
             ExprKind::Assign { .. } => {
-                self.error("赋值表达式降级暂不支持，请用作语句", expr.span);
+                if let Some((target, value)) = self.lower_assign_parts(expr) {
+                    return MirExpr::Assign {
+                        target,
+                        value: Box::new(value),
+                    };
+                }
+                self.error("赋值表达式降级失败", expr.span);
                 MirExpr::Int(0)
             }
             ExprKind::Conditional { cond, then, else_ } => MirExpr::Select {
@@ -3754,8 +3832,15 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 object: Box::new(self.lower_expr(object)),
                 index: Box::new(self.lower_expr(index)),
             },
-            ExprKind::Postfix { .. } => {
-                self.error("`++`/`--` 表达式降级暂不支持，请用作语句", expr.span);
+            ExprKind::Postfix { expr: inner, op } => {
+                if let Some(target) = self.lower_target(inner) {
+                    let mir_op = match op {
+                        PostfixOp::Inc => MirUnary::Inc,
+                        PostfixOp::Dec => MirUnary::Dec,
+                    };
+                    return MirExpr::Postfix { target, op: mir_op };
+                }
+                self.error("`++`/`--` 需要可赋值的数值目标", inner.span);
                 MirExpr::Int(0)
             }
             ExprKind::Array(items) => {
@@ -3883,6 +3968,11 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         return MirExpr::Null;
                     }
                 };
+                if matches!(lambda_ret, Type::Struct(_))
+                    || lambda_params.iter().any(|ty| matches!(ty, Type::Struct(_)))
+                {
+                    self.error("v0.1 暂不支持 struct 参与闭包签名", expr.span);
+                }
                 let param_names: Vec<String> =
                     params.iter().map(|param| param.name.name.clone()).collect();
                 let mut captures = Vec::new();
