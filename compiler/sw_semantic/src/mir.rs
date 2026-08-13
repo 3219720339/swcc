@@ -135,6 +135,8 @@ pub enum MirExpr {
     /// 数组/字符串长度。
     Len {
         object: Box<MirExpr>,
+        /// true 表示 string（len 在偏移 8），false 表示数组（len 在偏移 0）。
+        string: bool,
     },
     /// 结构体字面量（值类型）。
     Struct {

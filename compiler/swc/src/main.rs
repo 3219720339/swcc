@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use sw_codegen_cranelift::compile_module_for_target;
 use sw_common::{Diagnostics, Severity, Source};
@@ -16,14 +17,23 @@ struct BuildOptions {
 }
 
 fn main() {
+    let started = Instant::now();
     let args: Vec<String> = env::args().collect();
     if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
         println!("swc 0.1.0");
         return;
     }
+    if args.len() == 2 && matches!(args[1].as_str(), "help" | "--help" | "-h") {
+        print_help();
+        return;
+    }
     let command = args.get(1).map(String::as_str).unwrap_or("check");
+    if command == "help" || command == "--help" || command == "-h" {
+        print_help();
+        return;
+    }
     if !matches!(command, "check" | "build" | "run") {
-        eprintln!("未知命令 `{command}`；支持 check / build / run");
+        eprintln!("未知命令 `{command}`；可用 `swc help` 查看用法");
         std::process::exit(2);
     }
     let Some(path) = args.get(2) else {
@@ -145,6 +155,7 @@ fn main() {
             result.modules.len(),
             function_count
         );
+        println!("用时：{} ms", started.elapsed().as_millis());
         return;
     }
 
@@ -207,7 +218,11 @@ fn main() {
         }
     }
 
-    println!("构建成功：{}", output.display());
+    println!(
+        "构建成功：{}（用时 {} ms）",
+        output.display(),
+        started.elapsed().as_millis()
+    );
     if command == "run" {
         let run_path = fs::canonicalize(&output).unwrap_or(output.clone());
         let status = Command::new(&run_path).status();
@@ -222,6 +237,28 @@ fn main() {
             }
         }
     }
+}
+
+fn print_help() {
+    println!("Sw 编译器 swc 0.1.0");
+    println!();
+    println!("用法: swc <命令> <文件.sw> [选项]");
+    println!();
+    println!("命令:");
+    println!("  check              词法/语法/语义检查并生成 MIR");
+    println!("  build              编译并链接生成可执行文件");
+    println!("  run                编译、链接并运行");
+    println!("  help               显示本帮助");
+    println!();
+    println!("选项:");
+    println!("  -o, --output <文件>     指定输出文件");
+    println!("  --target <triple>       目标平台（如 x86_64-w64-windows-gnu、");
+    println!("                          x86_64-unknown-linux-musl、aarch64-unknown-linux-musl）");
+    println!("  --emit-object <文件>    只生成目标文件，不链接");
+    println!();
+    println!("环境变量:");
+    println!("  SW_TOOLCHAIN  指向 llvm-mingw 工具链目录");
+    println!("  SW_STDLIB     指向标准库目录（默认查找可执行文件旁或当前目录的 stdlib/）");
 }
 
 fn link_windows(target: &str, objects: &[PathBuf], output: &Path) {

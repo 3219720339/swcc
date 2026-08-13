@@ -12,6 +12,13 @@ Sw 是一门静态强类型、面向本机程序的编译型语言，表层语�
 
 语言规范见 [docs/README.md](docs/README.md)。
 
+## 已实现能力
+
+- 语义/后端：struct 值语义、`**` 幂、`++/--` 与赋值表达式、浮点全链路、泛型函数单态化
+- 内存管理：运行时保守式标记-清除 GC（栈 + 数据段 + 堆内引用扫描）
+- 标准库：`std/io`（print/println/read_line）、`std/math`、`std/fs`（文件读写）、`std/string`（查找/子串）
+- CLI：`swc help`、`--version`、构建耗时输出、`--target` 交叉编译、`--emit-object`
+
 ## 构建与验证
 
 - `cargo test --workspace`：词法/语法/AST、语义/MIR、Cranelift 代码生成测试（含 ELF/Mach-O 与 aarch64 对象格式）

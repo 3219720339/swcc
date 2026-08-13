@@ -142,7 +142,7 @@ fn collect_expr_kinds(
             }
             MirExpr::Unary { expr, .. }
             | MirExpr::Cast { expr, .. }
-            | MirExpr::Len { object: expr }
+            | MirExpr::Len { object: expr, .. }
             | MirExpr::Field { object: expr, .. }
             | MirExpr::Index { object: expr, .. } => {
                 visit_expr(expr, found_assign, found_postfix, found_pow, found_struct);

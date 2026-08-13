@@ -162,3 +162,23 @@ fn compiles_structs_pow_and_expression_lowering() {
     }
     assert!(total > 400, "对象过小：{total} 字节");
 }
+
+#[test]
+fn compiles_generic_function_instances() {
+    let result = analyze(&fixture("generics.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let total: usize = result
+        .modules
+        .iter()
+        .map(|module| {
+            compile_module_for_target(module, &result.type_table, "x86_64-unknown-linux-gnu")
+                .expect("编译成功")
+                .len()
+        })
+        .sum();
+    assert!(total > 200, "对象过小：{total} 字节");
+}

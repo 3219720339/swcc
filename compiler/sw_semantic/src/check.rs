@@ -1109,6 +1109,8 @@ impl Analyzer {
                 state,
                 global_index_by_symbol: HashMap::new(),
                 hidden_functions: Vec::new(),
+                generic_instances: HashMap::new(),
+                generic_counter: 0,
             };
             lowerer.lower_module()
         };
@@ -1288,6 +1290,11 @@ impl<'s> Checker<'s> {
     fn error(&mut self, message: impl Into<String>, span: Span) {
         let file = self.state.path.clone();
         self.diagnostics.error_at(message, Some(span), Some(file));
+    }
+
+    fn record_call_result(&mut self, span: Span, ty: Type) -> Type {
+        self.state.result.expr_types.insert(span.start, ty.clone());
+        ty
     }
 
     fn alloc_local(&mut self) -> SymbolId {
@@ -2315,7 +2322,7 @@ impl<'s> Checker<'s> {
                                     .result
                                     .call_targets
                                     .insert(span.start, CallTarget::Function(symbol_id));
-                                return sig.ret;
+                                return self.record_call_result(span, sig.ret);
                             }
                             return Type::Error;
                         }
@@ -2370,7 +2377,7 @@ impl<'s> Checker<'s> {
                                     );
                                 }
                             }
-                            return (**ret).clone();
+                            return self.record_call_result(span, (**ret).clone());
                         }
                     }
                 }
@@ -2396,7 +2403,7 @@ impl<'s> Checker<'s> {
                         .result
                         .call_targets
                         .insert(span.start, CallTarget::Function(symbol_id));
-                    return sig.ret;
+                    return self.record_call_result(span, sig.ret);
                 }
                 Type::Error
             }
@@ -2429,7 +2436,7 @@ impl<'s> Checker<'s> {
                         index: constructor,
                     },
                 );
-                Type::Class(base)
+                self.record_call_result(span, Type::Class(base))
             }
             ExprKind::Member { object, name, .. } => {
                 let object_ty = self.check_expr(object);
@@ -2459,7 +2466,7 @@ impl<'s> Checker<'s> {
                                 index,
                             },
                         );
-                        sig.ret
+                        self.record_call_result(span, sig.ret)
                     }
                     Type::Error => Type::Error,
                     other => {
@@ -2640,6 +2647,9 @@ struct MirLowerer<'m, 's> {
     state: &'s mut ModuleState,
     global_index_by_symbol: HashMap<u32, usize>,
     hidden_functions: Vec<MirFunction>,
+    /// 泛型实例缓存：key → (实例函数名, 实例签名)。
+    generic_instances: HashMap<String, (String, FunctionSig)>,
+    generic_counter: u32,
 }
 
 struct FnLower<'a, 'm, 's> {
@@ -2653,6 +2663,40 @@ struct FnLower<'a, 'm, 's> {
     this_class: Option<u32>,
     /// 闭包隐藏函数内：符号 ID → 环境槽序号。
     captures: HashMap<u32, usize>,
+    /// 泛型实例化的类型实参（非泛型函数为空）。
+    type_args: HashMap<String, Type>,
+}
+
+fn substitute_type(ty: &Type, type_args: &HashMap<String, Type>) -> Type {
+    match ty {
+        Type::TypeParam(name) => type_args.get(name).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Array(inner) => Type::Array(Box::new(substitute_type(inner, type_args))),
+        Type::Nullable(inner) => Type::Nullable(Box::new(substitute_type(inner, type_args))),
+        Type::Ptr(inner) => Type::Ptr(Box::new(substitute_type(inner, type_args))),
+        Type::Function { params, ret } => Type::Function {
+            params: params
+                .iter()
+                .map(|param| substitute_type(param, type_args))
+                .collect(),
+            ret: Box::new(substitute_type(ret, type_args)),
+        },
+        other => other.clone(),
+    }
+}
+
+fn infer_type_arg(param: &Type, arg: &Type, known: &mut HashMap<String, Type>) {
+    match (param, arg) {
+        (Type::TypeParam(name), actual) => {
+            known.entry(name.clone()).or_insert_with(|| actual.clone());
+        }
+        (Type::Array(param_inner), Type::Array(arg_inner)) => {
+            infer_type_arg(param_inner, arg_inner, known);
+        }
+        (Type::Nullable(param_inner), Type::Nullable(arg_inner)) => {
+            infer_type_arg(param_inner, arg_inner, known);
+        }
+        _ => {}
+    }
 }
 
 impl<'m, 's> MirLowerer<'m, 's> {
@@ -2716,6 +2760,10 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         Some(SymbolKind::Function(sig)) => sig,
                         _ => continue,
                     };
+                    // 泛型函数模板不直接生成 MIR，按调用点实例化。
+                    if !sig.generics.is_empty() {
+                        continue;
+                    }
                     let name = stable_function_name(&sig);
                     let mut lower = FnLower {
                         lowerer: self,
@@ -2727,6 +2775,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         global_by_symbol: global_by_symbol.clone(),
                         this_class: None,
                         captures: HashMap::new(),
+                        type_args: HashMap::new(),
                     };
                     for param in &sig.params {
                         lower.params.push(MirParam {
@@ -2792,6 +2841,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         global_by_symbol: global_by_symbol.clone(),
                         this_class: Some(class_id),
                         captures: HashMap::new(),
+                        type_args: HashMap::new(),
                     };
                     for param in &sig.params {
                         lower.params.push(MirParam {
@@ -2919,6 +2969,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
     }
 
     fn declare_local(&mut self, name: &str, ty: Type, mutable: bool) -> usize {
+        let ty = substitute_type(&ty, &self.type_args);
         let index = self.locals.len();
         self.locals.push(MirLocal {
             name: name.to_owned(),
@@ -2975,11 +3026,11 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         if let Some(annotation) = &variable.ty {
             let ty = self.lowerer.lower_type_for_mir(annotation);
             if ty != Type::Error {
-                return ty;
+                return substitute_type(&ty, &self.type_args);
             }
         }
         if let Some(init) = &variable.init {
-            return self.expr_type(init);
+            return substitute_type(&self.expr_type(init), &self.type_args);
         }
         Type::Error
     }
@@ -3064,8 +3115,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             } => {
                 let array = self.lower_expr(iterable);
                 let element_ty = self.expr_type(iterable);
+                let is_string = element_ty == Type::Str;
                 let element_ty = match element_ty {
                     Type::Array(inner) => *inner,
+                    Type::Str => Type::Char,
                     _ => Type::Error,
                 };
                 let element_local = self.declare_local(&name.name, element_ty, true);
@@ -3102,6 +3155,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         left: Box::new(index_expr),
                         right: Box::new(MirExpr::Len {
                             object: Box::new(array),
+                            string: is_string,
                         }),
                     },
                     body: body_stmts,
@@ -3442,6 +3496,107 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         }
     }
 
+    /// 泛型函数按调用点单态化：推断类型实参，生成并缓存专用实例。
+    fn instantiate_generic(
+        &mut self,
+        symbol: SymbolId,
+        template: &FunctionSig,
+        ast_args: &[Expr],
+        span: Span,
+    ) -> (String, FunctionSig) {
+        if template.module.0 != self.lowerer.state.id.0 {
+            self.error("v0.1 泛型仅支持本模块函数实例化", span);
+            return (stable_function_name(template), template.clone());
+        }
+        let mut type_args = HashMap::new();
+        for (index, param) in template.params.iter().enumerate() {
+            if let Some(arg_ty) = ast_args.get(index) {
+                infer_type_arg(&param.ty, &self.expr_type(arg_ty), &mut type_args);
+            }
+        }
+        let mut key_parts: Vec<String> = type_args
+            .iter()
+            .map(|(name, ty)| format!("{name}={}", ty.display()))
+            .collect();
+        key_parts.sort();
+        let key = format!(
+            "{}:{}:{}",
+            template.module.0,
+            stable_function_name(template),
+            key_parts.join(",")
+        );
+        if let Some((name, sig)) = self.lowerer.generic_instances.get(&key) {
+            return (name.clone(), sig.clone());
+        }
+
+        let instance_id = self.lowerer.generic_counter;
+        self.lowerer.generic_counter += 1;
+        let instance_name = format!("sw_gen_{}_{}", stable_function_name(template), instance_id);
+        let instance_params: Vec<MirParam> = template
+            .params
+            .iter()
+            .map(|param| MirParam {
+                name: param.name.clone(),
+                ty: substitute_type(&param.ty, &type_args),
+            })
+            .collect();
+        let instance_ret = substitute_type(&template.ret, &type_args);
+        let instance_sig = FunctionSig {
+            module: template.module,
+            name: instance_name.clone(),
+            generics: Vec::new(),
+            params: template
+                .params
+                .iter()
+                .map(|param| ParamSig {
+                    name: param.name.clone(),
+                    ty: substitute_type(&param.ty, &type_args),
+                    has_default: param.has_default,
+                })
+                .collect(),
+            ret: instance_ret.clone(),
+            extern_c: false,
+            span: template.span,
+        };
+        // 先登记再降级函数体，保证自递归调用能命中同一个实例。
+        self.lowerer
+            .generic_instances
+            .insert(key, (instance_name.clone(), instance_sig.clone()));
+
+        let body = self
+            .lowerer
+            .module
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                ItemKind::Function(function) if function.name.name == template.name => {
+                    function.body.clone()
+                }
+                _ => None,
+            });
+        let Some(body) = body else {
+            self.error("泛型函数体未找到", span);
+            return (instance_name, instance_sig);
+        };
+        let global_by_symbol = self.global_by_symbol.clone();
+        let lowerer = &mut *self.lowerer;
+        let mut nested = FnLower {
+            lowerer,
+            name: instance_name.clone(),
+            params: instance_params,
+            ret: instance_ret,
+            locals: Vec::new(),
+            name_scopes: Vec::new(),
+            global_by_symbol,
+            this_class: None,
+            captures: HashMap::new(),
+            type_args,
+        };
+        let instance_function = nested.lower_function(Some(&body), false);
+        self.lowerer.hidden_functions.push(instance_function);
+        (instance_name, instance_sig)
+    }
+
     fn lower_target(&mut self, expr: &Expr) -> Option<MirTarget> {
         match &expr.kind {
             ExprKind::Ident(ident) => {
@@ -3556,7 +3711,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             }
             ExprKind::Group(inner) => self.lower_expr(inner),
             ExprKind::Cast { expr: inner, ty } => {
-                let to = self.lowerer.lower_type_for_mir(ty);
+                let to = substitute_type(&self.lowerer.lower_type_for_mir(ty), &self.type_args);
                 MirExpr::Cast {
                     expr: Box::new(self.lower_expr(inner)),
                     to,
@@ -3718,7 +3873,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .call_targets
                     .get(&expr.span.start)
                     .cloned();
-                let mut args: Vec<MirExpr> = args.iter().map(|arg| self.lower_expr(arg)).collect();
+                let ast_args = args;
+                let mut args: Vec<MirExpr> =
+                    ast_args.iter().map(|arg| self.lower_expr(arg)).collect();
                 let callee = match target {
                     Some(CallTarget::Function(symbol)) => {
                         let sig = match &self.lowerer.symbol(symbol).kind {
@@ -3729,6 +3886,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             MirCallee::Extern {
                                 name: sig.name.clone(),
                                 sig: sig.clone(),
+                            }
+                        } else if !sig.generics.is_empty() {
+                            let (instance_name, instance_sig) =
+                                self.instantiate_generic(symbol, &sig, ast_args, expr.span);
+                            MirCallee::Function {
+                                module: sig.module.0,
+                                name: instance_name,
+                                sig: instance_sig,
                             }
                         } else {
                             MirCallee::Function {
@@ -3784,8 +3949,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 if name.name == "length"
                     && matches!(self.expr_type(object), Type::Array(_) | Type::Str)
                 {
+                    let is_string = self.expr_type(object) == Type::Str;
                     return MirExpr::Len {
                         object: Box::new(self.lower_expr(object)),
+                        string: is_string,
                     };
                 }
                 let field = self
@@ -3856,6 +4023,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     Type::Array(inner) => *inner,
                     other => other,
                 };
+                let elem = substitute_type(&elem, &self.type_args);
                 MirExpr::Array {
                     elem: Box::new(elem),
                     items: items.iter().map(|item| self.lower_expr(item)).collect(),
@@ -3870,6 +4038,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .get(&expr.span.start)
                     .cloned()
                     .unwrap_or(Type::Error);
+                let target = substitute_type(&target, &self.type_args);
                 match target {
                     Type::Struct(id) => {
                         let info = &self.lowerer.types.structs[id as usize];
@@ -4054,6 +4223,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     global_by_symbol: self.global_by_symbol.clone(),
                     this_class: None,
                     captures: capture_map,
+                    type_args: self.type_args.clone(),
                 };
                 let hidden_function = nested.lower_function(Some(&body_block), false);
                 self.lowerer.hidden_functions.push(hidden_function);
@@ -4275,6 +4445,82 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
     }
 
     fn expr_type(&self, expr: &Expr) -> Type {
+        // 成员访问表达式与对象标识符共用起始偏移，expr_types 会被覆盖；
+        // Ident 直接从符号表取类型，避免碰撞。
+        match &expr.kind {
+            ExprKind::Ident(_) => {
+                if let Some(id) = self
+                    .lowerer
+                    .state
+                    .result
+                    .ident_symbols
+                    .get(&expr.span.start)
+                    .copied()
+                {
+                    if let Some(kind) = self.lowerer.symbols.get(id.0 as usize).map(|s| &s.kind) {
+                        let ty = match kind {
+                            SymbolKind::Local { ty, .. }
+                            | SymbolKind::Param { ty }
+                            | SymbolKind::Global { ty, .. } => Some(ty.clone()),
+                            SymbolKind::Function(sig) => Some(Type::Function {
+                                params: sig.params.iter().map(|param| param.ty.clone()).collect(),
+                                ret: Box::new(sig.ret.clone()),
+                            }),
+                            _ => None,
+                        };
+                        if let Some(ty) = ty {
+                            return ty;
+                        }
+                    }
+                }
+            }
+            ExprKind::Member { object, name, .. } => {
+                if name.name == "length" {
+                    let object_ty = self.expr_type(object);
+                    if matches!(object_ty, Type::Str | Type::Array(_)) {
+                        return Type::Int;
+                    }
+                }
+                if let Some(target) = self
+                    .lowerer
+                    .state
+                    .result
+                    .field_targets
+                    .get(&expr.span.start)
+                    .cloned()
+                {
+                    let ty = match target {
+                        FieldTarget::Struct(id, index) => self
+                            .lowerer
+                            .types
+                            .structs
+                            .get(id as usize)
+                            .and_then(|info| info.fields.get(index))
+                            .map(|field| field.ty.clone()),
+                        FieldTarget::Class(class_id, index) => {
+                            let mut chain = vec![class_id];
+                            let mut base = self.lowerer.types.classes[class_id as usize].base;
+                            while let Some(id) = base {
+                                chain.push(id);
+                                base = self.lowerer.types.classes[id as usize].base;
+                            }
+                            chain.reverse();
+                            let mut fields: Vec<Type> = Vec::new();
+                            for id in chain {
+                                for field in &self.lowerer.types.classes[id as usize].fields {
+                                    fields.push(field.ty.clone());
+                                }
+                            }
+                            fields.get(index).cloned()
+                        }
+                    };
+                    if let Some(ty) = ty {
+                        return substitute_type(&ty, &self.type_args);
+                    }
+                }
+            }
+            _ => {}
+        }
         self.lowerer
             .state
             .result

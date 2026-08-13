@@ -2,3 +2,4 @@
 
 export extern c function println(text: string): void;
 export extern c function print(text: string): void;
+export extern c function read_line(): string;

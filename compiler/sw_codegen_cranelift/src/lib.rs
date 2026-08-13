@@ -479,7 +479,7 @@ fn visit_expr(
         MirExpr::EnvGet { .. } => {}
         MirExpr::Unary { expr: inner, .. }
         | MirExpr::Cast { expr: inner, .. }
-        | MirExpr::Len { object: inner }
+        | MirExpr::Len { object: inner, .. }
         | MirExpr::Field { object: inner, .. }
         | MirExpr::Index { object: inner, .. } => {
             visit_expr(inner, generator, mir, exports, ctx, refs)?;
@@ -1464,11 +1464,12 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .ins()
                     .load(types::I64, MemFlagsData::new(), address, 0)
             }
-            MirExpr::Len { object } => {
+            MirExpr::Len { object, string } => {
                 let object = self.expr(object)?;
+                let offset = if *string { 8 } else { 0 };
                 self.builder
                     .ins()
-                    .load(types::I64, MemFlagsData::new(), object, 0)
+                    .load(types::I64, MemFlagsData::new(), object, offset)
             }
             MirExpr::Array { elem, items } => {
                 let elem_size = if matches!(**elem, Type::F32 | Type::F64) {
