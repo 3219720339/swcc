@@ -27,7 +27,15 @@ extern int fputc(int character, void* stream);
 #if defined(_WIN32)
 extern void* __acrt_iob_func(unsigned int index);
 #define stdout __acrt_iob_func(1)
+#define stdin __acrt_iob_func(0)
+#elif defined(__APPLE__)
+// macOS 上 stdin/stdout 是宏，真实符号为 ___stdinp / ___stdoutp。
+extern void* __stdinp;
+extern void* __stdoutp;
+#define stdin __stdinp
+#define stdout __stdoutp
 #else
+extern void* stdin;
 extern void* stdout;
 #endif
 
@@ -437,13 +445,6 @@ void println(sw_string* string) {
 void print(sw_string* string) {
     sw_print_string(string);
 }
-
-// stdin：Windows 用 __acrt_iob_func(0)，POSIX 直接用 stdin。
-#if defined(_WIN32)
-#define stdin __acrt_iob_func(0)
-#else
-extern void* stdin;
-#endif
 
 extern char* fgets(char* buffer, int size, void* stream);
 
