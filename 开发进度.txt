@@ -1155,6 +1155,20 @@ Sw 编译器（swcc）开发进度
                          @test runner [ok] 输出正常、demo-print/demo-time
                          输出正确
 
+    2026-08-15 05:20  修复 CI 三平台 probe-time（Linux/macOS 时间字段错误）：
+                       - 根因 1：sw_time_field 的 POSIX 分支直接返回
+                         tm_year/tm_mon 原始值，未 +1900/+1（Windows 走
+                         SYSTEMTIME 是真实值所以正常），导致 Linux/macOS
+                         上 year_of/month_of/取年份 全部失败
+                       - 根因 2：uptime_ms 的 POSIX 分支硬编码
+                         CLOCK_MONOTONIC=1（Linux），macOS 上该常量为 6，
+                         clock_gettime 失败返回 0，导致 macOS uptime_ms 失败
+                       - 修复：tm_year 补 +1900、tm_mon 补 +1；clock id
+                         按 __APPLE__/其他平台区分（6/1）
+                       - 验证：Windows 本机 70 examples 全过；runtime.c
+                         交叉编译 x86_64/aarch64 Linux + aarch64 macOS
+                         全部通过；已提交 097bb38 推送 Gitee + GitHub
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
