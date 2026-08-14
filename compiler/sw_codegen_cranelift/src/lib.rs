@@ -160,26 +160,35 @@ impl Generator {
                     .map_err(|error| error.to_string())?;
                 let mut desc = DataDescription::new();
                 desc.define(vec![0u8; interface_slot_total * 8].into_boxed_slice());
-                if let Some(interfaces) = types.class_interfaces.get(&(class_id as u32)) {
-                    for interface_id in interfaces {
-                        let Some(&base) = interface_slot_bases.get(interface_id) else {
-                            continue;
-                        };
-                        let interface = &types.interfaces[*interface_id as usize];
-                        for (method_index, method) in interface.methods.iter().enumerate() {
-                            if let Some((impl_class, impl_index)) =
-                                types.find_class_method(class_id as u32, &method.name)
-                            {
-                                let fn_name =
-                                    format!("sw_m_{impl_class}_{impl_index}_{}", method.name);
-                                if let Some(func_id) = exports.get(&fn_name) {
-                                    let func_ref =
-                                        self.module.declare_func_in_data(*func_id, &mut desc);
-                                    desc.write_function_addr(
-                                        ((base + method_index) * 8) as u32,
-                                        func_ref,
-                                    );
-                                }
+                let mut inherited_interfaces = Vec::new();
+                let mut current = Some(class_id as u32);
+                while let Some(id) = current {
+                    if let Some(interfaces) = types.class_interfaces.get(&id) {
+                        for interface_id in interfaces {
+                            if !inherited_interfaces.contains(interface_id) {
+                                inherited_interfaces.push(*interface_id);
+                            }
+                        }
+                    }
+                    current = types.classes[id as usize].base;
+                }
+                for interface_id in inherited_interfaces {
+                    let Some(&base) = interface_slot_bases.get(&interface_id) else {
+                        continue;
+                    };
+                    let interface = &types.interfaces[interface_id as usize];
+                    for (method_index, method) in interface.methods.iter().enumerate() {
+                        if let Some((impl_class, impl_index)) =
+                            types.find_class_method(class_id as u32, &method.name)
+                        {
+                            let fn_name = format!("sw_m_{impl_class}_{impl_index}_{}", method.name);
+                            if let Some(func_id) = exports.get(&fn_name) {
+                                let func_ref =
+                                    self.module.declare_func_in_data(*func_id, &mut desc);
+                                desc.write_function_addr(
+                                    ((base + method_index) * 8) as u32,
+                                    func_ref,
+                                );
                             }
                         }
                     }

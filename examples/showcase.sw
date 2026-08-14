@@ -51,6 +51,12 @@ class Circle implements Shape {
     }
 }
 
+class InheritedCircle extends Circle {
+    constructor(radius: float) {
+        super(radius);
+    }
+}
+
 class Counter {
     value: int;
 
@@ -150,7 +156,7 @@ function main(): int {
     passed = passed & check(selected == 5, "switch, break and default argument");
 
     // Classes, inheritance, interface dispatch and nullable chaining.
-    const shape: Shape = new Circle(2.0);
+    const shape: Shape = new InheritedCircle(2.0);
     const named_counter = new NamedCounter("visits", 2);
     const maybe_shape: Shape? = shape;
     const missing: Circle? = null;
