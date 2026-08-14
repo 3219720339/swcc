@@ -64,6 +64,7 @@ EXPECTED = {
     "probe-ternary.sw": 43,
     "probe-test.sw": 0,
     "probe-trait.sw": 0,
+    "probe-unicode.sw": 0,
     "probe-vars.sw": 0,
     "showcase.sw": 0,
 }

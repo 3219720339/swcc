@@ -1582,6 +1582,76 @@ sw_string* utf8_substring(sw_string* text, int64_t start, int64_t count) {
     return sw_string_from_literal(text->data + offset, end - offset);
 }
 
+int64_t utf8_byte_len(sw_string* text) {
+    if (text == NULL) {
+        return 0;
+    }
+    return text->len;
+}
+
+/// 第 char_index 个字符的字节起始偏移；越界返回 -1。
+int64_t utf8_index_to_byte(sw_string* text, int64_t char_index) {
+    int64_t position = 0;
+    int64_t offset = 0;
+    while (offset < text->len && position < char_index) {
+        offset += sw_utf8_char_length(text->data, offset, text->len);
+        position++;
+    }
+    if (offset < text->len && position == char_index) {
+        return offset;
+    }
+    if (position == char_index && offset == text->len) {
+        // 恰好指向字符串末尾（可用于 append 位置）。
+        return text->len;
+    }
+    return -1;
+}
+
+/// byte_offset 所在字符的字符序号；offset 落在多字节字符中间或越界返回 -1。
+int64_t utf8_byte_to_index(sw_string* text, int64_t byte_offset) {
+    if (byte_offset < 0 || byte_offset > text->len) {
+        return -1;
+    }
+    if (byte_offset == text->len) {
+        return utf8_len(text);
+    }
+    int64_t position = 0;
+    int64_t offset = 0;
+    while (offset < text->len) {
+        if (offset == byte_offset) {
+            return position;
+        }
+        int64_t char_len = sw_utf8_char_length(text->data, offset, text->len);
+        offset += char_len;
+        position++;
+    }
+    return -1;
+}
+
+/// 是否全部为可打印字符（普通 ASCII 可见 + 非 ASCII UTF-8 序列；控制字符算不可打印）。
+int64_t utf8_is_printable(sw_string* text) {
+    int64_t index = 0;
+    while (index < text->len) {
+        unsigned char byte = (unsigned char)text->data[index];
+        if (byte < 0x80) {
+            // ASCII：可打印区间 0x20-0x7E；\n \t \r 视为可打印（文本行长用）。
+            if (!((byte >= 0x20 && byte <= 0x7E) || byte == '\n' || byte == '\t' || byte == '\r')) {
+                return 0;
+            }
+            index += 1;
+        } else {
+            int64_t char_len = sw_utf8_char_length(text->data, index, text->len);
+            int64_t cp = sw_utf8_decode(text->data, index, char_len);
+            if (cp < 0 || (cp >= 0xE000 && cp <= 0xF8FF)) {
+                // 排除私有区段（通常不可打印）。
+                return 0;
+            }
+            index += char_len;
+        }
+    }
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // time：毫秒时间戳与睡眠。
 // ---------------------------------------------------------------------------

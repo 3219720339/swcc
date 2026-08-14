@@ -20,3 +20,15 @@ export extern c function utf8_char_at(text: string, index: int): int;
 
 /// 截取从第 start 个字符开始的 count 个字符。
 export extern c function utf8_substring(text: string, start: int, count: int): string;
+
+/// 字符串的 UTF-8 字节数（stdin 底层长度；string.length 是字符数）。
+export extern c function utf8_byte_len(text: string): int;
+
+/// 第 char_index 个字符的字节起始偏移；越界返回 -1（指向末尾返回 len）。
+export extern c function utf8_index_to_byte(text: string, char_index: int): int;
+
+/// byte_offset 所在字符的字符序号；offset 落在多字节字符中间或越界返回 -1。
+export extern c function utf8_byte_to_index(text: string, byte_offset: int): int;
+
+/// 是否全部为可打印字符（可打印 ASCII + 非 ASCII UTF-8，排除私有区段；\n\t\r 可打印）。
+export extern c function utf8_is_printable(text: string): bool;

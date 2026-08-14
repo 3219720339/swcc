@@ -813,9 +813,18 @@ Sw 编译器（swcc）开发进度
                        - 验证：cargo test 51 全绿、probe-enum-c / probe-adt /
                          probe-result / showcase 通过
 
+    2026-08-15 03:10  标准库扩充：std/unicode 3→7 个函数：
+                       - utf8_byte_len(text)：UTF-8 字节数
+                       - utf8_index_to_byte(text, char_index)：字符序号→字节偏移（越界 -1，末尾=len）
+                       - utf8_byte_to_index(text, byte_offset)：字节偏移→字符序号（落在多字节中间 -1）
+                       - utf8_is_printable(text)：是否全为可打印字符（排除控制符/私有区段）
+                       - runtime.c 用现有 sw_utf8_char_length/sw_utf8_decode 实现，plain 链接
+                       - 新增 examples/probe-unicode.sw（13 项断言）注册进 run-examples.py
+                       - 验证：cargo test 51 全绿、probe-unicode 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
-       2. 标准库继续扩充（unicode 等薄弱模块）
+       2. 标准库继续扩充（io 6 个函数、regex/hash 新模块）
 
 二、已知限制
 
