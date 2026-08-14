@@ -933,6 +933,37 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// match 表达式：`match (v) { Some(n) => n, None => 0 }`（分支体为表达式）。
+    /// 与语句版 match 的区别：分支体是 parse_assignment 而非块。
+    fn parse_match_expr(&mut self, start: usize) -> Result<Expr, ()> {
+        self.expect(&TokenKind::LParen, "match 缺少 `(`")?;
+        let value = self.parse_expression()?;
+        self.expect(&TokenKind::RParen, "match 缺少 `)`")?;
+        self.expect(&TokenKind::LBrace, "match 缺少 `{`")?;
+        let mut arms = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let arm_start = self.peek().span.start;
+            let pattern = self.parse_pattern()?;
+            self.expect(&TokenKind::FatArrow, "match 分支缺少 `=>`")?;
+            let body = self.parse_assignment()?;
+            arms.push(MatchExprArm {
+                pattern,
+                body,
+                span: Span::new(arm_start, self.peek().span.start),
+            });
+            // 分支间换行分隔即可，逗号可选。
+            self.eat(&TokenKind::Comma);
+        }
+        self.expect(&TokenKind::RBrace, "match 缺少 `}`").ok();
+        Ok(Expr {
+            kind: ExprKind::MatchExpr {
+                value: Box::new(value),
+                arms,
+            },
+            span: Span::new(start, self.peek().span.start),
+        })
+    }
+
     fn parse_try(&mut self) -> Result<StmtKind, ()> {
         self.advance(); // try
         let body = self.parse_block()?;
@@ -1755,6 +1786,7 @@ impl<'a> Parser<'a> {
                 return self.parse_template(token.span);
             }
             TokenKind::Keyword(Keyword::New) => return self.parse_new(start),
+            TokenKind::Keyword(Keyword::Match) => return self.parse_match_expr(start),
             TokenKind::LBracket => {
                 let mut elements = Vec::new();
                 if !self.at(&TokenKind::RBracket) {

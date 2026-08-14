@@ -19,8 +19,8 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use sw_semantic::symbols::FunctionSig;
 use sw_semantic::types::Type;
 use sw_semantic::{
-    MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule, MirParam, MirStmt,
-    MirStmtKind, MirTarget, MirUnary, TypeTable,
+    MatchArmMir, MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule, MirParam,
+    MirStmt, MirStmtKind, MirTarget, MirUnary, TypeTable,
 };
 use target_lexicon::Triple;
 
@@ -575,6 +575,12 @@ fn visit_expr(
             visit_expr(cond, generator, mir, exports, ctx, refs)?;
             visit_expr(then, generator, mir, exports, ctx, refs)?;
             visit_expr(else_, generator, mir, exports, ctx, refs)?;
+        }
+        MirExpr::MatchExpr { value, arms, .. } => {
+            visit_expr(value, generator, mir, exports, ctx, refs)?;
+            for arm in arms {
+                visit_expr(&arm.body, generator, mir, exports, ctx, refs)?;
+            }
         }
         MirExpr::Assign { target, value } => {
             visit_target(target, generator, mir, exports, ctx, refs)?;
@@ -2328,6 +2334,74 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 self.builder.switch_to_block(join_block);
                 self.builder.seal_block(join_block);
                 self.builder.ins().stack_load(types::I64, value_ty, slot, 0)
+            }
+            MirExpr::MatchExpr { value, arms, ret } => {
+                let enum_value = self.expr(value)?;
+                let result_slot = self.new_slot();
+                let join = self.builder.create_block();
+                let dispatch_blocks: Vec<Block> =
+                    arms.iter().map(|_| self.builder.create_block()).collect();
+                let body_blocks: Vec<Block> =
+                    arms.iter().map(|_| self.builder.create_block()).collect();
+                self.builder.ins().jump(dispatch_blocks[0], &[]);
+                for (index, arm) in arms.iter().enumerate() {
+                    self.builder.switch_to_block(dispatch_blocks[index]);
+                    let next = dispatch_blocks.get(index + 1).copied().unwrap_or(join);
+                    match arm.tag {
+                        Some(tag) => {
+                            let tag_value = self.builder.ins().load(
+                                types::I64,
+                                MemFlagsData::new(),
+                                enum_value,
+                                0,
+                            );
+                            let target = self.builder.ins().iconst(types::I64, tag);
+                            let matched = self.builder.ins().icmp(IntCC::Equal, tag_value, target);
+                            self.builder
+                                .ins()
+                                .brif(matched, body_blocks[index], &[], next, &[]);
+                        }
+                        None => {
+                            self.builder.ins().jump(body_blocks[index], &[]);
+                        }
+                    }
+                    self.builder.switch_to_block(body_blocks[index]);
+                    for (bind_index, (local, ty)) in arm.bindings.iter().enumerate() {
+                        let field = self.builder.ins().load(
+                            types::I64,
+                            MemFlagsData::new(),
+                            enum_value,
+                            ((bind_index + 1) * 8) as i32,
+                        );
+                        let field = if ty.is_float() {
+                            self.builder
+                                .ins()
+                                .bitcast(types::F64, MemFlagsData::new(), field)
+                        } else {
+                            field
+                        };
+                        let slot = self.slot_for(*local);
+                        self.builder.ins().stack_store(types::I64, field, slot, 0);
+                    }
+                    let body_value = self.expr(&arm.body)?;
+                    self.builder
+                        .ins()
+                        .stack_store(types::I64, body_value, result_slot, 0);
+                    self.builder.ins().jump(join, &[]);
+                }
+                self.builder.switch_to_block(join);
+                self.builder.seal_block(join);
+                for block in dispatch_blocks.iter().chain(body_blocks.iter()) {
+                    self.builder.seal_block(*block);
+                }
+                let ret_ty = if ret.is_float() {
+                    types::F64
+                } else {
+                    types::I64
+                };
+                self.builder
+                    .ins()
+                    .stack_load(types::I64, ret_ty, result_slot, 0)
             }
             MirExpr::Assign { target, value } => {
                 let value = self.expr(value)?;

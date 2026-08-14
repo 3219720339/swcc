@@ -157,6 +157,14 @@ pub struct MatchArm {
 }
 
 #[derive(Clone, Debug)]
+pub struct MatchExprArm {
+    pub pattern: Pattern,
+    /// 表达式形式的分支体（match 表达式的值）。
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
 pub struct ClassDecl {
     pub final_: bool,
     pub name: Ident,
@@ -418,6 +426,11 @@ pub enum ExprKind {
     },
     /// `expr?`：Result 错误传播（Rust 风格）。
     TryOp(Box<Expr>),
+    /// match 表达式：`const x = match (v) { Some(n) => n, None => 0 };`
+    MatchExpr {
+        value: Box<Expr>,
+        arms: Vec<MatchExprArm>,
+    },
     Array(Vec<Expr>),
     Object(Vec<ObjectField>),
     New {

@@ -44,6 +44,7 @@ EXPECTED = {
     "probe-io.sw": 0,
     "probe-json.sw": 0,
     "probe-multifile.sw": 0,
+    "probe-match-expr.sw": 0,
     "probe-map-clear.sw": 0,
     "probe-map-values.sw": 0,
     "probe-net.sw": 0,

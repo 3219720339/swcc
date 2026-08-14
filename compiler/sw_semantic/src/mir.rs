@@ -228,6 +228,21 @@ pub enum MirExpr {
         sig: FunctionSig,
         elem: Type,
     },
+    /// match 表达式：按 tag 分派，每分支解构绑定后求值，结果进公共槽。
+    MatchExpr {
+        value: Box<MirExpr>,
+        arms: Vec<MatchArmMir>,
+        ret: Type,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct MatchArmMir {
+    /// 匹配的变体 tag；None 表示通配 `_`（兜底分支）。
+    pub tag: Option<i64>,
+    /// 解构绑定：(局部变量 index, 字段类型)。
+    pub bindings: Vec<(usize, Type)>,
+    pub body: MirExpr,
 }
 
 #[derive(Clone, Debug)]

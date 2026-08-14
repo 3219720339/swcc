@@ -882,6 +882,23 @@ Sw 编译器（swcc）开发进度
                          fmt --check 通过；61 examples、52 测试全绿
                        - 提交推 Gitee + GitHub 复跑三平台 CI
 
+    2026-08-15 02:56  match 表达式（A1，返回值形式）：
+                       - 语法：`const x = match (v) { Some(n) => n, None => 0 };`
+                         分支体为表达式（与语句版 match 分支体为块区分），
+                         分支间逗号可选，`_` 通配兜底
+                       - AST：ExprKind::MatchExpr + MatchExprArm；parser 在
+                         parse_primary 增加 match 表达式解析
+                       - 检查：枚举校验、模式绑定作用域、穷尽检查、分支类型
+                         合并（可赋值双向，与三元一致）
+                       - MIR：MirExpr::MatchExpr + MatchArmMir（tag/绑定/体）；
+                         降级复用语句 match 的解构绑定逻辑，绑定变量进
+                         name_scopes；codegen 生成 dispatch 链（tag 比较 →
+                         分支块解构绑定 + 求值存结果槽 → join 读回），
+                         float 分支按 F64 位模式
+                       - 新增 examples/probe-match-expr.sw（6 项断言：字符串/
+                         float/双绑定/无字段变体/int 表达式），62 个 examples
+                         全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

@@ -2688,6 +2688,106 @@ impl<'s> Checker<'s> {
                 }
                 ok_ty
             }
+            ExprKind::MatchExpr { value, arms } => {
+                let value_ty = self.check_expr(value);
+                let Type::Enum(enum_id) = value_ty.without_nullable() else {
+                    self.error("match 目标必须是枚举类型", value.span);
+                    return Type::Error;
+                };
+                let info = self.types.enums[*enum_id as usize].clone();
+                let mut covered = vec![false; info.members.len()];
+                let mut wildcard = false;
+                let mut merged: Option<Type> = None;
+                for arm in arms {
+                    let body_ty = match &arm.pattern {
+                        Pattern::Wildcard(_) => {
+                            wildcard = true;
+                            self.check_expr(&arm.body)
+                        }
+                        Pattern::Variant {
+                            name,
+                            bindings,
+                            span,
+                        } => {
+                            let Some(index) = info
+                                .members
+                                .iter()
+                                .position(|member| member.name == name.name)
+                            else {
+                                self.error(
+                                    format!("枚举 {} 没有变体 `{}`", info.name, name.name),
+                                    name.span,
+                                );
+                                continue;
+                            };
+                            let variant = &info.members[index];
+                            if variant.fields.len() != bindings.len() {
+                                self.error(
+                                    format!(
+                                        "变体 `{}` 需要 {} 个绑定变量，实际 {}",
+                                        variant.name,
+                                        variant.fields.len(),
+                                        bindings.len()
+                                    ),
+                                    *span,
+                                );
+                            }
+                            covered[index] = true;
+                            self.scopes.push(HashMap::new());
+                            for (binding, ty) in bindings.iter().zip(variant.fields.iter()) {
+                                let id = self.alloc_local();
+                                self.symbols[id.0 as usize].kind = SymbolKind::Local {
+                                    ty: ty.clone(),
+                                    mutable: false,
+                                };
+                                self.scopes
+                                    .last_mut()
+                                    .expect("作用域存在")
+                                    .insert(binding.name.clone(), id);
+                            }
+                            let ty = self.check_expr(&arm.body);
+                            self.scopes.pop();
+                            ty
+                        }
+                    };
+                    merged = Some(match merged {
+                        None => body_ty,
+                        Some(prev) => {
+                            if self.is_assignable(&body_ty, &prev) {
+                                prev
+                            } else if self.is_assignable(&prev, &body_ty) {
+                                body_ty
+                            } else {
+                                self.error(
+                                    format!(
+                                        "match 分支类型不一致：{} 与 {}",
+                                        prev.display(),
+                                        body_ty.display()
+                                    ),
+                                    arm.span,
+                                );
+                                prev
+                            }
+                        }
+                    });
+                }
+                if !wildcard {
+                    let uncovered: Vec<&str> = info
+                        .members
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| !covered[*index])
+                        .map(|(_, member)| member.name.as_str())
+                        .collect();
+                    if !uncovered.is_empty() {
+                        self.error(
+                            format!("match 未穷尽：缺少变体 {}", uncovered.join(", ")),
+                            value.span,
+                        );
+                    }
+                }
+                merged.unwrap_or(Type::Error)
+            }
             ExprKind::Array(items) => {
                 let mut element = None;
                 for item in items {
@@ -6407,6 +6507,63 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     elem: info.members[ok_idx].fields[0].clone(),
                 }
             }
+            ExprKind::MatchExpr { value, arms } => {
+                let value_ty = self.expr_type(value);
+                let Type::Enum(enum_id) = value_ty.without_nullable() else {
+                    return MirExpr::Int(0);
+                };
+                let value_mir = self.lower_expr(value);
+                let info = self.lowerer.types.enums[*enum_id as usize].clone();
+                let mut mir_arms = Vec::new();
+                for arm in arms {
+                    match &arm.pattern {
+                        Pattern::Wildcard(_) => {
+                            mir_arms.push(MatchArmMir {
+                                tag: None,
+                                bindings: Vec::new(),
+                                body: self.lower_expr(&arm.body),
+                            });
+                        }
+                        Pattern::Variant { name, bindings, .. } => {
+                            let Some(index) = info
+                                .members
+                                .iter()
+                                .position(|member| member.name == name.name)
+                            else {
+                                continue;
+                            };
+                            let variant = &info.members[index];
+                            self.name_scopes.push(HashMap::new());
+                            let mut mir_bindings = Vec::new();
+                            for (bind_index, binding) in bindings.iter().enumerate() {
+                                let ty = variant
+                                    .fields
+                                    .get(bind_index)
+                                    .cloned()
+                                    .unwrap_or(Type::Error);
+                                let local = self.declare_local(&binding.name, ty.clone(), false);
+                                self.name_scopes
+                                    .last_mut()
+                                    .expect("作用域存在")
+                                    .insert(binding.name.clone(), local);
+                                mir_bindings.push((local, ty));
+                            }
+                            let body = self.lower_expr(&arm.body);
+                            self.name_scopes.pop();
+                            mir_arms.push(MatchArmMir {
+                                tag: Some(variant.discriminant),
+                                bindings: mir_bindings,
+                                body,
+                            });
+                        }
+                    }
+                }
+                MirExpr::MatchExpr {
+                    value: Box::new(value_mir),
+                    arms: mir_arms,
+                    ret: self.expr_type(expr),
+                }
+            }
             ExprKind::Array(items) => {
                 let elem = self
                     .result()
@@ -6717,6 +6874,12 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             }
             ExprKind::TryOp(inner) => {
                 self.collect_captures_expr(inner, lambda_params, out, seen);
+            }
+            ExprKind::MatchExpr { value, arms } => {
+                self.collect_captures_expr(value, lambda_params, out, seen);
+                for arm in arms {
+                    self.collect_captures_expr(&arm.body, lambda_params, out, seen);
+                }
             }
             ExprKind::Object(fields) => {
                 for field in fields {
