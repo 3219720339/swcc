@@ -1,0 +1,13 @@
+﻿构建成功：demo-os.exe（用时 39 ms）
+platform=windows arch=x86_64 pid=32836 cpu=65536
+cwd=C:\Users\Administrator\Desktop\swcc\examples\demo
+home=C:\Users\Administrator temp=C:\Users\Administrator\AppData\Local\Temp\
+hostname=WIN-RHLR87K5PF3 username=Administrator
+desktop=C:\Users\Administrator\Desktop documents=C:\Users\Administrator\Documents downloads=C:\Users\Administrator\Downloads
+system_dir=C:\Windows\system32
+env_keys_count=60
+PATH_len=1409
+getenv_after_set=demo-value
+run=[hello-from-subprocess]
+run_status=7
+spawn_pid=35160 wait=5

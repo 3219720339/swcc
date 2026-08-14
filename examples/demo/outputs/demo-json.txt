@@ -1,0 +1,10 @@
+﻿构建成功：demo-json.exe（用时 40 ms）
+type=object keys=lang,year,pi,ok,tags
+lang=sw
+year=2026
+pi=3.14
+ok=1
+tags_len=2 tags_0=gc tags_1=vtable
+stringify={"lang":"sw","year":2026,"pi":3.1400000000000001,"ok":true,"tags":["gc","vtable"]}
+missing_kind=0
+bad_parse_null=true

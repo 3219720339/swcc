@@ -1,0 +1,8 @@
+﻿构建成功：demo-unicode.exe（用时 39 ms）
+text=你好Sw len=4 byte_len=8
+char_at(0)=20320 char_at(1)=22909 char_at(3)=119
+substring(0,2)=你好 substring(2,2)=Sw
+index_to_byte(0)=0 index_to_byte(1)=3 index_to_byte(2)=6
+byte_to_index(3)=1 byte_to_index(6)=2
+is_printable=true is_printable_ctrl=false
+length=4 first_char=你

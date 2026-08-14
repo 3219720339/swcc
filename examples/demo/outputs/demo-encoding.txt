@@ -1,0 +1,6 @@
+﻿构建成功：demo-encoding.exe（用时 35 ms）
+base64_encode=aGVsbG8g5L2g5aW9 decode=hello 你好
+hex_encode=68656c6c6f20e4bda0e5a5bd decode=hello 你好
+url_encode=a%20b%26c%3d%e4%b8%ad%e6%96%87 decode=a b&c=中文
+base64url_encode=aGVsbG8g5L2g5aW9 decode=hello 你好
+html_escape=&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;

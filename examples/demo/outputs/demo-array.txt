@@ -1,0 +1,14 @@
+﻿构建成功：demo-array.exe（用时 43 ms）
+sort_int=[1,2,3,4,5]
+sort_int_desc=[5,4,3,2,1]
+reverse_int=[1,2,3,4,5]
+min_int=1 max_int=5 sum_int=15
+contains_int=true index_of_int=1
+sort_float=[1.2,2.8,3.5]
+min_float=1.2 max_float=3.5 sum_float=7.5
+contains_float=true index_of_float=1
+sort_string=[apple,banana,cherry]
+sort_string_desc=[cherry,banana,apple]
+reverse_string=[apple,banana,cherry]
+unique_string=[a,b,c]
+contains_string=true index_of_string=0

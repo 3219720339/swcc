@@ -1,0 +1,7 @@
+﻿构建成功：demo-net.exe（用时 37 ms）
+listen_port=52843
+connect=true
+accept=true
+send_bytes=13
+recv=hello-from-sw
+closed

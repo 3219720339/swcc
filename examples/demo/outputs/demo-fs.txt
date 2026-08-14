@@ -1,0 +1,16 @@
+﻿构建成功：demo-fs.exe（用时 46 ms）
+exists=1 is_file=1 is_dir=1
+read_all=[line one
+line two
+line three
+]
+lines=3 content=line one|line two|line three
+file_size=29 mtime=2026-08-15
+list_dir=data.txt
+path_join=a\b basename=c.txt dirname=a/b ext=.txt
+path_absolute=C:\Users\Administrator\Desktop\swcc\examples\demo\demo-fs-tmp\data.txt normalize=a\c is_absolute=true
+path_parts=3 expand_home=C:\Users\Administrator
+copy_exists=1
+walk_files_count=2
+glob_count=2
+touch_exists=1

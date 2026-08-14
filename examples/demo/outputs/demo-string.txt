@@ -1,0 +1,32 @@
+﻿构建成功：demo-string.exe（用时 47 ms）
+trim=[Hello, Sw] upper=  HELLO, SW   lower=  hello, sw  
+split-join=Hello,|Sw
+replace=a+b+c count=2
+contains=true starts=true ends=true
+substring=ell lines=3
+parse_int=42 parse_float=3.14
+parse_int_or=-1 is_number=true parse_bool=true
+format=score: 42 (3.14) 000000ff
+repeat=-=-=-= from_code_point=你
+reverse=wS好你 index_of_char=2
+split_chars=你好 chars=你,好
+pad_left=00042 pad_right=42---
+format_int=042 format_float=3.14
+trim_left=[hi  ] trim_right=[  hi]
+split_whitespace=3 last_index_of=2
+is_ascii=true is_ascii_cn=false is_empty=true
+escape=a\"b\nc unescape=a"b
+c
+utf8_is_valid=true truncate=你好Sw ellipsis=你...
+remove_prefix=def remove_suffix=abc
+is_upper=true is_lower=true is_digit=true capitalize=Sw
+is_blank=true strip_whitespace=[ab]
+substring_between=X
+substring_between_last=b
+extract_between=3 before=a after=b|c
+before_last=a|b after_last=c
+char_code=20320 replace_pairs=Hello，World
+反转文本=wS好你 是否空白=true 删全部空白=[ab]
+取文本中间=X 取文本左边=a 取文本右边=b
+是否包含=true 开头为=true 结尾为=true
+出现次数=2 首字母大写=Sw 删除前缀=def

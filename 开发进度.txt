@@ -1114,6 +1114,20 @@ Sw 编译器（swcc）开发进度
                        - 新增 examples/demo/README.md 汇总运行方式、
                          演示清单与输出速览
 
+    2026-08-15 04:40  演示副本升级：真实输出版（demo-*.sw，12 个模块）：
+                       - 用户要求"不要 [ok] 断言，直接打印真实结果"，
+                         新增 demo-time/string/math/array/map/json/encoding/
+                         unicode/hash/fs/os/net 12 个演示文件
+                       - 每个文件直接调用标准库函数并打印实际值（时间显示
+                         当前年月日时分秒、哈希显示真实数值、TCP 显示实际
+                         端口与回环数据等），零断言
+                       - 全量跑通并保存输出到 examples/demo/outputs/demo-*.txt；
+                         README 重写为"真实输出版"清单
+                       - 踩坑修复：中文函数名需显式 import（std/string、
+                         std/time 的中文转发要逐个列出）；string? 不可直接
+                         模板插值（先 ?? 兜底再打印）；字符串控制字符转义
+                         用 \u{1} 写法
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
