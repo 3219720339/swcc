@@ -105,6 +105,12 @@ export extern c function time_diff(sec1: int, sec2: int, unit: int): int;
 /// 进程启动以来毫秒数（单调时钟）。
 export extern c function uptime_ms(): int;
 
+/// 毫秒时间戳格式化为本地日期时间含毫秒 "YYYY-MM-DD HH:MM:SS.mmm"。
+export extern c function datetime_string_ms(milliseconds: int): string;
+
+/// ISO 8601 周数（周一为一周开始；1 月 4 日所在周为第 1 周）。
+export extern c function week_of_year(seconds: int): int;
+
 // ---------------------------------------------------------------------------
 // 中文函数名（转发到英文实现，火山风格命名）
 // ---------------------------------------------------------------------------
@@ -175,4 +181,12 @@ export function 秒数转时间格式(seconds: int, include_days: int, text_mode
 
 export function 取系统启动时间(): int {
     return uptime_ms();
+}
+
+export function 取日期时间毫秒(milliseconds: int): string {
+    return datetime_string_ms(milliseconds);
+}
+
+export function 取年份周数(seconds: int): int {
+    return week_of_year(seconds);
 }

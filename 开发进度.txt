@@ -1238,6 +1238,32 @@ Sw 编译器（swcc）开发进度
                        - 验证：76 examples 全过、cargo test 52 全绿、
                          fmt 通过、三平台交叉编译通过
 
+    2026-08-15 06:40  标准库第二批（轻量实用一批，全中英文）：
+                       - 随机增强：std/math 加 rand_int_range/rand_bool/
+                         random_uuid（v4）+ 中文（取随机整数范围/取随机布尔/
+                         取随机UUID）；std/array 加 shuffle_string/int/float
+                         （原地洗牌）+ 中文（打乱数组文本/整数/小数）
+                       - 格式化：std/string 加 format_bytes（1536→"1.5 KB"，
+                         去尾零）、format_thousands（千分位）、int_to_hex/
+                         oct/bin、parse_int_radix（2-36 进制）+ 中文
+                       - 字符串实用：to_snake_case（含连续大写处理）、
+                         to_camel_case、is_alpha/is_alnum/is_punct + 中文
+                       - 新增 std/csv：csv_parse_line（引号包裹/"" 转义/
+                         引号内逗号）、csv_join（自动加引号）+ 中文
+                       - 新增 std/set：基于 map 的字符串集合（set_new/add/
+                         remove/has/len/to_array，插入序去重）+ 中文
+                       - 时间补充：datetime_string_ms（含毫秒）、
+                         week_of_year（ISO 8601 周数）+ 中文
+                       - 文件补充：write_lines（逐行写+自动换行）、
+                         temp_file_path（系统临时目录+时间戳）+ 中文
+                       - 修复：format_bytes 去尾零逻辑；week_of_year 改用
+                         时间戳直接减秒（避免 shift_time 秒字段在 Windows
+                         分支溢出）
+                       - 新增探针 probe-util2.sw（62 断言）；demo 新增
+                         demo-util2.sw；run-examples.py 登记
+                       - 验证：77 examples 全过；cargo test 52 全绿；
+                         fmt 通过；runtime.c 三平台交叉编译通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

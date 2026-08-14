@@ -1,0 +1,39 @@
+﻿构建成功：demo-util2.exe（用时 986 ms）
+3
+true
+b5bb49b7-cb55-4e38-ae8f-9e72d4484c0f
+14
+d08d3257-e347-40b5-b476-1b80a6911454
+a,c,d,b,e
+z,y,x
+1.5 KB
+5 MB
+500 B
+1,234,567
+2 KB
+99,999,999
+ff
+101
+255
+5
+hello_world
+helloWorld
+http_server
+true
+true
+true
+3
+a|b|c,d
+a,b,"c,d"
+1+2+3
+x,y
+true
+2
+2
+2026-08-14 17:33:20.123
+33
+2026-08-14 17:33:20.456
+3
+第一行
+C:\Users\Administrator\AppData\Local\Temp\sw-1786742267364.tmp
+C:\Users\Administrator\AppData\Local\Temp\pre-1786742267364.tmp

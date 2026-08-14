@@ -200,6 +200,39 @@ export extern c function char_code(text: string, index: int): int;
 ///     → "Hello，火山中文编程"
 export extern c function replace_pairs(text: string, ...pairs: any): string;
 
+/// 字节数格式化：format_bytes(1536) == "1.5 KB"；支持 B/KB/MB/GB/TB。
+export extern c function format_bytes(bytes: int): string;
+
+/// 千分位格式化：format_thousands(1234567) == "1,234,567"。
+export extern c function format_thousands(value: int): string;
+
+/// 整数转十六进制（小写，无前缀）：int_to_hex(255) == "ff"。
+export extern c function int_to_hex(value: int): string;
+
+/// 整数转八进制（无前缀）：int_to_oct(8) == "10"。
+export extern c function int_to_oct(value: int): string;
+
+/// 整数转二进制（无前缀）：int_to_bin(5) == "101"。
+export extern c function int_to_bin(value: int): string;
+
+/// 按进制（2-36）解析字符串；非法返回 0。示例：parse_int_radix("ff", 16) == 255。
+export extern c function parse_int_radix(text: string, radix: int): int;
+
+/// 驼峰转蛇形：to_snake_case("helloWorld") == "hello_world"。
+export extern c function to_snake_case(text: string): string;
+
+/// 蛇形/空格/短横转驼峰：to_camel_case("hello_world") == "helloWorld"。
+export extern c function to_camel_case(text: string): string;
+
+/// 是否全部为字母（ASCII a-zA-Z，空串 false）。
+export extern c function is_alpha(text: string): bool;
+
+/// 是否全部为字母或数字（ASCII，空串 false）。
+export extern c function is_alnum(text: string): bool;
+
+/// 是否全部为标点（ASCII 可见非字母数字，空串 false）。
+export extern c function is_punct(text: string): bool;
+
 // ---------------------------------------------------------------------------
 // 中文函数名（转发到英文实现，火山风格命名；实际符号仍是英文函数）
 // ---------------------------------------------------------------------------
@@ -296,4 +329,48 @@ export function 删除前缀(text: string, prefix: string): string {
 
 export function 删除后缀(text: string, suffix: string): string {
     return remove_suffix(text, suffix);
+}
+
+export function 字节数格式化(bytes: int): string {
+    return format_bytes(bytes);
+}
+
+export function 千分位格式化(value: int): string {
+    return format_thousands(value);
+}
+
+export function 整数转十六进制(value: int): string {
+    return int_to_hex(value);
+}
+
+export function 整数转八进制(value: int): string {
+    return int_to_oct(value);
+}
+
+export function 整数转二进制(value: int): string {
+    return int_to_bin(value);
+}
+
+export function 按进制解析整数(text: string, radix: int): int {
+    return parse_int_radix(text, radix);
+}
+
+export function 转蛇形命名(text: string): string {
+    return to_snake_case(text);
+}
+
+export function 转驼峰命名(text: string): string {
+    return to_camel_case(text);
+}
+
+export function 是否字母(text: string): bool {
+    return is_alpha(text);
+}
+
+export function 是否字母数字(text: string): bool {
+    return is_alnum(text);
+}
+
+export function 是否标点(text: string): bool {
+    return is_punct(text);
 }

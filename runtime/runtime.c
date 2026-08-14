@@ -8509,3 +8509,512 @@ void* http_get(sw_string* url) {
 void* http_post(sw_string* url, sw_string* body) {
     return http_request(sw_string_from_literal("POST", 4), url, body);
 }
+
+// ---------------------------------------------------------------------------
+// 第二批：随机增强 / 格式化 / 字符串实用 / CSV / 时间 / 文件补充
+// ---------------------------------------------------------------------------
+
+// [min, max) 范围内的随机整数。
+int64_t rand_int_range(int64_t min, int64_t max) {
+    if (max <= min) {
+        return min;
+    }
+    int64_t span = max - min;
+    int64_t value = rand_int(span);
+    return min + value;
+}
+
+// 随机布尔（true/false）。
+int64_t rand_bool(void) {
+    return rand_int(2) == 0 ? 0 : 1;
+}
+
+// UUID v4：xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx。
+sw_string* random_uuid(void) {
+    char buffer[37];
+    for (int i = 0; i < 36; i++) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            buffer[i] = '-';
+            continue;
+        }
+        int v = (int)rand_int(16);
+        if (i == 14) {
+            v = 4;  // version 4
+        }
+        if (i == 19) {
+            v = 8 + rand_int(4);  // variant 8/9/a/b
+        }
+        buffer[i] = v < 10 ? (char)('0' + v) : (char)('a' + v - 10);
+    }
+    buffer[36] = 0;
+    return sw_string_from_literal(buffer, 36);
+}
+
+// 洗牌（原地交换，8 字节槽；string[]/int[] 均可）。
+void sw_shuffle(sw_array* items) {
+    if (items == NULL || items->len < 2) {
+        return;
+    }
+    int64_t* data = (int64_t*)items->data;
+    for (int64_t i = items->len - 1; i > 0; i--) {
+        int64_t j = rand_int_range(0, i + 1);
+        int64_t temp = data[i];
+        data[i] = data[j];
+        data[j] = temp;
+    }
+}
+
+// 字节数格式化：1536 -> "1.5 KB"；支持 B/KB/MB/GB/TB。
+sw_string* format_bytes(int64_t bytes) {
+    char buffer[64];
+    if (bytes < 0) {
+        return sw_string_from_literal("-", 1);
+    }
+    static const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    double value = (double)bytes;
+    int unit = 0;
+    while (value >= 1024.0 && unit < 4) {
+        value /= 1024.0;
+        unit++;
+    }
+    if (unit == 0) {
+        snprintf(buffer, sizeof(buffer), "%lld B", (long long)bytes);
+    } else if (value >= 100.0) {
+        snprintf(buffer, sizeof(buffer), "%.0f %s", value, units[unit]);
+    } else {
+        // 最多两位小数，去掉尾零（1536 -> "1.5 KB"、1024 -> "1 KB"）。
+        char num[32];
+        snprintf(num, sizeof(num), "%.2f", value);
+        int len = (int)strlen(num);
+        while (len > 1 && num[len - 1] == '0') {
+            len--;
+        }
+        if (len > 1 && num[len - 1] == '.') {
+            len--;
+        }
+        num[len] = 0;
+        snprintf(buffer, sizeof(buffer), "%s %s", num, units[unit]);
+    }
+    return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
+}
+
+// 千分位格式化：1234567 -> "1,234,567"。
+sw_string* format_thousands(int64_t value) {
+    char buffer[64];
+    if (value < 0) {
+        char inner[64];
+        snprintf(inner, sizeof(inner), "%lld", (long long)(-value));
+        int len = (int)strlen(inner);
+        int digits = len;
+        int commas = (digits - 1) / 3;
+        int out_len = 1 + digits + commas;
+        char* out = (char*)sw_gc_alloc((uint64_t)out_len + 1);
+        int w = 0;
+        out[w++] = '-';
+        for (int i = 0; i < digits; i++) {
+            if (i > 0 && (digits - i) % 3 == 0) {
+                out[w++] = ',';
+            }
+            out[w++] = inner[i];
+        }
+        out[w] = 0;
+        return sw_string_from_literal(out, w);
+    }
+    snprintf(buffer, sizeof(buffer), "%lld", (long long)value);
+    int len = (int)strlen(buffer);
+    int commas = (len - 1) / 3;
+    char* out = (char*)sw_gc_alloc((uint64_t)(len + commas + 1));
+    int w = 0;
+    for (int i = 0; i < len; i++) {
+        if (i > 0 && (len - i) % 3 == 0) {
+            out[w++] = ',';
+        }
+        out[w++] = buffer[i];
+    }
+    out[w] = 0;
+    return sw_string_from_literal(out, w);
+}
+
+static const char sw_hex_digits[] = "0123456789abcdef";
+
+// 整数转十六进制（小写，无前缀）。
+sw_string* int_to_hex(int64_t value) {
+    if (value == 0) {
+        return sw_string_from_literal("0", 1);
+    }
+    int64_t v = value < 0 ? (int64_t)((uint64_t)value) : value;  // 按无符号位模式输出
+    char buffer[32];
+    int w = 0;
+    int started = 0;
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        int digit = (int)((v >> shift) & 0xF);
+        if (digit != 0 || started) {
+            buffer[w++] = sw_hex_digits[digit];
+            started = 1;
+        }
+    }
+    buffer[w] = 0;
+    return sw_string_from_literal(buffer, w);
+}
+
+// 整数转八进制（无前缀）。
+sw_string* int_to_oct(int64_t value) {
+    if (value == 0) {
+        return sw_string_from_literal("0", 1);
+    }
+    int64_t v = value < 0 ? (int64_t)((uint64_t)value) : value;
+    char buffer[32];
+    int w = 0;
+    int started = 0;
+    for (int shift = 60; shift >= 0; shift -= 3) {
+        int digit = (int)((v >> shift) & 7);
+        if (digit != 0 || started) {
+            buffer[w++] = (char)('0' + digit);
+            started = 1;
+        }
+    }
+    buffer[w] = 0;
+    return sw_string_from_literal(buffer, w);
+}
+
+// 整数转二进制（无前缀）。
+sw_string* int_to_bin(int64_t value) {
+    if (value == 0) {
+        return sw_string_from_literal("0", 1);
+    }
+    int64_t v = value < 0 ? (int64_t)((uint64_t)value) : value;
+    char buffer[80];
+    int w = 0;
+    int started = 0;
+    for (int shift = 63; shift >= 0; shift--) {
+        int digit = (int)((v >> shift) & 1);
+        if (digit != 0 || started) {
+            buffer[w++] = (char)('0' + digit);
+            started = 1;
+        }
+    }
+    buffer[w] = 0;
+    return sw_string_from_literal(buffer, w);
+}
+
+// 按指定进制（2-36）解析字符串为整数；非法返回 0。
+int64_t parse_int_radix(sw_string* text, int64_t radix) {
+    if (text == NULL || radix < 2 || radix > 36) {
+        return 0;
+    }
+    int64_t i = 0;
+    int negative = 0;
+    if (i < text->len && (text->data[i] == '-' || text->data[i] == '+')) {
+        negative = text->data[i] == '-';
+        i++;
+    }
+    int64_t result = 0;
+    while (i < text->len) {
+        char c = text->data[i];
+        int digit;
+        if (c >= '0' && c <= '9') {
+            digit = c - '0';
+        } else if (c >= 'a' && c <= 'z') {
+            digit = c - 'a' + 10;
+        } else if (c >= 'A' && c <= 'Z') {
+            digit = c - 'A' + 10;
+        } else {
+            break;
+        }
+        if (digit >= radix) {
+            break;
+        }
+        result = result * radix + digit;
+        i++;
+    }
+    return negative ? -result : result;
+}
+
+// 驼峰转蛇形：helloWorld -> hello_world；HTTPServer -> http_server。
+sw_string* to_snake_case(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t cap = text->len * 2 + 4;
+    char* out = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t w = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        if (c >= 'A' && c <= 'Z') {
+            if (w > 0 && out[w - 1] != '_') {
+                // 前一个是小写或数字才插下划线（避免连续大写中间插）。
+                if ((text->data[i - 1] >= 'a' && text->data[i - 1] <= 'z') ||
+                    (text->data[i - 1] >= '0' && text->data[i - 1] <= '9') ||
+                    (i + 1 < text->len && text->data[i + 1] >= 'a' && text->data[i + 1] <= 'z' &&
+                     text->data[i - 1] >= 'A' && text->data[i - 1] <= 'Z')) {
+                    out[w++] = '_';
+                }
+            }
+            out[w++] = (char)(c - 'A' + 'a');
+        } else if (c == '-' || c == ' ') {
+            if (w > 0 && out[w - 1] != '_') {
+                out[w++] = '_';
+            }
+        } else {
+            out[w++] = c;
+        }
+    }
+    out[w] = 0;
+    return sw_string_from_literal(out, w);
+}
+
+// 蛇形/空格/短横转驼峰：hello_world -> helloWorld；HelloWorld 首字母不变。
+sw_string* to_camel_case(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t cap = text->len + 2;
+    char* out = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t w = 0;
+    int upper_next = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        if (c == '_' || c == '-' || c == ' ') {
+            upper_next = 1;
+            continue;
+        }
+        if (upper_next && c >= 'a' && c <= 'z') {
+            out[w++] = (char)(c - 'a' + 'A');
+        } else {
+            out[w++] = c;
+        }
+        upper_next = 0;
+    }
+    out[w] = 0;
+    return sw_string_from_literal(out, w);
+}
+
+// 是否全部为字母（ASCII a-zA-Z，空串 false）。
+int64_t is_alpha(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return 0;
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// 是否全部为字母或数字（ASCII，空串 false）。
+int64_t is_alnum(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return 0;
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// 是否全部为标点（ASCII 可见非字母数字，空串 false）。
+int64_t is_punct(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return 0;
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char c = (unsigned char)text->data[i];
+        if (!(c >= 33 && c <= 126) ||
+            ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// CSV 行解析：支持引号包裹（含引号内逗号/换行/双引号转义）。
+sw_array* csv_parse_line(sw_string* text) {
+    sw_array* out = sw_array_new(8, 16);
+    if (text == NULL) {
+        out->len = 0;
+        return out;
+    }
+    int64_t cap = 64;
+    char* field = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    int64_t slot = 0;
+    int64_t i = 0;
+    int in_quotes = 0;
+    while (i <= text->len) {
+        char c = i < text->len ? text->data[i] : 0;
+        if (in_quotes) {
+            if (c == '"') {
+                if (i + 1 < text->len && text->data[i + 1] == '"') {
+                    field[used++] = '"';
+                    i += 2;
+                    continue;
+                }
+                in_quotes = 0;
+                i++;
+                continue;
+            }
+            if (c == 0) {
+                break;
+            }
+            field[used++] = c;
+            i++;
+            continue;
+        }
+        if (c == '"' && used == 0) {
+            in_quotes = 1;
+            i++;
+            continue;
+        }
+        if (c == ',' || c == 0) {
+            if (slot >= out->len) {
+                sw_array* bigger = sw_array_new(8, out->len * 2 + 1);
+                for (int64_t k = 0; k < slot; k++) {
+                    ((int64_t*)bigger->data)[k] = ((int64_t*)out->data)[k];
+                }
+                out = bigger;
+            }
+            field[used] = 0;
+            ((int64_t*)out->data)[slot++] = (int64_t)sw_string_from_literal(field, used);
+            used = 0;
+            i++;
+            continue;
+        }
+        field[used++] = c;
+        i++;
+    }
+    out->len = slot;
+    out->cap = slot;
+    return out;
+}
+
+// CSV 行连接：字段含逗号/引号/换行时自动加引号并转义。
+sw_string* csv_join(sw_array* items) {
+    int64_t* data = (int64_t*)items->data;
+    int64_t cap = 64;
+    char* out = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    for (int64_t i = 0; i < items->len; i++) {
+        sw_string* field = (sw_string*)data[i];
+        int need_quote = 0;
+        for (int64_t k = 0; k < field->len; k++) {
+            char c = field->data[k];
+            if (c == ',' || c == '"' || c == '\n' || c == '\r') {
+                need_quote = 1;
+                break;
+            }
+        }
+        if (i > 0) {
+            out[used++] = ',';
+        }
+        if (need_quote) {
+            out[used++] = '"';
+            for (int64_t k = 0; k < field->len; k++) {
+                char c = field->data[k];
+                if (c == '"') {
+                    out[used++] = '"';
+                }
+                out[used++] = c;
+            }
+            out[used++] = '"';
+        } else {
+            for (int64_t k = 0; k < field->len; k++) {
+                out[used++] = field->data[k];
+            }
+        }
+    }
+    out[used] = 0;
+    return sw_string_from_literal(out, used);
+}
+
+// 本地日期时间含毫秒："YYYY-MM-DD HH:MM:SS.mmm"。
+sw_string* datetime_string_ms(int64_t milliseconds) {
+    int64_t sec = milliseconds / 1000;
+    int64_t ms = milliseconds % 1000;
+    if (ms < 0) {
+        ms += 1000;
+        sec -= 1;
+    }
+    sw_string* base = datetime_string(sec);
+    char* out = (char*)sw_gc_alloc((uint64_t)base->len + 8);
+    int64_t used = 0;
+    for (int64_t i = 0; i < base->len; i++) {
+        out[used++] = base->data[i];
+    }
+    used += snprintf(out + used, 8, ".%03lld", (long long)ms);
+    out[used] = 0;
+    return sw_string_from_literal(out, used);
+}
+
+// ISO 8601 周数：周一为一周开始，跨年按 ISO 规则（1 月 4 日所在周为第 1 周）。
+int64_t week_of_year(int64_t seconds) {
+    int64_t year = year_of(seconds);
+    int64_t jan4 = sw_time_from_parts(year, 1, 4, 0, 0, 0);
+    // jan4 的星期：weekday_of 0=周日。ISO 周一=0。
+    int64_t jan4_wday = weekday_of(jan4);
+    int64_t jan4_iso = jan4_wday == 0 ? 6 : jan4_wday - 1;
+    // jan4 所在周的周一（时间戳直接减秒，避免 Windows 分支秒字段溢出）。
+    int64_t week1_monday = jan4 - jan4_iso * 86400;
+    int64_t diff = time_diff(week1_monday, seconds, 0);
+    if (diff < 0) {
+        // 属于上一年第 52/53 周：回退到上年 1 月 4 日递归。
+        int64_t prev_year = year - 1;
+        int64_t prev_jan4 = sw_time_from_parts(prev_year, 1, 4, 0, 0, 0);
+        int64_t pw = weekday_of(prev_jan4);
+        int64_t pw_iso = pw == 0 ? 6 : pw - 1;
+        int64_t pweek1 = prev_jan4 - pw_iso * 86400;
+        int64_t pdiff = time_diff(pweek1, seconds, 0);
+        return pdiff / 604800 + 1;
+    }
+    return diff / 604800 + 1;
+}
+
+// 按行写文件：每行一个字符串，行尾补 \n。
+int64_t write_lines(sw_string* path, sw_array* lines) {
+    if (path == NULL || lines == NULL) {
+        return -1;
+    }
+    sw_file_handle* file = fopen(path->data, "wb");
+    if (file == NULL) {
+        return -1;
+    }
+    int64_t* data = (int64_t*)lines->data;
+    int64_t total = 0;
+    for (int64_t i = 0; i < lines->len; i++) {
+        sw_string* line = (sw_string*)data[i];
+        if (line != NULL && line->len > 0) {
+            total += (int64_t)fwrite(line->data, 1, (uint64_t)line->len, file);
+        }
+        total += (int64_t)fwrite("\n", 1, 1, file);
+    }
+    fclose(file);
+    return total;
+}
+
+// 临时文件路径：<temp_dir>/<prefix><随机数>.tmp。
+sw_string* temp_file_path(sw_string* prefix) {
+    sw_string* dir = sw_temp_dir();
+    char* out = (char*)sw_gc_alloc(1024);
+    int64_t used = 0;
+    for (int64_t i = 0; i < dir->len && used < 400; i++) {
+        out[used++] = dir->data[i];
+    }
+    if (used > 0 && out[used - 1] != '/' && out[used - 1] != '\\') {
+#if defined(_WIN32)
+        out[used++] = '\\';
+#else
+        out[used++] = '/';
+#endif
+    }
+    for (int64_t i = 0; prefix != NULL && i < prefix->len && used < 400; i++) {
+        out[used++] = prefix->data[i];
+    }
+    used += snprintf(out + used, 200, "%lld.tmp", (long long)now_ms());
+    out[used] = 0;
+    return sw_string_from_literal(out, used);
+}

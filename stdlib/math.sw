@@ -123,3 +123,28 @@ export extern c function is_infinite(value: float): bool;
 
 /// 2π。
 export extern c function tau(): float;
+
+/// [min, max) 范围内的随机整数；max <= min 返回 min。
+export extern c function rand_int_range(min: int, max: int): int;
+
+/// 随机布尔值（true/false）。
+export extern c function rand_bool(): bool;
+
+/// UUID v4 文本（36 字符，如 "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"）。
+export extern c function random_uuid(): string;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 取随机整数范围(min: int, max: int): int {
+    return rand_int_range(min, max);
+}
+
+export function 取随机布尔(): bool {
+    return rand_bool();
+}
+
+export function 取随机UUID(): string {
+    return random_uuid();
+}

@@ -22,6 +22,7 @@ swc run examples/demo/demo-os.sw       # 系统/进程
 | demo-url | URL 解析（协议/主机/端口/路径/查询）+ 查询参数 | `http` `example.com` `8080` `name=sw&year=2026` |
 | demo-hash2 | MD5 / SHA-256（文本与文件，含中文函数名） | `5d41402abc4b2a76b9719d911017c592` |
 | demo-http | HTTP GET/POST（状态码 + 响应体长度） | `200` `218` `390` |
+| demo-util2 | 随机/UUID/洗牌/格式化/进制/命名/CSV/Set/时间/文件补充 | `1.5 KB` `1,234,567` `b5bb49b7-...` |
 | demo-string | 链式方法/格式化/解析/中文字符/中文函数名 | `reverse=wS好你` `format=score: 42 (3.14)` `format_float=3.14` |
 | demo-math | 取整/三角/对数/随机/常量 | `sqrt(16)=4.0000` `hypot(3,4)=5.0000` `pi=3.1416` |
 | demo-array | 排序/反转/极值/求和/去重/查找 | `sort_int=[1,2,3,4,5]` `sum_int=15` `unique=[a,b,c]` |

@@ -80,3 +80,28 @@ export extern c function index_of_float(items: float[], value: float): int;
 
 /// string[] 中首次出现的位置；不存在返回 -1。
 export extern c function index_of_string(items: string[], value: string): int;
+
+/// 原地洗牌 string[]（随机打乱顺序）。
+export extern c function shuffle_string(items: string[]): void;
+
+/// 原地洗牌 int[]（随机打乱顺序）。
+export extern c function shuffle_int(items: int[]): void;
+
+/// 原地洗牌 float[]（随机打乱顺序）。
+export extern c function shuffle_float(items: float[]): void;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 打乱数组文本(items: string[]): void {
+    shuffle_string(items);
+}
+
+export function 打乱数组整数(items: int[]): void {
+    shuffle_int(items);
+}
+
+export function 打乱数组小数(items: float[]): void {
+    shuffle_float(items);
+}

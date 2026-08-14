@@ -150,3 +150,22 @@ export extern c function read_symlink(path: string): string;
 
 /// 文件权限位（POSIX 直读 mode & 0o7777；Windows 按只读/可写映射近似值）。
 export extern c function file_mode(path: string): int;
+
+/// 按行写文件：每行一个字符串，行尾自动补 \n（覆盖写入）。
+/// 返回写入字节数，失败返回 -1。
+export extern c function write_lines(path: string, lines: string[]): int;
+
+/// 生成临时文件路径：<系统临时目录>/<prefix><时间戳>.tmp（不创建文件）。
+export extern c function temp_file_path(prefix: string): string;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 按行写文件(path: string, lines: string[]): int {
+    return write_lines(path, lines);
+}
+
+export function 取临时文件路径(prefix: string): string {
+    return temp_file_path(prefix);
+}
