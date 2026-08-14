@@ -323,6 +323,7 @@ impl Analyzer {
                                 fields: Vec::new(),
                                 methods: Vec::new(),
                                 final_: class.final_,
+                                implements: Vec::new(),
                             });
                             Some((
                                 class.name.name.clone(),
@@ -665,55 +666,101 @@ impl Analyzer {
                             info.methods = methods;
                         }
                         // 接口实现：解析 implements 并校验方法覆盖。
-                        let mut resolver = TypeResolver::new(
-                            &self.symbols,
-                            &mut self.types,
-                            &self.registry,
-                            &self.states[module_id.0 as usize].names,
-                        );
-                        let resolved: Vec<(Type, &TypeRef)> = class
-                            .implements
-                            .iter()
-                            .map(|iface_ref| (resolver.lower(iface_ref, &generics), iface_ref))
-                            .collect();
-                        let mut implemented = Vec::new();
-                        for (ty, iface_ref) in resolved {
-                            match ty {
-                                Type::Interface(iface_id) => {
-                                    let iface_methods: Vec<String> = self.types.interfaces
-                                        [iface_id as usize]
-                                        .methods
-                                        .iter()
-                                        .map(|method| method.name.clone())
-                                        .collect();
-                                    let class_name = self.types.class_name(id).to_string();
-                                    let iface_name =
-                                        self.types.interfaces[iface_id as usize].name.clone();
-                                    for method_name in &iface_methods {
-                                        if self.types.find_class_method(id, method_name).is_none() {
-                                            self.error(
-                                                format!(
-                                                    "类 {} 未实现接口 {} 的方法 `{}`",
-                                                    class_name, iface_name, method_name
-                                                ),
-                                                class.span,
-                                            );
-                                        }
+                        let mut template_implements: Vec<(u32, Vec<Type>)> = Vec::new();
+                        let resolved: Vec<(u32, &TypeRef)> = {
+                            let mut resolver = TypeResolver::new(
+                                &self.symbols,
+                                &mut self.types,
+                                &self.registry,
+                                &self.states[module_id.0 as usize].names,
+                            );
+                            class
+                                .implements
+                                .iter()
+                                .map(|iface_ref| {
+                                    let segment = iface_ref.segments.first();
+                                    let args: Vec<Type> = segment
+                                        .map(|segment| {
+                                            segment
+                                                .generics
+                                                .iter()
+                                                .map(|arg| resolver.lower(arg, &generics))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    let template_id = segment.and_then(|segment| {
+                                        resolver
+                                            .names
+                                            .get(&segment.name.name)
+                                            .and_then(|ids| ids.first())
+                                            .and_then(|id| {
+                                                match &resolver.symbols[id.0 as usize].kind {
+                                                    SymbolKind::Type(SymbolType::Interface(id)) => {
+                                                        Some(*id)
+                                                    }
+                                                    _ => None,
+                                                }
+                                            })
+                                    });
+                                    let Some(template_id) = template_id else {
+                                        return (u32::MAX, iface_ref);
+                                    };
+                                    if !generics.is_empty() {
+                                        // 泛型类：暂存接口模板 + 实参（可含 T）。
+                                        template_implements.push((template_id, args));
+                                        return (u32::MAX, iface_ref);
                                     }
-                                    implemented.push(iface_id);
+                                    let iface_is_generic = !resolver.types.interfaces
+                                        [template_id as usize]
+                                        .generics
+                                        .is_empty();
+                                    if iface_is_generic {
+                                        (
+                                            resolver.instantiate_interface(template_id, &args),
+                                            iface_ref,
+                                        )
+                                    } else {
+                                        (template_id, iface_ref)
+                                    }
+                                })
+                                .collect()
+                        };
+                        let mut implemented = Vec::new();
+                        for (iface_id, iface_ref) in resolved {
+                            if iface_id == u32::MAX {
+                                if !generics.is_empty() {
+                                    continue;
                                 }
-                                other => {
+                                self.error("`implements` 目标必须是接口", iface_ref.span);
+                                continue;
+                            }
+                            let iface_methods: Vec<String> = self.types.interfaces
+                                [iface_id as usize]
+                                .methods
+                                .iter()
+                                .map(|method| method.name.clone())
+                                .collect();
+                            let class_name = self.types.class_name(id).to_string();
+                            let iface_name = self.types.interfaces[iface_id as usize].name.clone();
+                            for method_name in &iface_methods {
+                                if self.types.find_class_method(id, method_name).is_none() {
                                     self.error(
                                         format!(
-                                            "`implements` 目标必须是接口，实际为 {}",
-                                            other.display()
+                                            "类 {} 未实现接口 {} 的方法 `{}`",
+                                            class_name, iface_name, method_name
                                         ),
-                                        iface_ref.span,
+                                        class.span,
                                     );
                                 }
                             }
+                            implemented.push(iface_id);
                         }
-                        self.types.class_interfaces.insert(id, implemented);
+                        if generics.is_empty() {
+                            self.types.class_interfaces.insert(id, implemented);
+                        } else {
+                            let info = &mut self.types.classes[id as usize];
+                            info.implements = template_implements;
+                        }
                     }
                 }
                 ItemKind::Interface(interface) => {
@@ -1465,7 +1512,20 @@ impl<'a> TypeResolver<'a> {
                                 }
                                 Type::Class(*id)
                             }
-                            SymbolType::Interface(id) => Type::Interface(*id),
+                            SymbolType::Interface(id) => {
+                                if !first.generics.is_empty()
+                                    || !self.types.interfaces[*id as usize].generics.is_empty()
+                                {
+                                    let args: Vec<Type> = first
+                                        .generics
+                                        .iter()
+                                        .map(|arg| self.lower(arg, generics))
+                                        .collect();
+                                    let instance_id = self.instantiate_interface(*id, &args);
+                                    return Type::Interface(instance_id);
+                                }
+                                Type::Interface(*id)
+                            }
                             SymbolType::Alias(ty) => ty.clone(),
                         };
                     }
@@ -1581,6 +1641,59 @@ impl<'a> TypeResolver<'a> {
         Type::Enum(id)
     }
 
+    /// 泛型 interface 实例化：替换方法签名类型实参，注册新 interface id。
+    fn instantiate_interface(&mut self, interface_id: u32, args: &[Type]) -> u32 {
+        let info = self.types.interfaces[interface_id as usize].clone();
+        if info.generics.is_empty() {
+            return interface_id;
+        }
+        if info.generics.len() != args.len() {
+            return interface_id;
+        }
+        let key = (interface_id, args.to_vec());
+        if let Some(&id) = self.types.generic_interface_instances.get(&key) {
+            return id;
+        }
+        let type_args: HashMap<String, Type> = info
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        let methods = info
+            .methods
+            .iter()
+            .map(|method| FunctionSig {
+                module: method.module,
+                name: method.name.clone(),
+                generics: Vec::new(),
+                bounds: method.bounds.clone(),
+                params: method
+                    .params
+                    .iter()
+                    .map(|param| ParamSig {
+                        name: param.name.clone(),
+                        ty: substitute_type(&param.ty, &type_args),
+                        has_default: param.has_default,
+                        rest: param.rest,
+                    })
+                    .collect(),
+                ret: substitute_type(&method.ret, &type_args),
+                extern_c: method.extern_c,
+                span: method.span,
+            })
+            .collect();
+        let id = self.types.interfaces.len() as u32;
+        self.types.interfaces.push(InterfaceInfo {
+            module: info.module,
+            name: info.name,
+            generics: Vec::new(),
+            methods,
+        });
+        self.types.generic_interface_instances.insert(key, id);
+        id
+    }
+
     /// 泛型 class 实例化：替换字段与方法签名，注册新 class id（方法体在降级阶段生成）。
     fn instantiate_class(
         &mut self,
@@ -1656,9 +1769,21 @@ impl<'a> TypeResolver<'a> {
             fields,
             methods,
             final_: info.final_,
+            implements: info.implements.clone(),
         });
-        if let Some(interfaces) = template_interfaces {
-            self.types.class_interfaces.insert(id, interfaces);
+        // 泛型接口 implements（如 Box<T> implements Container<T>）：
+        // 替换类型实参后实例化接口并注册到实例类的 vtable 表。
+        let mut iface_ids = template_interfaces.unwrap_or_default();
+        for (template_id, args) in &info.implements {
+            let resolved_args: Vec<Type> = args
+                .iter()
+                .map(|ty| substitute_type(ty, &type_args))
+                .collect();
+            let instance_id = self.instantiate_interface(*template_id, &resolved_args);
+            iface_ids.push(instance_id);
+        }
+        if !iface_ids.is_empty() {
+            self.types.class_interfaces.insert(id, iface_ids);
         }
         self.types.generic_class_instances.insert(key, id);
         Type::Class(id)

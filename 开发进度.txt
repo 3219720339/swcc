@@ -654,6 +654,23 @@ Sw 编译器（swcc）开发进度
                        - docs/08-能力清单.md 同步：泛型约束/泛型类接口/ADT+
                          match/Result+?/迭代器/切片/@test 与限制说明
 
+    2026-08-15 01:35  泛型接口约束扩展（第一档延伸）：
+                       - 泛型接口实例化：TypeTable 增 generic_interface_instances，
+                         TypeResolver::instantiate_interface 替换方法签名类型实参；
+                         Type::Interface 泛型实参（Container<int>）在 lower 时
+                         实例化，where 约束/类型标注/extends 通用
+                       - 非泛型类 implements 具体泛型接口实例：
+                         class IntBox implements Container<int>
+                       - 泛型类 implements 依赖类泛型参数的接口：
+                         class Box<T> implements Container<T>——ClassInfo 增
+                         implements（接口模板 id + 实参，可含 T），泛型类
+                         实例化时替换实参并实例化接口注册 vtable
+                       - where T: Container<int> 约束 + 约束内方法调用 +
+                         实例化校验（class_interfaces 查表）全部打通
+                       - 新增 examples/probe-generic-iface.sw（5 项断言：
+                         具体/泛型类实现泛型接口、约束调用、vtable get/set），
+                         49 个 examples 全过；cargo test 51 全绿
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 

@@ -30,6 +30,7 @@ EXPECTED = {
     "probe-format.sw": 0,
     "probe-gc.sw": 0,
     "probe-generic.sw": 0,
+    "probe-generic-iface.sw": 0,
     "probe-if.sw": 42,
     "probe-inherit.sw": 0,
     "probe-interface.sw": 0,

@@ -81,6 +81,9 @@ pub struct ClassInfo {
     pub fields: Vec<FieldInfo>,
     pub methods: Vec<MethodInfo>,
     pub final_: bool,
+    /// implements 的接口（模板 id + 类型实参，实参可含类泛型参数 T）；
+    /// 泛型类实例化时据此生成实例接口并注册 vtable。
+    pub implements: Vec<(u32, Vec<Type>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +108,8 @@ pub struct TypeTable {
     /// (泛型 class id, 类型实参) → 实例化 class id。
     pub generic_class_instances: HashMap<(u32, Vec<Type>), u32>,
     pub generic_enum_instances: HashMap<(u32, Vec<Type>), u32>,
+    /// (泛型 interface id, 类型实参) → 实例化 interface id。
+    pub generic_interface_instances: HashMap<(u32, Vec<Type>), u32>,
 }
 
 impl TypeTable {
