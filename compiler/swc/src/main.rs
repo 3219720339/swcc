@@ -481,7 +481,9 @@ fn compile_if_stale(
             .map(|hash| format!("{hash}\n{}", prefix.join(" ")))
             .unwrap_or_default();
         if !current.is_empty()
-            && fs::read_to_string(&sidecar).map(|saved| saved == current).unwrap_or(false)
+            && fs::read_to_string(&sidecar)
+                .map(|saved| saved == current)
+                .unwrap_or(false)
         {
             return Ok(());
         }
