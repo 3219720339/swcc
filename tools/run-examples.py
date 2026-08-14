@@ -96,11 +96,17 @@ EXPECTED = {
     "probe-generic-implements.sw": 0,
     "probe-generic-signature.sw": 0,
     "probe-cross-module-iface.sw": 0,
+    "probe-console.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]
 ARGS = {
     "probe-flags.sw": ["--verbose", "--port=8080", "--host", "127.0.0.1", "--mode", "fast", "-v"],
+}
+
+# 需要从 stdin 管道输入的探针：name -> 输入内容（input/input_int 等交互函数）
+STDIN = {
+    "probe-console.sw": "hello\n42\nbad\n7\n3.5\n",
 }
 
 
@@ -115,6 +121,7 @@ def main() -> int:
         try:
             proc = subprocess.run(
                 cmd,
+                input=STDIN.get(name),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

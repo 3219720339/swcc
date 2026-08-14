@@ -527,6 +527,182 @@ void sw_pause(void) {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// 交互控制台（std/console）：ANSI 颜色/清屏/光标、读键、终端尺寸。
+// Windows 需要先启用 VT 转义序列处理（Win10 1511+；重定向到管道/文件时
+// GetConsoleMode 失败自动跳过，不影响 CI 输出捕获）。
+// ---------------------------------------------------------------------------
+
+#if defined(_WIN32)
+static void sw_enable_vt(void) {
+    extern void* GetStdHandle(int nStdHandle);
+    extern int GetConsoleMode(void* handle, unsigned long* mode);
+    extern int SetConsoleMode(void* handle, unsigned long mode);
+    void* handle = GetStdHandle(-11); // STD_OUTPUT_HANDLE
+    unsigned long mode = 0;
+    if (handle != NULL && GetConsoleMode(handle, &mode) != 0) {
+        SetConsoleMode(handle, mode | 0x0004u); // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    }
+}
+#endif
+
+static void sw_console_write(const char* text) {
+    fwrite(text, 1, strlen(text), stdout);
+    fflush(stdout);
+}
+
+// console_color(fg, bg)：0-7 基本色（0 黑 1 红 2 绿 3 黄 4 蓝 5 品红 6 青 7 白）；
+// -1 表示该位不变；两个都是 -1 时重置为默认。输出 ANSI SGR 序列。
+void sw_console_color(int64_t fg, int64_t bg) {
+    char buffer[40];
+    int used = 0;
+    if (fg >= 0 && fg < 8) {
+        used += snprintf(buffer + used, (sw_size)(sizeof(buffer) - (sw_size)used),
+                         "\x1b[%dm", (int)(30 + fg));
+    }
+    if (bg >= 0 && bg < 8) {
+        used += snprintf(buffer + used, (sw_size)(sizeof(buffer) - (sw_size)used),
+                         "\x1b[%dm", (int)(40 + bg));
+    }
+    if (used == 0) {
+        sw_console_write("\x1b[0m");
+        return;
+    }
+    sw_console_write(buffer);
+}
+
+void sw_console_reset(void) {
+    sw_console_write("\x1b[0m");
+}
+
+void sw_console_clear(void) {
+    sw_console_write("\x1b[2J\x1b[H");
+}
+
+// console_gotoxy(x, y)：1 基坐标定位光标（ANSI \x1b[row;colH）。
+void sw_console_gotoxy(int64_t x, int64_t y) {
+    char buffer[32];
+    int used = snprintf(buffer, sizeof(buffer), "\x1b[%d;%dH", (int)y, (int)x);
+    sw_console_write(buffer);
+    (void)used;
+}
+
+void sw_console_hide_cursor(void) {
+    sw_console_write("\x1b[?25l");
+}
+
+void sw_console_show_cursor(void) {
+    sw_console_write("\x1b[?25h");
+}
+
+// getch()：读一个按键不回车。Windows _getch；POSIX termios 原始模式单字节读。
+// 返回键码（0-255）；失败返回 -1。方向键等扩展键在 Windows 上是双字节序列，
+// 本实现只返回首字节（完整扩展键留待后续）。
+int64_t sw_getch(void) {
+#if defined(_WIN32)
+    extern int _getch(void);
+    return (int64_t)_getch();
+#else
+    // POSIX termios 布局（仅操作 c_lflag；c_cc 偏移按平台排，tcsetattr 需要）。
+    typedef struct {
+#if defined(__APPLE__)
+        unsigned long c_iflag, c_oflag, c_cflag, c_lflag;
+        unsigned char c_cc[20];
+#else
+        unsigned int c_iflag, c_oflag, c_cflag, c_lflag;
+        unsigned char c_line;
+        unsigned char c_cc[32];
+#endif
+    } sw_termios_ctx;
+    extern int tcgetattr(int fd, void* termios);
+    extern int tcsetattr(int fd, int actions, const void* termios);
+    extern long read(int fd, void* buffer, unsigned long count);
+    sw_termios_ctx original;
+    sw_termios_ctx raw;
+    if (tcgetattr(0, &original) != 0) {
+        return -1;
+    }
+    raw = original;
+    raw.c_lflag &= ~(0x2u | 0x8u); // ICANON | ECHO
+    if (tcsetattr(0, 0 /*TCSANOW*/, &raw) != 0) {
+        return -1;
+    }
+    unsigned char byte = 0;
+    long got = read(0, &byte, 1);
+    tcsetattr(0, 0 /*TCSANOW*/, &original);
+    return got == 1 ? (int64_t)byte : -1;
+#endif
+}
+
+// 终端宽/高（字符数）。非控制台（重定向/CI 管道）返回 0。
+int64_t sw_console_width(void) {
+#if defined(_WIN32)
+    extern void* GetStdHandle(int nStdHandle);
+    extern int GetConsoleScreenBufferInfo(void* handle, void* info);
+    struct {
+        short size_x, size_y;      // COORD dwSize
+        short cursor_x, cursor_y;  // COORD dwCursorPosition
+        short attributes;          // WORD wAttributes
+        short win_left, win_top, win_right, win_bottom; // SMALL_RECT srWindow
+        short max_x, max_y;        // COORD dwMaximumWindowSize
+    } info;
+    void* handle = GetStdHandle(-11);
+    if (handle != NULL && GetConsoleScreenBufferInfo(handle, &info) != 0) {
+        return (int64_t)info.size_x;
+    }
+    return 0;
+#else
+    extern int ioctl(int fd, unsigned long request, void* arg);
+    struct {
+        unsigned short rows, cols, xpixel, ypixel;
+    } winsize;
+    unsigned long request;
+#if defined(__APPLE__)
+    request = 0x40087468; // TIOCGWINSZ (macOS)
+#else
+    request = 0x5413; // TIOCGWINSZ (Linux)
+#endif
+    if (ioctl(0, request, &winsize) == 0) {
+        return (int64_t)winsize.cols;
+    }
+    return 0;
+#endif
+}
+
+int64_t sw_console_height(void) {
+#if defined(_WIN32)
+    extern void* GetStdHandle(int nStdHandle);
+    extern int GetConsoleScreenBufferInfo(void* handle, void* info);
+    struct {
+        short size_x, size_y;
+        short cursor_x, cursor_y;
+        short attributes;
+        short win_left, win_top, win_right, win_bottom;
+        short max_x, max_y;
+    } info;
+    void* handle = GetStdHandle(-11);
+    if (handle != NULL && GetConsoleScreenBufferInfo(handle, &info) != 0) {
+        return (int64_t)info.size_y;
+    }
+    return 0;
+#else
+    extern int ioctl(int fd, unsigned long request, void* arg);
+    struct {
+        unsigned short rows, cols, xpixel, ypixel;
+    } winsize;
+    unsigned long request;
+#if defined(__APPLE__)
+    request = 0x40087468; // TIOCGWINSZ (macOS)
+#else
+    request = 0x5413; // TIOCGWINSZ (Linux)
+#endif
+    if (ioctl(0, request, &winsize) == 0) {
+        return (int64_t)winsize.rows;
+    }
+    return 0;
+#endif
+}
+
 // 测试 runner 专用：按单个字符串输出一行（@test 的 [ok]/[FAIL] 打印）。
 void sw_test_println(sw_string* string) {
     sw_print_string(string);
@@ -2008,6 +2184,12 @@ sw_string* format(sw_string* fmt, sw_array* args) {
     return sw_string_from_literal(buffer, used);
 }
 
+// print_format(fmt, ...args)：按 format 格式化后直接输出（不换行）。
+void sw_print_format(sw_string* fmt, sw_array* args) {
+    sw_string* text = format(fmt, args);
+    sw_print_string(text);
+}
+
 int64_t parse_date(sw_string* text) {
     int64_t index = 0;
     while (index < text->len &&
@@ -2661,6 +2843,8 @@ int main(int argc, char** argv) {
     extern int SetConsoleCP(unsigned int cp);
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
+    // 启用 VT 转义序列处理（ANSI 颜色/清屏/光标；std/console 依赖）。
+    sw_enable_vt();
     // ucrt 不导出 __argc/__argv，用 CommandLineToArgvW + UTF-8 转换。
     extern void* GetCommandLineW(void);
     extern void** CommandLineToArgvW(void* cmdline, int* out_argc);

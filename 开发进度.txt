@@ -1547,10 +1547,45 @@ Sw 编译器（swcc）开发进度
                           （Option<T> 返回）未专门验证；对象字面量直接
                           return（无目标类型传播）仍按既有限制处理
 
+    2026-08-15 11:20  标准库交互 IO 批次（待办点名"std/io 补实用函数"）：
+                        - std/io +4：input(prompt)（纯 Sw：print+read_line）、
+                          input_int/input_float（纯 Sw：is_number 校验 + 无效
+                          重试，EOF 空行返回 0/0）、print_format(fmt, ...args)
+                          （extern c：复用 format 后输出，printf 风格直出）
+                        - 新增 std/console 模块（9 个函数，全中英文）：
+                          console_color(fg,bg)（ANSI 0-7 基本色，-1 不变，
+                          双 -1 重置）、console_reset/clear/gotoxy/
+                          hide_cursor/show_cursor、getch（Windows _getch /
+                          POSIX termios 原始模式单字节读，非终端返回 -1）、
+                          console_width/height（GetConsoleScreenBufferInfo /
+                          ioctl TIOCGWINSZ，重定向返回 0）
+                        - runtime：启动时 Windows 自动启用 VT 转义序列
+                          （SetConsoleMode ENABLE_VIRTUAL_TERMINAL_PROCESSING，
+                          GetConsoleMode 失败即重定向则跳过）；termios 布局
+                          按 __APPLE__/Linux 排字段（c_lflag 偏移 24/12）、
+                          TIOCGWINSZ 按平台取请求号（0x40087468/0x5413）
+                        - codegen extern_c_symbol 追加 11 个映射（含中文名
+                          格式化输出直连 sw_print_format——varargs 无法转发，
+                          展开只支持数组字面量，已验证）
+                        - run-examples.py 增加 STDIN 表（name→输入文本，
+                          subprocess input= 管道），探针可自动化交互输入
+                        - 新增探针 probe-console.sw（9 断言：print_format
+                          对照 format 验证规格/宽度精度、input 读行、
+                          input_int 解析、input_int 无效重试、input_float、
+                          终端宽高 >= 0；getch 不做自动化断言——交互终端
+                          才可读）；demo 新增 demo-console.sw（input +
+                          print_format + 颜色 + 终端尺寸，输出存
+                          outputs/demo-console.txt）
+                        - 验证：cargo test 56 全绿；87 examples 全过
+                          （probe-console 用字节确定管道 LF/CRLF 均过，
+                          .NET 管道首行多 UTF-8 BOM 为测试工具伪影，
+                          Python subprocess utf-8 无 BOM 无此问题）；
+                          fmt 通过；runtime.c 无新外部依赖
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
-       2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
-          或 regex 模块
+       2. 标准库继续扩充：std/string + std/array 实用函数、
+          或 std/process/fs 增强、或 json 读路径增强
 
 二、已知限制
 
