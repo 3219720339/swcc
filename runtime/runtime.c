@@ -470,7 +470,7 @@ sw_string* read_line(void) {
 // math：abs/floor/ceil/sqrt 等（sqrt 等走 libm，三平台均有）
 // ---------------------------------------------------------------------------
 
-int64_t abs(int64_t value) {
+int64_t sw_abs(int64_t value) {
     return value < 0 ? -value : value;
 }
 
@@ -500,7 +500,7 @@ extern long ftell(sw_file_handle* file);
 extern void rewind(sw_file_handle* file);
 extern char* fgets(char* buffer, int size, void* stream);
 
-int64_t open(sw_string* path, sw_string* mode) {
+int64_t sw_open(sw_string* path, sw_string* mode) {
     for (int64_t index = 0; index < SW_MAX_FILES; index++) {
         if (sw_files[index] == NULL) {
             sw_file_handle* file = fopen(path->data, mode->data);
@@ -514,7 +514,7 @@ int64_t open(sw_string* path, sw_string* mode) {
     return -1;
 }
 
-int64_t close(int64_t fd) {
+int64_t sw_close(int64_t fd) {
     if (fd < 0 || fd >= SW_MAX_FILES || sw_files[fd] == NULL) {
         return -1;
     }
@@ -523,7 +523,7 @@ int64_t close(int64_t fd) {
     return result == 0 ? 0 : -1;
 }
 
-int64_t write(int64_t fd, sw_string* text) {
+int64_t sw_write(int64_t fd, sw_string* text) {
     if (fd < 0 || fd >= SW_MAX_FILES || sw_files[fd] == NULL) {
         return -1;
     }
@@ -654,7 +654,7 @@ int64_t is_dir(sw_string* path) {
 }
 
 #if defined(_WIN32)
-int64_t mkdir(sw_string* path) {
+int64_t sw_mkdir(sw_string* path) {
     extern int CreateDirectoryA(const char* path, void* security);
     return CreateDirectoryA(path->data, NULL) ? 0 : -1;
 }
@@ -683,23 +683,23 @@ extern int sw_libc_renameat(
 extern int sw_libc_unlink(const char* path) __asm__(SW_LIBC_SYM("unlink"));
 extern int sw_libc_rmdir(const char* path) __asm__(SW_LIBC_SYM("rmdir"));
 
-int64_t mkdir(sw_string* path) {
+int64_t sw_mkdir(sw_string* path) {
     return sw_libc_mkdirat(SW_AT_FDCWD, path->data, 0755) == 0 ? 0 : -1;
 }
 #endif
 
 #if defined(_WIN32)
-int64_t rename(sw_string* old_path, sw_string* new_path) {
+int64_t sw_rename(sw_string* old_path, sw_string* new_path) {
     extern int MoveFileA(const char* old_path, const char* new_path);
     return MoveFileA(old_path->data, new_path->data) ? 0 : -1;
 }
 
-int64_t remove(sw_string* path) {
+int64_t sw_remove(sw_string* path) {
     extern int DeleteFileA(const char* path);
     return DeleteFileA(path->data) ? 0 : -1;
 }
 #else
-int64_t rename(sw_string* old_path, sw_string* new_path) {
+int64_t sw_rename(sw_string* old_path, sw_string* new_path) {
     return sw_libc_renameat(
                SW_AT_FDCWD,
                old_path->data,
@@ -710,7 +710,7 @@ int64_t rename(sw_string* old_path, sw_string* new_path) {
         : -1;
 }
 
-int64_t remove(sw_string* path) {
+int64_t sw_remove(sw_string* path) {
     if (sw_libc_unlink(path->data) == 0) {
         return 0;
     }
@@ -2453,7 +2453,7 @@ int main(int argc, char** argv) {
     return 0;
 }
 
-sw_string* getenv(sw_string* name) {
+sw_string* sw_getenv(sw_string* name) {
 #if defined(_WIN32)
     extern int GetEnvironmentVariableA(const char* name, char* buffer, unsigned int size);
     char buffer[4096];

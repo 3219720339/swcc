@@ -649,7 +649,10 @@ fn callee_signature_for(
     Ok(match callee {
         MirCallee::Function { name, sig, .. } => (name.clone(), signature_of_sig(sig, isa)?),
         MirCallee::Method { name, sig, .. } => (name.clone(), signature_of_sig(sig, isa)?),
-        MirCallee::Extern { name, sig } => (name.clone(), signature_of_sig(sig, isa)?),
+        MirCallee::Extern { name, sig } => (
+            extern_c_symbol(name).to_owned(),
+            signature_of_sig(sig, isa)?,
+        ),
         MirCallee::Intrinsic { name } => {
             let runtime_name = intrinsic_name(name);
             let sig = intrinsic_signature(runtime_name, isa);
@@ -695,6 +698,26 @@ fn intrinsic_name(name: &str) -> &str {
         "bool_to_string" => "sw_bool_to_string",
         _ if name.starts_with("sw_") => name,
         _ => "sw_unimplemented",
+    }
+}
+
+/// extern c 函数 → 实际链接符号名。
+/// 标准库的 extern 声明沿用 Sw 侧名字（open/close/write 等），但静态链接时若与
+/// libc 同名，会把 libc 内部调用劫持到我们的包装函数（例如 musl 的 opendir 内部
+/// 调用 open()，被 Sw 的 open(sw_string*, sw_string*) 接住后按野指针解引用崩溃）。
+/// 这里统一映射成 sw_ 前缀的唯一符号，运行时侧对应改名。新增 extern 标准库函数
+/// 时若与 libc 符号重名，需在本表登记。
+fn extern_c_symbol(name: &str) -> &str {
+    match name {
+        "open" => "sw_open",
+        "close" => "sw_close",
+        "write" => "sw_write",
+        "abs" => "sw_abs",
+        "mkdir" => "sw_mkdir",
+        "rename" => "sw_rename",
+        "remove" => "sw_remove",
+        "getenv" => "sw_getenv",
+        _ => name,
     }
 }
 
@@ -1676,9 +1699,10 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     }
                     _ => {
                         let name = match callee {
-                            MirCallee::Function { name, .. }
-                            | MirCallee::Method { name, .. }
-                            | MirCallee::Extern { name, .. } => name.clone(),
+                            MirCallee::Function { name, .. } | MirCallee::Method { name, .. } => {
+                                name.clone()
+                            }
+                            MirCallee::Extern { name, .. } => extern_c_symbol(name).to_owned(),
                             MirCallee::Intrinsic { name } => intrinsic_name(name).to_owned(),
                             MirCallee::Closure { .. } => unreachable!(),
                             MirCallee::InterfaceMethod { .. } => unreachable!(),

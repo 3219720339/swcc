@@ -190,8 +190,28 @@ Sw 编译器（swcc）开发进度
                          Linux x86_64 musl 端到端链接 probe-exceptions/probe-dir/fib 成功，
                          nm 确认最终可执行文件内 mkdir/rename/remove 仅包装函数一个定义、
                          mkdirat/renameat/unlink/rmdir 已解析进 libc.a，无递归
+    2026-08-14 10:09  probe-dir Linux 崩溃根因（CI trace 定位）：
+                       - 逐步写文件探针 dir-debug 确认：mkdir/write_all 正常，
+                         list_dir 内崩溃；
+                       - 反汇编 musl 静态二进制发现符号劫持：标准库 extern 与 libc
+                         同名（open/close/write/abs/mkdir/rename/remove/getenv），
+                         静态链接下 musl 内部调用被解析到 Sw 包装函数：
+                         musl opendir 内部调用 open() 被 Sw 的
+                         open(sw_string*, sw_string*) 接住，(char*, int) 参数当
+                         sw_string* 解引用野指针 → SIGSEGV；closedir 调 close 同样被劫持
+                       - 修复：codegen 新增 extern_c_symbol 映射表
+                         （open→sw_open、close→sw_close、write→sw_write、abs→sw_abs、
+                         mkdir→sw_mkdir、rename→sw_rename、remove→sw_remove、
+                         getenv→sw_getenv），runtime.c 对应改名；libc 同名符号恢复由
+                         libc 提供，musl 内部调用不再被劫持
+                       - 验证：Windows 29 个 examples 全过、cargo test 48 全绿；
+                         x86_64/aarch64 musl 端到端链接通过；反汇编确认 opendir→libc
+                         open、closedir→libc close、Sw 调用→sw_open/sw_close 等
+                       - 顺带发现：模板字符串内 \n 转义未处理（普通字符串正常），
+                         已列入待办
 
-    待办（下一批）：网络/进程交互等进阶标准库、泛型 struct/class、JSON/Unicode 字符串深化
+    待办（下一批）：网络/进程交互等进阶标准库、泛型 struct/class、JSON/Unicode 字符串深化、
+                    模板字符串转义（\n 等）处理
 
 二、已知限制
 
