@@ -755,8 +755,22 @@ Sw 编译器（swcc）开发进度
                        - 验证：53 个 examples 全过（含新探针，设计退出码不变）、
                          cargo test 51 全绿、showcase 通过
 
+    2026-08-15 02:35  泛型约束剩余项（其二）：泛型接口约束缺实参显式报错：
+                       - 修复静默退化：`where T: Container`（泛型接口缺 `<int>`）
+                         build_function_sig 的 lower 会把约束退化成模板 id，导致
+                         约束校验永不匹配、方法返回类型残留 TypeParam，报出
+                         误导性的"未实现约束接口"
+                       - 修复：finalize 阶段对顶层函数 where_clause 前置校验——
+                         约束目标是泛型接口且无类型实参时，显式报"泛型接口约束
+                         必须带类型实参（如 `where T: Container<int>`）"
+                       - 单测：semantic.rs 新增 reports_generic_interface_bound_
+                         without_type_args（断言该诊断存在）；18 项语义测试全绿
+                       - 验证：cargo test 51 全绿；53 examples 通过（合法用法
+                         where T: Container<int> / where T: Shape 无误伤）
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
+       2. 泛型约束：where T: Container<U> 类型参数反向推导（较深）
 
 二、已知限制
 

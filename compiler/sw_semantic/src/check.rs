@@ -817,6 +817,36 @@ impl Analyzer {
                         .iter()
                         .map(|g| g.name.clone())
                         .collect::<Vec<_>>();
+                    // 泛型接口约束必须带类型实参；缺实参（where T: Container）会
+                    // 静默退化成模板 id，约束校验永不匹配、方法返回类型残留 TypeParam，
+                    // 显式报错以避免误导性的"未实现约束接口"。
+                    for constraint in &function.where_clause {
+                        if let Some(segment) = constraint.bound.segments.first() {
+                            if segment.generics.is_empty() {
+                                let generic_interface = self
+                                    .state(module_id)
+                                    .names
+                                    .get(&segment.name.name)
+                                    .and_then(|ids| ids.first())
+                                    .and_then(|id| match &self.symbols[id.0 as usize].kind {
+                                        SymbolKind::Type(SymbolType::Interface(iface_id)) => {
+                                            Some(!self.types.interfaces
+                                                [*iface_id as usize]
+                                                .generics
+                                                .is_empty())
+                                        }
+                                        _ => None,
+                                    })
+                                    .unwrap_or(false);
+                                if generic_interface {
+                                    self.error(
+                                        "泛型接口约束必须带类型实参（如 `where T: Container<int>`）",
+                                        constraint.bound.span,
+                                    );
+                                }
+                            }
+                        }
+                    }
                     let sig = self.build_function_sig(module_id, function, &generics, None);
                     if sig.name == "main" {
                         let params_ok = sig.params.is_empty()

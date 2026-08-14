@@ -458,3 +458,35 @@ fn resolves_relative_imports() {
     );
     assert_eq!(result.modules.len(), 2);
 }
+
+#[test]
+fn reports_generic_interface_bound_without_type_args() {
+    let source = r#"
+        interface Container<T> { get(): T; }
+        class IntBox implements Container<int> {
+            value: int;
+            constructor(value: int) { this.value = value; }
+            get(): int { return this.value; }
+        }
+        function read_raw<T>(container: T): void where T: Container {
+            return;
+        }
+        function main(): int { return 0; }
+    "#;
+    let dir = std::env::temp_dir().join("swcc-semantic-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let entry = dir.join("main.sw");
+    std::fs::write(&entry, source).expect("写入测试源码");
+    let result = analyze(&entry, None);
+    assert!(result.diagnostics.has_errors(), "{:?}", result.diagnostics.items);
+    let messages: Vec<&str> = result
+        .diagnostics
+        .items
+        .iter()
+        .map(|item| item.message.as_str())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("泛型接口约束必须带类型实参")),
+        "{messages:?}"
+    );
+}
