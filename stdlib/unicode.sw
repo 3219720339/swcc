@@ -1,5 +1,22 @@
-// Sw 标准库：UTF-8 按字符（Unicode 码点）工具（由运行时实现）。
+// ===========================================================================
+// std/unicode —— UTF-8 按字符（Unicode 码点）工具
+//
+// 用法：
+//   import { utf8_len, utf8_char_at, utf8_substring } from "std/unicode";
+//   const s = "你好Sw";
+//   utf8_len(s);          // 4
+//   utf8_char_at(s, 0);   // 20320（'你' 的码点）
+//   utf8_substring(s, 0, 2);  // "你好"
+//
+// 说明：string.length 与 s[i] 已按字符语义，这几个函数用于显式控制；
+// utf8_char_at 越界返回 -1。
+// ===========================================================================
 
+/// 返回字符串的字符数（Unicode 码点个数）。
 export extern c function utf8_len(text: string): int;
+
+/// 返回第 index 个字符的码点；越界返回 -1。
 export extern c function utf8_char_at(text: string, index: int): int;
+
+/// 截取从第 start 个字符开始的 count 个字符。
 export extern c function utf8_substring(text: string, start: int, count: int): string;

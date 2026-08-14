@@ -681,6 +681,20 @@ impl Analyzer {
                         .map(|g| g.name.clone())
                         .collect::<Vec<_>>();
                     let sig = self.build_function_sig(module_id, function, &generics, None);
+                    if sig.name == "main" {
+                        let params_ok = sig.params.is_empty()
+                            || (sig.params.len() == 1
+                                && matches!(
+                                    sig.params[0].ty,
+                                    Type::Array(ref inner) if matches!(**inner, Type::Str)
+                                ));
+                        if !params_ok {
+                            self.error("main 参数只能为 string[]（或省略）", function.span);
+                        }
+                        if sig.ret != Type::Int {
+                            self.error("main 返回类型必须为 int", function.span);
+                        }
+                    }
                     if let Some(SymbolId(id)) = self
                         .state(module_id)
                         .span_symbols
@@ -4547,9 +4561,11 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 optional,
             } => {
                 let access = if name.name == "length"
-                    && matches!(self.expr_type(object), Type::Array(_) | Type::Str)
-                {
-                    if self.expr_type(object) == Type::Str {
+                    && matches!(
+                        self.expr_type(object).without_nullable(),
+                        Type::Array(_) | Type::Str
+                    ) {
+                    if *self.expr_type(object).without_nullable() == Type::Str {
                         // string.length 按字符数（UTF-8 码点）。
                         MirExpr::Call {
                             callee: MirCallee::Intrinsic {
@@ -5244,7 +5260,8 @@ impl<'m, 's> MirLowerer<'m, 's> {
 
 fn stable_function_name(sig: &FunctionSig) -> String {
     if sig.name == "main" {
-        return "main".to_owned();
+        // 入口由运行时 main 调用，用户 main 改名为 sw_user_main。
+        return "sw_user_main".to_owned();
     }
     format!("sw_fn_{}_{}_{}", sig.module.0, sig.name, sig.span.start)
 }

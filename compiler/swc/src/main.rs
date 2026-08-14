@@ -14,6 +14,8 @@ struct BuildOptions {
     output: Option<PathBuf>,
     target: String,
     emit_object: Option<PathBuf>,
+    /// run 时透传给程序的命令行参数。
+    run_args: Vec<String>,
 }
 
 fn main() {
@@ -225,7 +227,7 @@ fn main() {
     );
     if command == "run" {
         let run_path = fs::canonicalize(&output).unwrap_or(output.clone());
-        let status = Command::new(&run_path).status();
+        let status = Command::new(&run_path).args(&options.run_args).status();
         match status {
             Ok(status) => {
                 let code = status.code().unwrap_or(1);
@@ -286,7 +288,7 @@ fn link_windows(target: &str, objects: &[PathBuf], output: &Path) {
     }
     args.push("-L".into());
     args.push(lib_dir.as_os_str().to_os_string());
-    for library in ["-lucrt", "-lucrtbase", "-lkernel32"] {
+    for library in ["-lucrt", "-lucrtbase", "-lkernel32", "-lshell32"] {
         args.push(library.into());
     }
     args.push(builtins.as_os_str().to_os_string());
@@ -684,6 +686,7 @@ fn parse_options(args: &[String]) -> BuildOptions {
     let mut output = None;
     let mut target = None;
     let mut emit_object = None;
+    let mut run_args = Vec::new();
     let mut index = 3;
     while index < args.len() {
         match args[index].as_str() {
@@ -699,13 +702,18 @@ fn parse_options(args: &[String]) -> BuildOptions {
                 emit_object = args.get(index + 1).map(PathBuf::from);
                 index += 2;
             }
-            _ => index += 1,
+            flag if flag.starts_with('-') => index += 1,
+            value => {
+                run_args.push(value.to_owned());
+                index += 1;
+            }
         }
     }
     BuildOptions {
         output,
         target: target.unwrap_or_else(default_target),
         emit_object,
+        run_args,
     }
 }
 

@@ -101,7 +101,13 @@ Sw 编译器（swcc）开发进度
     2026-08-14 08:10  文件补齐：read_line_from/seek/file_size/exists/path_join；std/fs 与 std/string 声明更新；
                        测试与示例 probe-string
 
-    待办（下一批）：进程基础（argv/getenv/exit）、按行读文件的便捷封装、更多标准库
+    2026-08-14 08:15  标准库注释：std/io、std/math、std/fs、std/string、std/json、std/time、
+                       std/unicode 全部补模块说明 + 每个函数用途/参数/返回值/示例
+    2026-08-14 08:18  进程基础：main(args: string[])、运行时入口构建 argv（Windows 走
+                       CommandLineToArgvW+UTF-8，POSIX 用 CRT 参数）、std/os（getenv/exit）、
+                       swc run 透传命令行参数；main 签名校验（0/1 个 string[] 参数、返回 int）
+
+    待办（下一批）：按行读文件的便捷封装、错误处理增强、更多标准库
 
 二、已知限制
 

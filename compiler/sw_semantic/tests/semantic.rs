@@ -159,6 +159,16 @@ fn checks_string_methods_and_content_compare() {
     );
 }
 
+#[test]
+fn checks_main_with_args() {
+    let result = analyze(&fixture("process.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+}
+
 fn collect_expr_kinds(
     statement: &sw_semantic::MirStmt,
     found_assign: &mut bool,

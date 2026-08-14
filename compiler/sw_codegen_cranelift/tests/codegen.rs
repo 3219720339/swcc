@@ -190,6 +190,7 @@ fn compiles_optional_chain_and_interfaces() {
         "interface.sw",
         "generic-types.sw",
         "string-methods.sw",
+        "process.sw",
     ] {
         let result = analyze(&fixture(name), None);
         assert!(

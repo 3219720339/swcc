@@ -25,6 +25,8 @@ extern int memcmp(const void* a, const void* b, sw_size count);
 extern int snprintf(char* buffer, sw_size size, const char* format, ...);
 extern uint64_t fwrite(const void* data, sw_size size, sw_size count, void* stream);
 extern int fputc(int character, void* stream);
+extern uint64_t strlen(const char* text);
+extern void exit(int code);
 #if defined(_WIN32)
 extern void* __acrt_iob_func(unsigned int index);
 #define stdout __acrt_iob_func(1)
@@ -1416,3 +1418,100 @@ void* sw_exception_value(void* exception) {
 #if defined(__aarch64__) && !defined(_WIN32)
 void rust_eh_personality(void) {}
 #endif
+
+// ---------------------------------------------------------------------------
+// 进程入口：把命令行参数构造成 string[]，调用用户 main(args)。
+// 用户 main 可声明为 `function main(): int` 或 `function main(args: string[]): int`。
+// ---------------------------------------------------------------------------
+
+extern int64_t sw_user_main(void* args);
+
+#if defined(_WIN32)
+// MinGW 目标下 clang 在 main 开头调用 __main（GCC 风格 CRT 初始化钩子）；
+// 我们用自己的 startup，无需 CRT 初始化，空实现即可。
+void __main(void) {}
+#else
+extern char** environ;
+#endif
+
+int main(int argc, char** argv) {
+#if defined(_WIN32)
+    // ucrt 不导出 __argc/__argv，用 CommandLineToArgvW + UTF-8 转换。
+    extern void* GetCommandLineW(void);
+    extern void** CommandLineToArgvW(void* cmdline, int* out_argc);
+    extern void LocalFree(void* ptr);
+    extern int WideCharToMultiByte(
+        unsigned int cp,
+        unsigned long flags,
+        const void* wstr,
+        int wlen,
+        char* out,
+        int outlen,
+        const void* default_char,
+        const void* used_default
+    );
+    void* cmdline = GetCommandLineW();
+    void** wide_argv = CommandLineToArgvW(cmdline, &argc);
+    char** converted = (char**)sw_gc_alloc((uint64_t)argc * sizeof(char*));
+    for (int64_t index = 0; index < argc; index++) {
+        int len = WideCharToMultiByte(65001, 0, wide_argv[index], -1, NULL, 0, NULL, NULL);
+        if (len <= 0) {
+            len = 1;
+        }
+        char* copy = (char*)sw_gc_alloc((uint64_t)len);
+        WideCharToMultiByte(65001, 0, wide_argv[index], -1, copy, len, NULL, NULL);
+        converted[index] = copy;
+    }
+    LocalFree(wide_argv);
+    argv = converted;
+#else
+    (void)argc;
+    (void)argv;
+#endif
+    sw_array* args_array = sw_array_new(8, argc);
+    for (int64_t index = 0; index < argc; index++) {
+        const char* arg = argv[index];
+        ((int64_t*)args_array->data)[index] =
+            (int64_t)sw_string_from_literal(arg, (int64_t)strlen(arg));
+    }
+    int64_t result = sw_user_main(args_array);
+    exit((int)result);
+    return 0;
+}
+
+sw_string* getenv(sw_string* name) {
+#if defined(_WIN32)
+    extern int GetEnvironmentVariableA(const char* name, char* buffer, unsigned int size);
+    char buffer[4096];
+    unsigned int size = GetEnvironmentVariableA(name->data, buffer, sizeof(buffer));
+    if (size == 0) {
+        return NULL;
+    }
+    return sw_string_from_literal(buffer, (int64_t)size);
+#else
+    for (int64_t index = 0; environ[index] != NULL; index++) {
+        const char* entry = environ[index];
+        int64_t name_len = name->len;
+        int64_t entry_len = 0;
+        while (entry[entry_len] != 0 && entry[entry_len] != '=') {
+            entry_len++;
+        }
+        if (entry_len == name_len) {
+            int64_t match = 1;
+            for (int64_t i = 0; i < name_len; i++) {
+                if (entry[i] != name->data[i]) {
+                    match = 0;
+                    break;
+                }
+            }
+            if (match) {
+                return sw_string_from_literal(
+                    entry + name_len + 1,
+                    (int64_t)strlen(entry + name_len + 1)
+                );
+            }
+        }
+    }
+    return NULL;
+#endif
+}
