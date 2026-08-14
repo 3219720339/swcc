@@ -406,6 +406,12 @@ pub enum ExprKind {
         index: Box<Expr>,
         optional: bool,
     },
+    /// 数组切片：`a[1:3]`、`a[:3]`、`a[1:]`（复制出新数组）。
+    Slice {
+        object: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+    },
     Postfix {
         expr: Box<Expr>,
         op: PostfixOp,

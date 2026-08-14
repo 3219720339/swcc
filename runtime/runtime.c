@@ -2243,6 +2243,30 @@ void sw_array_set(sw_array* array, int64_t index, int64_t value) {
     ((int64_t*)array->data)[index] = value;
 }
 
+// 数组切片（复制）：a[start:end]，越界自动裁剪，返回新数组。
+sw_array* sw_array_slice(sw_array* array, int64_t start, int64_t end) {
+    if (array == NULL) {
+        return sw_array_new(8, 0);
+    }
+    if (start < 0) {
+        start = 0;
+    }
+    if (end > array->len) {
+        end = array->len;
+    }
+    if (start >= end) {
+        return sw_array_new(8, 0);
+    }
+    int64_t count = end - start;
+    sw_array* result = sw_array_new(8, count);
+    memcpy(
+        result->data,
+        (char*)array->data + (uint64_t)start * 8,
+        (sw_size)((uint64_t)count * 8)
+    );
+    return result;
+}
+
 void sw_array_set_u8(sw_array* array, int64_t index, int64_t value) {
     ((unsigned char*)array->data)[index] = (unsigned char)value;
 }

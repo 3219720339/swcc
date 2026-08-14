@@ -213,6 +213,21 @@ pub enum MirExpr {
         ret_err_tag: i64,
         elem: Type,
     },
+    /// 数组 map：内联循环，逐元素调闭包生成新数组。
+    ArrayMap {
+        object: Box<MirExpr>,
+        closure: Box<MirExpr>,
+        sig: FunctionSig,
+        elem: Type,
+        ret_elem: Type,
+    },
+    /// 数组 filter：内联循环，保留闭包返回 true 的元素。
+    ArrayFilter {
+        object: Box<MirExpr>,
+        closure: Box<MirExpr>,
+        sig: FunctionSig,
+        elem: Type,
+    },
 }
 
 #[derive(Clone, Debug)]

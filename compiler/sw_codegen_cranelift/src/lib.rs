@@ -717,6 +717,37 @@ fn visit_expr(
             );
             visit_expr(object, generator, mir, exports, ctx, refs)?;
         }
+        MirExpr::ArrayMap {
+            object,
+            closure,
+            sig,
+            ..
+        }
+        | MirExpr::ArrayFilter {
+            object,
+            closure,
+            sig,
+            ..
+        } => {
+            for (name, sig) in [
+                ("sw_array_new", array_new_signature(generator.module.isa())),
+                ("sw_array_set", array_set_signature(generator.module.isa())),
+            ] {
+                let func_id = generator.declare_import(name, &sig)?;
+                refs.func_refs.insert(
+                    name.to_owned(),
+                    generator
+                        .module
+                        .declare_func_in_func(func_id, &mut ctx.func),
+                );
+            }
+            let key = format!("{:?}", sig);
+            let cranelift_sig = signature_of_sig(sig, generator.module.isa())?;
+            let sig_ref = ctx.func.import_signature(cranelift_sig);
+            refs.closure_sig_refs.insert(key, sig_ref);
+            visit_expr(object, generator, mir, exports, ctx, refs)?;
+            visit_expr(closure, generator, mir, exports, ctx, refs)?;
+        }
         _ => {}
     }
     Ok(())
@@ -799,6 +830,7 @@ fn intrinsic_name(name: &str) -> &str {
         "float_to_string" => "sw_float_to_string",
         "char_to_string" => "sw_char_to_string",
         "bool_to_string" => "sw_bool_to_string",
+        "array_slice" => "sw_array_slice",
         _ if name.starts_with("sw_") => name,
         _ => "sw_unimplemented",
     }
@@ -997,6 +1029,12 @@ fn intrinsic_signature(name: &str, isa: &dyn cranelift_codegen::isa::TargetIsa) 
             sig.returns.push(AbiParam::new(types::I64));
         }
         "string_eq" | "string_ne" | "utf8_char_at" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "sw_array_slice" => {
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
@@ -2469,6 +2507,185 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 } else {
                     ok_field
                 }
+            }
+            MirExpr::ArrayMap { .. } | MirExpr::ArrayFilter { .. } => {
+                let (is_filter, object, closure, sig, elem, ret_elem) = match expr {
+                    MirExpr::ArrayMap {
+                        object,
+                        closure,
+                        sig,
+                        elem,
+                        ret_elem,
+                    } => (false, object, closure, sig, elem, ret_elem),
+                    MirExpr::ArrayFilter {
+                        object,
+                        closure,
+                        sig,
+                        elem,
+                    } => (true, object, closure, sig, elem, &Type::Error),
+                    _ => unreachable!(),
+                };
+                let array = self.expr(object)?;
+                let closure_obj = self.expr(closure)?;
+                let len = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), array, 0);
+                let elem_size: i64 = if matches!(*elem, Type::U8) {
+                    1
+                } else if let Type::Struct(id) = *elem {
+                    self.struct_sizes.get(&id).copied().unwrap_or(8) as i64
+                } else {
+                    8
+                };
+                let elem_size_value = self.builder.ins().iconst(types::I64, elem_size);
+                let new_array = self.call_import(
+                    "sw_array_new",
+                    array_new_signature(self.module.isa()),
+                    &[elem_size_value, len],
+                )?;
+                let index_slot = self.new_slot();
+                let write_slot = self.new_slot();
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, zero, index_slot, 0);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, zero, write_slot, 0);
+                let key = format!("{:?}", sig);
+                let sig_ref = self
+                    .refs
+                    .closure_sig_refs
+                    .get(&key)
+                    .copied()
+                    .ok_or("闭包签名未导入")?;
+                let header = self.builder.create_block();
+                let body = self.builder.create_block();
+                let exit = self.builder.create_block();
+                self.builder.ins().jump(header, &[]);
+                self.builder.switch_to_block(header);
+                let index = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let cond = self.builder.ins().icmp(IntCC::UnsignedLessThan, index, len);
+                self.builder.ins().brif(cond, body, &[], exit, &[]);
+                self.builder.switch_to_block(body);
+                let index = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let data = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), array, 16);
+                let stride = self.builder.ins().iconst(types::I64, elem_size);
+                let offset = self.builder.ins().imul(index, stride);
+                let addr = self.builder.ins().iadd(data, offset);
+                let item = if elem_size == 1 {
+                    let byte = self
+                        .builder
+                        .ins()
+                        .load(types::I8, MemFlagsData::new(), addr, 0);
+                    self.builder.ins().uextend(types::I64, byte)
+                } else if matches!(*elem, Type::Struct(_)) {
+                    addr
+                } else {
+                    let value = self
+                        .builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), addr, 0);
+                    if elem.is_float() {
+                        self.builder
+                            .ins()
+                            .bitcast(types::F64, MemFlagsData::new(), value)
+                    } else {
+                        value
+                    }
+                };
+                let fn_ptr =
+                    self.builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), closure_obj, 0);
+                let env = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), closure_obj, 8);
+                let call = self
+                    .builder
+                    .ins()
+                    .call_indirect(sig_ref, fn_ptr, &[env, item]);
+                let result = self.builder.inst_results(call)[0];
+                if is_filter {
+                    let zero_i64 = self.builder.ins().iconst(types::I64, 0);
+                    let keep = self.builder.ins().icmp(IntCC::NotEqual, result, zero_i64);
+                    let keep_block = self.builder.create_block();
+                    let skip_block = self.builder.create_block();
+                    self.builder
+                        .ins()
+                        .brif(keep, keep_block, &[], skip_block, &[]);
+                    self.builder.switch_to_block(keep_block);
+                    let write_index =
+                        self.builder
+                            .ins()
+                            .stack_load(types::I64, types::I64, write_slot, 0);
+                    let stored = if elem.is_float() {
+                        self.builder
+                            .ins()
+                            .bitcast(types::I64, MemFlagsData::new(), item)
+                    } else {
+                        item
+                    };
+                    self.call_import(
+                        "sw_array_set",
+                        array_set_signature(self.module.isa()),
+                        &[new_array, write_index, stored],
+                    )?;
+                    let next = self.builder.ins().iadd_imm(write_index, 1);
+                    self.builder
+                        .ins()
+                        .stack_store(types::I64, next, write_slot, 0);
+                    self.builder.ins().jump(skip_block, &[]);
+                    self.builder.switch_to_block(skip_block);
+                    self.builder.seal_block(skip_block);
+                } else {
+                    let stored = if ret_elem.is_float() {
+                        self.builder
+                            .ins()
+                            .bitcast(types::I64, MemFlagsData::new(), result)
+                    } else {
+                        result
+                    };
+                    self.call_import(
+                        "sw_array_set",
+                        array_set_signature(self.module.isa()),
+                        &[new_array, index, stored],
+                    )?;
+                }
+                let index = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let next_index = self.builder.ins().iadd_imm(index, 1);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, next_index, index_slot, 0);
+                self.builder.ins().jump(header, &[]);
+                self.builder.switch_to_block(exit);
+                self.builder.seal_block(header);
+                self.builder.seal_block(body);
+                self.builder.seal_block(exit);
+                if is_filter {
+                    let written =
+                        self.builder
+                            .ins()
+                            .stack_load(types::I64, types::I64, write_slot, 0);
+                    self.builder
+                        .ins()
+                        .store(MemFlagsData::new(), written, new_array, 0);
+                }
+                new_array
             }
         })
     }

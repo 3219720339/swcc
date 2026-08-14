@@ -126,6 +126,18 @@ enum CallTarget {
         enum_id: u32,
         variant_index: usize,
     },
+    /// 数组迭代器方法（编译器内联循环）：map/filter。
+    ArrayMethod {
+        method: ArrayMethodKind,
+        elem: Type,
+        ret: Type,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArrayMethodKind {
+    Map,
+    Filter,
 }
 
 #[derive(Clone, Debug)]
@@ -2438,6 +2450,28 @@ impl<'s> Checker<'s> {
                     element
                 }
             }
+            ExprKind::Slice { object, start, end } => {
+                let object_ty = self.check_expr(object);
+                for bound in [start.as_deref(), end.as_deref()].into_iter().flatten() {
+                    let bound_ty = self.check_expr(bound);
+                    if !bound_ty.is_integer() {
+                        self.error(
+                            format!("切片边界必须是整数，实际为 {}", bound_ty.display()),
+                            bound.span,
+                        );
+                    }
+                }
+                match object_ty.without_nullable() {
+                    Type::Array(inner) => Type::Array(inner.clone()),
+                    other => {
+                        self.error(
+                            format!("切片只能用于数组，实际为 {}", other.display()),
+                            object.span,
+                        );
+                        Type::Error
+                    }
+                }
+            }
             ExprKind::Postfix { expr: inner, .. } => {
                 let ty = self.check_expr(inner);
                 if !ty.is_numeric() || !self.is_lvalue(inner) {
@@ -3402,7 +3436,53 @@ impl<'s> Checker<'s> {
                         }
                     }
                     Type::Array(inner) => {
-                        if name.name == "join" && matches!(**inner, Type::Str) {
+                        if (name.name == "map" || name.name == "filter") && args.len() == 1 {
+                            let fn_ty = args_ty[0].clone();
+                            let Type::Function {
+                                params: fn_params,
+                                ret: fn_ret,
+                            } = &fn_ty
+                            else {
+                                self.error(
+                                    format!("`{}` 需要一个函数参数", name.name),
+                                    args[0].span,
+                                );
+                                return Type::Error;
+                            };
+                            if fn_params.len() != 1 || !self.is_assignable(inner, &fn_params[0]) {
+                                self.error(
+                                    format!(
+                                        "`{}` 的函数参数必须接收一个 {}",
+                                        name.name,
+                                        inner.display()
+                                    ),
+                                    args[0].span,
+                                );
+                                return Type::Error;
+                            }
+                            if name.name == "filter" && !self.is_assignable(&fn_ret, &Type::Bool) {
+                                self.error("`filter` 的函数必须返回 bool", args[0].span);
+                                return Type::Error;
+                            }
+                            let method = if name.name == "map" {
+                                ArrayMethodKind::Map
+                            } else {
+                                ArrayMethodKind::Filter
+                            };
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method,
+                                    elem: (**inner).clone(),
+                                    ret: (**fn_ret).clone(),
+                                },
+                            );
+                            if method == ArrayMethodKind::Map {
+                                Type::Array(Box::new((**fn_ret).clone()))
+                            } else {
+                                Type::Array(inner.clone())
+                            }
+                        } else if name.name == "join" && matches!(**inner, Type::Str) {
                             if args_ty.len() != 1 || !self.is_assignable(&args_ty[0], &Type::Str) {
                                 self.error("`join` 需要一个 string 分隔符", span);
                                 return Type::Error;
@@ -5355,8 +5435,59 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         fields: args,
                     };
                 }
+                if let Some(CallTarget::ArrayMethod { method, elem, ret }) = &target {
+                    let object = match &callee.kind {
+                        ExprKind::Member { object, .. } => self.lower_expr(object),
+                        _ => MirExpr::Int(0),
+                    };
+                    let closure = args.first().cloned().unwrap_or(MirExpr::Int(0));
+                    let fn_ty = self.expr_type(&ast_args[0]);
+                    let (fn_params, fn_ret) = match &fn_ty {
+                        Type::Function { params, ret } => (params.clone(), (**ret).clone()),
+                        _ => (Vec::new(), Type::Error),
+                    };
+                    let mut sig = FunctionSig {
+                        module: self.lowerer.state.id,
+                        name: "$closure".to_owned(),
+                        generics: Vec::new(),
+                        bounds: HashMap::new(),
+                        params: vec![ParamSig {
+                            name: "$env".to_owned(),
+                            ty: Type::Ptr(Box::new(Type::I8)),
+                            has_default: false,
+                            rest: false,
+                        }],
+                        ret: fn_ret,
+                        extern_c: false,
+                        span: expr.span,
+                    };
+                    for (index, param_ty) in fn_params.iter().enumerate() {
+                        sig.params.push(ParamSig {
+                            name: format!("arg{index}"),
+                            ty: param_ty.clone(),
+                            has_default: false,
+                            rest: false,
+                        });
+                    }
+                    return match method {
+                        ArrayMethodKind::Map => MirExpr::ArrayMap {
+                            object: Box::new(object),
+                            closure: Box::new(closure),
+                            sig,
+                            elem: elem.clone(),
+                            ret_elem: ret.clone(),
+                        },
+                        ArrayMethodKind::Filter => MirExpr::ArrayFilter {
+                            object: Box::new(object),
+                            closure: Box::new(closure),
+                            sig,
+                            elem: elem.clone(),
+                        },
+                    };
+                }
                 let callee = match target {
                     Some(CallTarget::EnumConstruct { .. }) => unreachable!(),
+                    Some(CallTarget::ArrayMethod { .. }) => unreachable!(),
                     Some(CallTarget::Function(symbol)) => {
                         let sig = match &self.lowerer.symbol(symbol).kind {
                             SymbolKind::Function(sig) => sig.clone(),
@@ -5613,6 +5744,26 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     };
                 }
                 access
+            }
+            ExprKind::Slice { object, start, end } => {
+                let object_mir = self.lower_expr(object);
+                let start_mir = start
+                    .as_ref()
+                    .map(|expr| self.lower_expr(expr))
+                    .unwrap_or(MirExpr::Int(0));
+                let end_mir =
+                    end.as_ref()
+                        .map(|expr| self.lower_expr(expr))
+                        .unwrap_or(MirExpr::Len {
+                            object: Box::new(object_mir.clone()),
+                            string: false,
+                        });
+                MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "array_slice".to_owned(),
+                    },
+                    args: vec![object_mir, start_mir, end_mir],
+                }
             }
             ExprKind::Postfix { expr: inner, op } => {
                 if let Some(target) = self.lower_target(inner) {
@@ -5972,6 +6123,12 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             }
             ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => {
                 self.collect_captures_expr(object, lambda_params, out, seen);
+            }
+            ExprKind::Slice { object, start, end } => {
+                self.collect_captures_expr(object, lambda_params, out, seen);
+                for bound in [start.as_deref(), end.as_deref()].into_iter().flatten() {
+                    self.collect_captures_expr(bound, lambda_params, out, seen);
+                }
             }
             ExprKind::Array(items) => {
                 for item in items {

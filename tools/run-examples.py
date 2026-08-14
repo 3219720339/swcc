@@ -42,6 +42,7 @@ EXPECTED = {
     "probe-process.sw": 0,
     "probe-println.sw": 0,
     "probe-return.sw": 42,
+    "probe-slice.sw": 0,
     "probe-result.sw": 0,
     "probe-string.sw": 0,
     "probe-stdlib.sw": 0,

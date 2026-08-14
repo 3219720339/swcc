@@ -1600,16 +1600,57 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::LBracket => {
                     self.advance();
-                    let index = self.parse_expression()?;
-                    self.expect(&TokenKind::RBracket, "索引缺少 `]`")?;
-                    expr = Expr {
-                        kind: ExprKind::Index {
-                            object: Box::new(expr),
-                            index: Box::new(index),
-                            optional: false,
-                        },
-                        span: Span::new(start, self.peek().span.start),
-                    };
+                    if self.at(&TokenKind::Colon) {
+                        // 切片 a[:3]
+                        self.advance();
+                        let slice_end = if self.eat(&TokenKind::Colon) {
+                            None
+                        } else {
+                            if self.at(&TokenKind::RBracket) {
+                                None
+                            } else {
+                                Some(Box::new(self.parse_expression()?))
+                            }
+                        };
+                        self.expect(&TokenKind::RBracket, "切片缺少 `]`")?;
+                        expr = Expr {
+                            kind: ExprKind::Slice {
+                                object: Box::new(expr),
+                                start: None,
+                                end: slice_end,
+                            },
+                            span: Span::new(start, self.peek().span.start),
+                        };
+                    } else {
+                        let first = self.parse_expression()?;
+                        if self.eat(&TokenKind::Colon) {
+                            // 切片 a[1:3] / a[1:]
+                            let slice_end = if self.at(&TokenKind::RBracket) {
+                                None
+                            } else {
+                                Some(Box::new(self.parse_expression()?))
+                            };
+                            self.expect(&TokenKind::RBracket, "切片缺少 `]`")?;
+                            expr = Expr {
+                                kind: ExprKind::Slice {
+                                    object: Box::new(expr),
+                                    start: Some(Box::new(first)),
+                                    end: slice_end,
+                                },
+                                span: Span::new(start, self.peek().span.start),
+                            };
+                        } else {
+                            self.expect(&TokenKind::RBracket, "索引缺少 `]`")?;
+                            expr = Expr {
+                                kind: ExprKind::Index {
+                                    object: Box::new(expr),
+                                    index: Box::new(first),
+                                    optional: false,
+                                },
+                                span: Span::new(start, self.peek().span.start),
+                            };
+                        }
+                    }
                 }
                 TokenKind::PlusPlus => {
                     self.advance();
