@@ -1435,12 +1435,28 @@ impl Analyzer {
             .iter()
             .map(|state| state.result.clone())
             .collect();
+        let module_stems: HashMap<u32, String> = self
+            .states
+            .iter()
+            .map(|state| {
+                let stem = state
+                    .path
+                    .file_stem()
+                    .map(|s| {
+                        s.to_string_lossy()
+                            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+                    })
+                    .unwrap_or_else(|| format!("mod{}", state.id.0));
+                (state.id.0, stem)
+            })
+            .collect();
         let state = &mut self.states[module_id.0 as usize];
         let mir = {
             let mut lowerer = MirLowerer {
                 module,
                 all_modules: &self.modules,
                 all_results,
+                module_stems,
                 symbols,
                 types,
                 registry,
@@ -4352,6 +4368,8 @@ struct MirLowerer<'m, 's> {
     all_modules: &'m [Module],
     /// 各模块的检查结果表（跨模块泛型实例化时模板 body 的 span 查模板模块）。
     all_results: Vec<CheckResult>,
+    /// 模块 id → 文件 stem（stable 符号名用，避免加载顺序/源码位置编号）。
+    module_stems: HashMap<u32, String>,
     symbols: &'s [Symbol],
     types: &'s mut TypeTable,
     registry: &'s HashMap<String, Type>,
@@ -4594,7 +4612,12 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     if !sig.generics.is_empty() {
                         continue;
                     }
-                    let name = stable_function_name(&sig);
+                    let module_stem = self
+                        .module_stems
+                        .get(&self.state.id.0)
+                        .cloned()
+                        .unwrap_or_else(|| "mod".to_owned());
+                    let name = stable_function_name(&sig, &module_stem);
                     let result_index = self.state.id.0 as usize;
                     let mut lower = FnLower {
                         lowerer: self,
@@ -4844,7 +4867,12 @@ impl<'m, 's> MirLowerer<'m, 's> {
                 if sig.ret != Type::Int && sig.ret != Type::Void && sig.ret != Type::Unknown {
                     self.error("test 函数返回类型必须为 int 或 void", function.span);
                 }
-                Some((stable_function_name(&sig), sig))
+                let module_stem = self
+                    .module_stems
+                    .get(&self.state.id.0)
+                    .cloned()
+                    .unwrap_or_else(|| "mod".to_owned());
+                Some((stable_function_name(&sig, &module_stem), sig))
             })
             .collect();
         if !test_fns.is_empty()
@@ -5969,7 +5997,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         let key = format!(
             "{}:{}:{}",
             template.module.0,
-            stable_function_name(template),
+            stable_function_name(
+                template,
+                self.lowerer
+                    .module_stems
+                    .get(&template.module.0)
+                    .map(String::as_str)
+                    .unwrap_or("mod"),
+            ),
             key_parts.join(",")
         );
         if let Some((name, sig)) = self.lowerer.generic_instances.get(&key) {
@@ -5978,7 +6013,18 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
 
         let instance_id = self.lowerer.generic_counter;
         self.lowerer.generic_counter += 1;
-        let instance_name = format!("sw_gen_{}_{}", stable_function_name(template), instance_id);
+        let instance_name = format!(
+            "sw_gen_{}_{}",
+            stable_function_name(
+                template,
+                self.lowerer
+                    .module_stems
+                    .get(&template.module.0)
+                    .map(String::as_str)
+                    .unwrap_or("mod"),
+            ),
+            instance_id
+        );
         let instance_params: Vec<MirParam> = template
             .params
             .iter()
@@ -6731,7 +6777,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         } else {
                             MirCallee::Function {
                                 module: sig.module.0,
-                                name: stable_function_name(&sig),
+                                name: stable_function_name(
+                                    &sig,
+                                    self.lowerer
+                                        .module_stems
+                                        .get(&sig.module.0)
+                                        .map(String::as_str)
+                                        .unwrap_or("mod"),
+                                ),
                                 sig: sig.clone(),
                             }
                         }
@@ -7764,12 +7817,49 @@ impl<'m, 's> MirLowerer<'m, 's> {
     }
 }
 
-fn stable_function_name(sig: &FunctionSig) -> String {
+fn stable_function_name(sig: &FunctionSig, module_stem: &str) -> String {
     if sig.name == "main" {
         // 入口由运行时 main 调用，用户 main 改名为 sw_user_main。
         return "sw_user_main".to_owned();
     }
-    format!("sw_fn_{}_{}_{}", sig.module.0, sig.name, sig.span.start)
+    // 固定名：模块文件名 + 函数名；重载用参数类型缩写消歧（不依赖源码位置）。
+    let abbrev: String = sig
+        .params
+        .iter()
+        .map(|param| type_abbrev(&param.ty))
+        .collect::<Vec<_>>()
+        .join("");
+    let mut name = format!("sw_fn_{module_stem}_{}", sig.name);
+    if !abbrev.is_empty() {
+        name.push('_');
+        name.push_str(&abbrev);
+    }
+    name
+}
+
+/// 参数类型 → 稳定缩写（用于重载消歧）。
+fn type_abbrev(ty: &Type) -> String {
+    match ty.without_nullable() {
+        Type::Int
+        | Type::UInt
+        | Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::Isize
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::Usize => "i".to_string(),
+        Type::F32 | Type::F64 => "f".to_string(),
+        Type::Str => "s".to_string(),
+        Type::Bool => "b".to_string(),
+        Type::Char => "c".to_string(),
+        Type::Array(inner) => format!("a{}", type_abbrev(inner)),
+        Type::Void => "v".to_string(),
+        _ => "o".to_string(),
+    }
 }
 
 fn mir_binary(op: &BinaryOp) -> MirBinary {

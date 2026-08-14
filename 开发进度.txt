@@ -987,6 +987,21 @@ Sw 编译器（swcc）开发进度
                        - build-demo/README.md 补充动态加载与头文件用法
                        - 66 个 examples 全过；cargo test 52 全绿；fmt 通过
 
+    2026-08-15 03:43  导出符号固定名（去掉源码位置/模块序号）：
+                       - stable_function_name 由 `sw_fn_<模块id>_<名>_<span>`
+                         改为固定名 `sw_fn_<模块文件名>_<函数名>`；重载函数
+                         追加参数类型缩写消歧（i/f/s/b/c/a<元素>/v/o，
+                         数组递归元素类型：int[]→ai、float[]→af、string[]→as）
+                       - MirLowerer 增 module_stems（模块 id → 文件 stem，
+                         不依赖加载顺序）；6 处调用点传模块名
+                       - 效果：sw_fn_math_add_ii（add(int,int)）、
+                         sw_fn_greeter_greet_s（greet(string)），增删代码/换行
+                         不再改变导出符号；lib 头文件与 dll 动态加载同步更新
+                       - 修复回归：数组重载 expect_eq(int[]/float[]/string[])
+                         此前都缩成 a 导致符号冲突，改为递归元素缩写
+                       - 验证：lib/dll 重构建符号固定、C 动态加载与头文件调用
+                         通过；66 个 examples 全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

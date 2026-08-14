@@ -25,8 +25,9 @@ swc build main.sw          # 产出 hello-app.exe
 swc run main.sw            # 直接编译运行
 ```
 
-> 说明：`swcc.toml` 会在入口文件所在目录向上查找；dll 导出的符号目前是
-> Sw 内部 stable 名（`sw_fn_<模块>_<名>_<位置>`），用户友好名映射待后续版本。
+> 说明：`swcc.toml` 会在入口文件所在目录向上查找；导出符号是固定名
+> `sw_fn_<模块文件名>_<函数名>`（重载函数追加参数类型缩写，如
+> `sw_fn_greeter_greet_s` = greet(string)）。
 
 ## DLL 动态加载（不需要 .lib）
 
@@ -47,7 +48,7 @@ clang dynamic-load.c -o dynamic-load.exe   # Windows：不链接 -lswgreet
 
 ```c
 #include "swmath.h"
-printf("%lld\n", sw_fn_0_add_55(5, 7));   // 12
+printf("%lld\n", sw_fn_math_add_ii(5, 7));   // 12
 ```
 
 > 头文件用 Sw stable 符号名；源码函数名在声明行尾注释标注。
