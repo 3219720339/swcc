@@ -1332,6 +1332,15 @@ Sw 编译器（swcc）开发进度
                          greet-dll 目录 `swc check`（entry=greeter.sw）
                          均正常；空目录报错 exit=2
 
+    2026-08-15 08:20  dll 不再嵌入图标：
+                       - 用户指出 dll 不需要图标：windows_resource_object
+                         增加 dll 标志，dll 只保留 VERSIONINFO 版本信息，
+                         跳过 ICON 资源；exe 仍带图标
+                       - 验证：swgreet.dll 138KB（原 301KB，无图标，
+                         版本信息 Desc/Ver 保留）；hello-app.exe 180KB
+                         仍带图标；78 examples 全过；cargo test 52 全绿；
+                         fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

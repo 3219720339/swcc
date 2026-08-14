@@ -470,14 +470,20 @@ fn parse_version_parts(version: &str) -> (u16, u16, u16, u16) {
 
 /// 生成 Windows 资源对象（.res）：版本信息 + 可选图标；无内容时返回 None。
 /// 通过 windres 编译，输出到 .swcache/obj/。
-fn windows_resource_object(target: &str, config: &SwConfig, output: &Path) -> Option<PathBuf> {
+fn windows_resource_object(
+    target: &str,
+    config: &SwConfig,
+    output: &Path,
+    dll: bool,
+) -> Option<PathBuf> {
     let sdk = locate_sdk(target)?;
     let windres = sdk.windres.as_ref()?;
     let has_meta = !config.version.is_empty()
         || !config.description.is_empty()
         || !config.author.is_empty()
         || !config.copyright.is_empty();
-    let icon_path = if config.icon.is_empty() {
+    // dll 不需要图标（避免资源里带 ICON），只保留版本信息。
+    let icon_path = if dll || config.icon.is_empty() {
         None
     } else {
         let icon = PathBuf::from(&config.icon);
@@ -724,7 +730,7 @@ fn link_windows(
         args.push("--gc-sections".into());
     }
     // 版本信息/图标对 exe 与 dll 都生效（VERSIONINFO 资源）。
-    if let Some(resource) = windows_resource_object(target, config, output) {
+    if let Some(resource) = windows_resource_object(target, config, output, dll) {
         args.push(resource.as_os_str().to_os_string());
     }
     for object in objects {
