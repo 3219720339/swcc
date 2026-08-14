@@ -1449,6 +1449,21 @@ Sw 编译器（swcc）开发进度
                        - 验证：83 examples 全过；cargo test 52 全绿；
                          fmt 通过；runtime.c 三平台交叉编译通过
 
+    2026-08-15 10:20  文档版本差异清理（用户指出）：
+                       - docs/00-设计目标.md：删除"带载荷枚举与 match/
+                         解构/动态库静态库导出/Windows 资源/垃圾回收器
+                         不做"等过时项；v0.1 范围补入 ADT+match、展开/解构、
+                         GC、标准库 22 模块、dll/lib/资源、swcc.toml；
+                         明确"实际能力以 08-能力清单.md 与 examples/ 为准"
+                       - docs/02-语法规则.md：删除"解构赋值后续版本不支持"
+                         与"解构、rest/spread、match、带载荷枚举不支持"；
+                         补解构支持说明；"明确不支持"保留 var/typeof/
+                         instanceof/do-while/defer/默认导入等真实限制；
+                         文首加"以能力清单为准"一致性说明
+                       - 保留的真实限制：默认导出/导入、CommonJS、
+                         let 一条语句单名、defer（解析保留降级不支持）、
+                         do...while、typeof/instanceof
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
