@@ -6328,3 +6328,279 @@ sw_string* replace_pairs(sw_string* text, sw_array* pairs) {
     }
     return result;
 }
+
+// ---------------------------------------------------------------------------
+// 时间处理库（火山时间类参考）：本地时区字段/格式化/间隔
+// ---------------------------------------------------------------------------
+
+// field：0=年 1=月 2=星期 3=日 4=时 5=分 6=秒。
+// Windows 用 FileTimeToSystemTime（SYSTEMTIME 偏移：year@0 mon@2 wday@4
+// day@6 hour@8 min@10 sec@12）；POSIX 用 localtime_r（tm 偏移：
+// sec@0 min@4 hour@8 day@12 mon@16 year@20 wday@24）。
+static int sw_time_field(int64_t seconds, int field) {
+#if defined(_WIN32)
+    unsigned char st[16];
+    sw_unix_to_local_systemtime(st, seconds);
+    static const int offsets[] = {0, 2, 4, 6, 8, 10, 12};
+    return *(unsigned short*)(st + offsets[field]);
+#else
+    extern void* localtime_r(const void* time, void* tm);
+    unsigned char tm[64];
+    unsigned char t[8];
+    *(int64_t*)t = seconds;
+    if (localtime_r(t, tm) == NULL) {
+        return -1;
+    }
+    static const int offsets[] = {20, 16, 24, 12, 8, 4, 0};
+    return *(int*)(tm + offsets[field]);
+#endif
+}
+
+// 本地日历时间增减（DST 安全）：在本地时间字段上加偏移后重新构造时间戳。
+static int64_t sw_shift_local_time(
+    int64_t seconds,
+    int64_t days,
+    int64_t hours,
+    int64_t minutes,
+    int64_t secs
+) {
+#if defined(_WIN32)
+    unsigned char st[16];
+    sw_unix_to_local_systemtime(st, seconds);
+    *(unsigned short*)(st + 6) = (unsigned short)(*(unsigned short*)(st + 6) + (int)days);
+    *(unsigned short*)(st + 8) = (unsigned short)(*(unsigned short*)(st + 8) + (int)hours);
+    *(unsigned short*)(st + 10) = (unsigned short)(*(unsigned short*)(st + 10) + (int)minutes);
+    *(unsigned short*)(st + 12) = (unsigned short)(*(unsigned short*)(st + 12) + (int)secs);
+    extern int TzSpecificLocalTimeToSystemTime(const void* tz, const void* local, void* utc);
+    extern int SystemTimeToFileTime(const void* st_, void* ft);
+    unsigned char utc_st[16];
+    if (!TzSpecificLocalTimeToSystemTime(NULL, st, utc_st)) {
+        return -1;
+    }
+    unsigned char ft[8];
+    if (!SystemTimeToFileTime(utc_st, ft)) {
+        return -1;
+    }
+    uint64_t since_1601 =
+        ((uint64_t)(*(unsigned int*)(ft + 4)) << 32) | (*(unsigned int*)ft);
+    return (int64_t)(since_1601 / 10000000 - 11644473600ULL);
+#else
+    extern long mktime(void* tm);
+    unsigned char tm[64];
+    unsigned char t[8];
+    *(int64_t*)t = seconds;
+    extern void* localtime_r(const void* time, void* tm_out);
+    if (localtime_r(t, tm) == NULL) {
+        return -1;
+    }
+    *(int*)(tm + 0) += (int)secs;
+    *(int*)(tm + 4) += (int)minutes;
+    *(int*)(tm + 8) += (int)hours;
+    *(int*)(tm + 12) += (int)days;
+    *(int*)(tm + 32) = -1;
+    long result = mktime(tm);
+    return result == (long)-1 ? -1 : (int64_t)result;
+#endif
+}
+
+int64_t year_of(int64_t seconds) {
+    int value = sw_time_field(seconds, 0);
+    return value < 0 ? -1 : value;
+}
+
+int64_t month_of(int64_t seconds) {
+    int value = sw_time_field(seconds, 1);
+    return value < 0 ? -1 : value;
+}
+
+int64_t day_of(int64_t seconds) {
+    return sw_time_field(seconds, 3);
+}
+
+int64_t hour_of(int64_t seconds) {
+    return sw_time_field(seconds, 4);
+}
+
+int64_t minute_of(int64_t seconds) {
+    return sw_time_field(seconds, 5);
+}
+
+int64_t second_of(int64_t seconds) {
+    return sw_time_field(seconds, 6);
+}
+
+// 星期几：0=周日 … 6=周六。
+int64_t weekday_of(int64_t seconds) {
+    return sw_time_field(seconds, 2);
+}
+
+// 中文星期：日/一/二/三/四/五/六。
+sw_string* weekday_cn(int64_t seconds) {
+    static const char* names[] = {"日", "一", "二", "三", "四", "五", "六"};
+    int wday = sw_time_field(seconds, 2);
+    if (wday < 0 || wday > 6) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(names[wday], 3);
+}
+
+sw_string* time_string(int64_t seconds) {
+    char buffer[16];
+    int h = sw_time_field(seconds, 4);
+    int m = sw_time_field(seconds, 5);
+    int s = sw_time_field(seconds, 6);
+    if (h < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d", h, m, s);
+    return sw_string_from_literal(buffer, 8);
+}
+
+// ISO 风格本地时间："YYYY-MM-DDTHH:MM:SS"。
+sw_string* iso_string(int64_t seconds) {
+    char buffer[32];
+    int year = sw_time_field(seconds, 0);
+    int month = sw_time_field(seconds, 1);
+    int day = sw_time_field(seconds, 3);
+    int hour = sw_time_field(seconds, 4);
+    int minute = sw_time_field(seconds, 5);
+    int second = sw_time_field(seconds, 6);
+    if (year < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "%04d-%02d-%02dT%02d:%02d:%02d",
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second
+    );
+    return sw_string_from_literal(buffer, 19);
+}
+
+// 秒数转时长文本：90 → "00:01:30"；text_mode 用 "00时01分30秒"；
+// include_days 前缀 "N天 "。
+sw_string* format_duration(int64_t seconds, int64_t include_days, int64_t text_mode) {
+    if (seconds < 0) {
+        seconds = 0;
+    }
+    int64_t days = seconds / 86400;
+    int64_t hour = (seconds % 86400) / 3600;
+    int64_t minute = (seconds % 3600) / 60;
+    int64_t second = seconds % 60;
+    char buffer[64];
+    if (include_days) {
+        if (text_mode) {
+            snprintf(
+                buffer,
+                sizeof(buffer),
+                "%lld天 %02lld时%02lld分%02lld秒",
+                (long long)days,
+                (long long)hour,
+                (long long)minute,
+                (long long)second
+            );
+        } else {
+            snprintf(
+                buffer,
+                sizeof(buffer),
+                "%lld天 %02lld:%02lld:%02lld",
+                (long long)days,
+                (long long)hour,
+                (long long)minute,
+                (long long)second
+            );
+        }
+    } else if (text_mode) {
+        snprintf(
+            buffer,
+            sizeof(buffer),
+            "%02lld时%02lld分%02lld秒",
+            (long long)hour,
+            (long long)minute,
+            (long long)second
+        );
+    } else {
+        snprintf(
+            buffer,
+            sizeof(buffer),
+            "%02lld:%02lld:%02lld",
+            (long long)hour,
+            (long long)minute,
+            (long long)second
+        );
+    }
+    return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
+}
+
+int64_t days_in_month(int64_t year, int64_t month) {
+    static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month < 1 || month > 12) {
+        return -1;
+    }
+    if (month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
+        return 29;
+    }
+    return days[month - 1];
+}
+
+int64_t days_in_year(int64_t year) {
+    if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) {
+        return 366;
+    }
+    return 365;
+}
+
+int64_t shift_time(
+    int64_t seconds,
+    int64_t days,
+    int64_t hours,
+    int64_t minutes,
+    int64_t secs
+) {
+    return sw_shift_local_time(seconds, days, hours, minutes, secs);
+}
+
+// 两个时间戳的间隔，按单位换算（0秒 1分 2时 3天），结果 = sec2 - sec1。
+int64_t time_diff(int64_t sec1, int64_t sec2, int64_t unit) {
+    int64_t diff = sec2 - sec1;
+    switch (unit) {
+        case 1:
+            return diff / 60;
+        case 2:
+            return diff / 3600;
+        case 3:
+            return diff / 86400;
+        default:
+            return diff;
+    }
+}
+
+// 进程启动以来毫秒数（高精度单调时钟）。
+int64_t uptime_ms(void) {
+#if defined(_WIN32)
+    extern int QueryPerformanceFrequency(int64_t* freq);
+    extern int QueryPerformanceCounter(int64_t* counter);
+    int64_t freq = 0;
+    int64_t counter = 0;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&counter);
+    if (freq <= 0) {
+        return 0;
+    }
+    return (int64_t)((counter * 1000) / freq);
+#else
+    extern int clock_gettime(int clock_id, void* ts);
+    unsigned char ts[16];
+    if (clock_gettime(1 /* CLOCK_MONOTONIC */, ts) != 0) {
+        return 0;
+    }
+    int64_t sec = *(int64_t*)ts;
+    int64_t nsec = *(int64_t*)(ts + 8);
+    return sec * 1000 + nsec / 1000000;
+#endif
+}

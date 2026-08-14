@@ -1085,6 +1085,25 @@ Sw 编译器（swcc）开发进度
                          中文自由函数），69 个 examples 全过；cargo test
                          52 全绿；fmt 通过
 
+    2026-08-15 04:23  时间处理库（参考火山时间类，纯跨平台，不绑 Windows）：
+                       - std/time +15 英文函数：year_of/month_of/day_of/
+                         hour_of/minute_of/second_of/weekday_of 字段提取
+                         （Windows SYSTEMTIME / POSIX localtime_r 双平台）、
+                         weekday_cn 中文星期（日/一/二…六）、time_string
+                         （HH:MM:SS）、iso_string（YYYY-MM-DDTHH:MM:SS）、
+                         format_duration（秒转时长，90→"00:01:30"，text_mode
+                         "00时01分30秒"，include_days 前缀 "N天 "）、
+                         days_in_month/days_in_year（闰年）、shift_time
+                         （本地日期增减，DST 安全）、time_diff（秒/分/时/天
+                         间隔）、uptime_ms（单调时钟）
+                       - 16 个中文转发（取现行时间戳/取现行时间戳毫秒/取年份/
+                         取月份/取日/取小时/取分钟/取秒/取星期几/取星期文本/
+                         时间转文本/取某月天数/取某年天数/时间戳增减/取时间间隔/
+                         秒数转时间格式/取系统启动时间），Sw 层转发英文实现
+                       - 跨平台验证：runtime.c 交叉编译 x86_64/aarch64 Linux
+                         + aarch64 macOS 通过；Windows 本机 70 examples 全过；
+                         cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
