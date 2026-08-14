@@ -3170,6 +3170,24 @@ fn string_method(method: &str) -> Option<(String, Vec<Type>, Type)> {
         "parse_float_or" => ("parse_float_or".to_owned(), vec![Type::F64], Type::F64),
         "is_number" => ("is_number".to_owned(), vec![], Type::Bool),
         "repeat" => ("repeat".to_owned(), vec![Type::Int], Type::Str),
+        "reverse" => ("reverse".to_owned(), vec![], Type::Str),
+        "split_chars" => (
+            "split_chars".to_owned(),
+            vec![Type::Str],
+            Type::Array(Box::new(Type::Str)),
+        ),
+        "index_of_char" => ("index_of_char".to_owned(), vec![Type::Str], Type::Int),
+        "substring_chars" => (
+            "utf8_substring".to_owned(),
+            vec![Type::Int, Type::Int],
+            Type::Str,
+        ),
+        "pad_left" => ("pad_left".to_owned(), vec![Type::Int, Type::Str], Type::Str),
+        "pad_right" => (
+            "pad_right".to_owned(),
+            vec![Type::Int, Type::Str],
+            Type::Str,
+        ),
         _ => return None,
     })
 }

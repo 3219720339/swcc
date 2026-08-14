@@ -64,3 +64,25 @@ export extern c function repeat(text: string, count: int): string;
 
 /// 把 Unicode 码点编码为单个字符（UTF-8）。
 export extern c function from_code_point(code_point: int): string;
+
+/// 按字符（码点）反转字符串，如 "你好a" -> "a好你"。
+export extern c function reverse(text: string): string;
+
+/// 按字符（码点）查找 needle 首次出现的字符序号；未找到返回 -1。
+export extern c function index_of_char(text: string, needle: string): int;
+
+/// 按字符拆分（有效 UTF-8 分隔符天然落在字符边界）。
+export extern c function split_chars(text: string, separator: string): string[];
+
+/// 左侧填充到指定字符宽度（pad 取首个字符；width 不足时不填充）。
+export extern c function pad_left(text: string, width: int, pad: string): string;
+
+/// 右侧填充到指定字符宽度。
+export extern c function pad_right(text: string, width: int, pad: string): string;
+
+/// 格式化整数：pad_zero 为 1 时补零，为 0 时右对齐补空格。
+/// 示例：format_int(42, 3, 1) == "042"；format_int(42, 3, 0) == " 42"。
+export extern c function format_int(value: int, width: int, pad_zero: int): string;
+
+/// 格式化浮点：保留 precision 位小数，如 format_float(3.14159, 2) == "3.14"。
+export extern c function format_float(value: float, precision: int): string;

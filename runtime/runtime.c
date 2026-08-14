@@ -1216,6 +1216,188 @@ sw_string* replace(sw_string* text, sw_string* from, sw_string* to) {
 }
 
 // ---------------------------------------------------------------------------
+// 字符级（UTF-8 码点）字符串操作
+// ---------------------------------------------------------------------------
+
+int64_t utf8_len(sw_string* text);
+static int64_t sw_utf8_char_length(const char* text, int64_t index, int64_t len);
+
+sw_string* reverse(sw_string* text) {
+    int64_t count = utf8_len(text);
+    if (count <= 1) {
+        return sw_string_from_literal(text->data, text->len);
+    }
+    int64_t* starts = (int64_t*)sw_gc_alloc((uint64_t)(count + 1) * 8);
+    int64_t byte = 0;
+    int64_t n = 0;
+    while (byte < text->len) {
+        starts[n++] = byte;
+        byte += sw_utf8_char_length(text->data, byte, text->len);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    int64_t out = 0;
+    for (int64_t i = n - 1; i >= 0; i--) {
+        int64_t len = sw_utf8_char_length(text->data, starts[i], text->len);
+        for (int64_t j = 0; j < len; j++) {
+            buffer[out++] = text->data[starts[i] + j];
+        }
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+int64_t index_of_char(sw_string* text, sw_string* needle) {
+    if (needle->len == 0) {
+        return 0;
+    }
+    if (needle->len > text->len) {
+        return -1;
+    }
+    int64_t byte = 0;
+    int64_t char_index = 0;
+    while (byte + needle->len <= text->len) {
+        int64_t ok = 1;
+        for (int64_t j = 0; j < needle->len; j++) {
+            if (text->data[byte + j] != needle->data[j]) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) {
+            return char_index;
+        }
+        byte += sw_utf8_char_length(text->data, byte, text->len);
+        char_index++;
+    }
+    return -1;
+}
+
+sw_array* split_chars(sw_string* text, sw_string* sep) {
+    // UTF-8 有效分隔符的字节序列天然落在字符边界，与 split 行为一致；
+    // 单独提供以明确"按字符"语义（避免与字节偏移函数混淆）。
+    return split(text, sep);
+}
+
+// ---------------------------------------------------------------------------
+// 格式化输出：补零/对齐/精度
+// ---------------------------------------------------------------------------
+
+static int64_t sw_pad_char_len(sw_string* pad) {
+    return pad->len > 0 ? sw_utf8_char_length(pad->data, 0, pad->len) : 1;
+}
+
+sw_string* pad_left(sw_string* text, int64_t width, sw_string* pad) {
+    int64_t text_chars = utf8_len(text);
+    int64_t need = width - text_chars;
+    if (need <= 0) {
+        return sw_string_from_literal(text->data, text->len);
+    }
+    const char* pad_bytes = pad->len > 0 ? pad->data : " ";
+    int64_t pad_len = sw_pad_char_len(pad);
+    int64_t total = text->len + need * pad_len;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)total + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < need; i++) {
+        for (int64_t j = 0; j < pad_len; j++) {
+            buffer[out++] = pad_bytes[j];
+        }
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        buffer[out++] = text->data[i];
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+sw_string* pad_right(sw_string* text, int64_t width, sw_string* pad) {
+    int64_t text_chars = utf8_len(text);
+    int64_t need = width - text_chars;
+    if (need <= 0) {
+        return sw_string_from_literal(text->data, text->len);
+    }
+    const char* pad_bytes = pad->len > 0 ? pad->data : " ";
+    int64_t pad_len = sw_pad_char_len(pad);
+    int64_t total = text->len + need * pad_len;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)total + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        buffer[out++] = text->data[i];
+    }
+    for (int64_t i = 0; i < need; i++) {
+        for (int64_t j = 0; j < pad_len; j++) {
+            buffer[out++] = pad_bytes[j];
+        }
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+sw_string* format_int(int64_t value, int64_t width, int64_t pad_zero) {
+    char buffer[32];
+    int len;
+    if (pad_zero) {
+        len = snprintf(buffer, sizeof(buffer), "%0*lld", (int)width, value);
+    } else {
+        len = snprintf(buffer, sizeof(buffer), "%*lld", (int)width, value);
+    }
+    return sw_string_from_literal(buffer, len);
+}
+
+sw_string* format_float(double value, int64_t precision) {
+    char buffer[64];
+    int len = snprintf(buffer, sizeof(buffer), "%.*f", (int)precision, value);
+    return sw_string_from_literal(buffer, len);
+}
+
+// ---------------------------------------------------------------------------
+// 随机数与数学小工具
+// ---------------------------------------------------------------------------
+
+extern int rand(void);
+extern void srand(unsigned int seed);
+
+static int sw_rand_seeded = 0;
+
+int64_t now_ms(void);
+
+int64_t rand_int(int64_t max) {
+    if (!sw_rand_seeded) {
+        srand((unsigned int)(now_ms() ^ (uintptr_t)&sw_rand_seeded));
+        sw_rand_seeded = 1;
+    }
+    if (max <= 0) {
+        return 0;
+    }
+    return (int64_t)(rand() % (int)max);
+}
+
+int64_t clamp(int64_t value, int64_t lo, int64_t hi) {
+    return value < lo ? lo : (value > hi ? hi : value);
+}
+
+int64_t gcd(int64_t a, int64_t b) {
+    if (a < 0) {
+        a = -a;
+    }
+    if (b < 0) {
+        b = -b;
+    }
+    while (b != 0) {
+        int64_t t = a % b;
+        a = b;
+        b = t;
+    }
+    return a;
+}
+
+int64_t lcm(int64_t a, int64_t b) {
+    if (a == 0 || b == 0) {
+        return 0;
+    }
+    return a / gcd(a, b) * b;
+}
+
+// ---------------------------------------------------------------------------
 // unicode：UTF-8 按字符（码点）语义的工具函数。
 // ---------------------------------------------------------------------------
 
@@ -1330,12 +1512,25 @@ int64_t now_sec(void) {
     return now_ms() / 1000;
 }
 
+#if defined(_WIN32)
+static void sw_unix_to_local_systemtime(unsigned char* st, int64_t seconds) {
+    extern int FileTimeToLocalFileTime(const void* file_time, void* local_file_time);
+    extern int FileTimeToSystemTime(const void* file_time, void* system_time);
+    uint64_t since_1601 = ((uint64_t)seconds + 11644473600ULL) * 10000000ULL;
+    unsigned char ft[8];
+    unsigned char local_ft[8];
+    *(unsigned int*)ft = (unsigned int)since_1601;
+    *(unsigned int*)(ft + 4) = (unsigned int)(since_1601 >> 32);
+    FileTimeToLocalFileTime(ft, local_ft);
+    FileTimeToSystemTime(local_ft, st);
+}
+#endif
+
 sw_string* date_string(int64_t seconds) {
     char buffer[32];
 #if defined(_WIN32)
-    extern void GetLocalTime(void* system_time);
     unsigned char st[16];
-    GetLocalTime(st);
+    sw_unix_to_local_systemtime(st, seconds);
     int year = *(unsigned short*)st;
     int month = *(unsigned short*)(st + 2);
     int day = *(unsigned short*)(st + 6);
@@ -1354,6 +1549,135 @@ sw_string* date_string(int64_t seconds) {
     snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", year, month, day);
 #endif
     return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
+}
+
+sw_string* datetime_string(int64_t seconds) {
+    char buffer[40];
+#if defined(_WIN32)
+    unsigned char st[16];
+    sw_unix_to_local_systemtime(st, seconds);
+    int year = *(unsigned short*)st;
+    int month = *(unsigned short*)(st + 2);
+    int day = *(unsigned short*)(st + 6);
+    int hour = *(unsigned short*)(st + 8);
+    int minute = *(unsigned short*)(st + 10);
+    int second = *(unsigned short*)(st + 12);
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "%04d-%02d-%02d %02d:%02d:%02d",
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second
+    );
+#else
+    extern int localtime_r(const void* time, void* tm);
+    unsigned char tm[64];
+    unsigned char t[8];
+    *(int64_t*)t = seconds;
+    if (localtime_r(t, tm) == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int year = *(int*)(tm + 20) + 1900;
+    int month = *(int*)(tm + 16) + 1;
+    int day = *(int*)(tm + 12);
+    int hour = *(int*)(tm + 8);
+    int minute = *(int*)(tm + 4);
+    int second = *(int*)(tm + 0);
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "%04d-%02d-%02d %02d:%02d:%02d",
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second
+    );
+#endif
+    return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
+}
+
+int64_t parse_date(sw_string* text) {
+    int64_t index = 0;
+    while (index < text->len &&
+           (text->data[index] == ' ' || text->data[index] == '\t')) {
+        index++;
+    }
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    for (int digit = 0; digit < 4; digit++) {
+        if (index >= text->len || text->data[index] < '0' || text->data[index] > '9') {
+            return -1;
+        }
+        year = year * 10 + (text->data[index] - '0');
+        index++;
+    }
+    if (index >= text->len || text->data[index] != '-') {
+        return -1;
+    }
+    index++;
+    for (int digit = 0; digit < 2; digit++) {
+        if (index >= text->len || text->data[index] < '0' || text->data[index] > '9') {
+            return -1;
+        }
+        month = month * 10 + (text->data[index] - '0');
+        index++;
+    }
+    if (index >= text->len || text->data[index] != '-') {
+        return -1;
+    }
+    index++;
+    for (int digit = 0; digit < 2; digit++) {
+        if (index >= text->len || text->data[index] < '0' || text->data[index] > '9') {
+            return -1;
+        }
+        day = day * 10 + (text->data[index] - '0');
+        index++;
+    }
+    while (index < text->len &&
+           (text->data[index] == ' ' || text->data[index] == '\t')) {
+        index++;
+    }
+    if (index != text->len || month < 1 || month > 12 || day < 1 || day > 31) {
+        return -1;
+    }
+#if defined(_WIN32)
+    extern int TzSpecificLocalTimeToSystemTime(const void* time_zone, const void* local_time, void* utc_time);
+    extern int SystemTimeToFileTime(const void* system_time, void* file_time);
+    unsigned char st[16] = {0};
+    unsigned char utc_st[16] = {0};
+    *(unsigned short*)st = (unsigned short)year;
+    *(unsigned short*)(st + 2) = (unsigned short)month;
+    *(unsigned short*)(st + 6) = (unsigned short)day;
+    if (!TzSpecificLocalTimeToSystemTime(NULL, st, utc_st)) {
+        return -1;
+    }
+    unsigned char ft[8];
+    if (!SystemTimeToFileTime(utc_st, ft)) {
+        return -1;
+    }
+    uint64_t since_1601 =
+        ((uint64_t)(*(unsigned int*)(ft + 4)) << 32) | (*(unsigned int*)ft);
+    return (int64_t)(since_1601 / 10000000 - 11644473600ULL);
+#else
+    extern long mktime(void* tm);
+    unsigned char tm[64] = {0};
+    *(int*)(tm + 0) = 0;  // tm_sec
+    *(int*)(tm + 4) = 0;  // tm_min
+    *(int*)(tm + 8) = 0;  // tm_hour
+    *(int*)(tm + 12) = day;
+    *(int*)(tm + 16) = month - 1;
+    *(int*)(tm + 20) = year - 1900;
+    *(int*)(tm + 32) = -1;  // tm_isdst
+    long result = mktime(tm);
+    return result == (long)-1 ? -1 : (int64_t)result;
+#endif
 }
 
 void sleep_ms(int64_t milliseconds) {

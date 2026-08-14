@@ -30,3 +30,15 @@ export extern c function min(a: int, b: int): int;
 
 /// 取两个整数中较大者。
 export extern c function max(a: int, b: int): int;
+
+/// 伪随机数，范围 [0, max)；max <= 0 返回 0。
+export extern c function rand_int(max: int): int;
+
+/// 把 value 限制在 [lo, hi] 区间。
+export extern c function clamp(value: int, lo: int, hi: int): int;
+
+/// 最大公约数。
+export extern c function gcd(a: int, b: int): int;
+
+/// 最小公倍数；任一为 0 返回 0。
+export extern c function lcm(a: int, b: int): int;

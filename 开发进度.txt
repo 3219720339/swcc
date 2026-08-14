@@ -121,8 +121,18 @@ Sw 编译器（swcc）开发进度
                        MoveFileA/DeleteFileA（POSIX 用 asm 标签别名调 libc）；
                        测试与示例 probe-dir
 
-    待办（下一批）：字符级字符串操作（按字符 split/substring/reverse）、
-                    format 格式化输出、随机数与数学小工具、时间完整化（datetime_string）
+    2026-08-14 08:35  字符级字符串操作：reverse（按码点反转）、index_of_char（返回字符序号）、
+                       split_chars、substring_chars（链式方法）
+    2026-08-14 08:38  格式化输出：pad_left/pad_right（按字符宽度填充）、
+                       format_int（补零/右对齐）、format_float（小数位精度）
+    2026-08-14 08:40  随机数与数学：rand_int（随机种子化）、clamp/gcd/lcm；
+                       时间完整化：datetime_string（YYYY-MM-DD HH:MM:SS）、parse_date（本地时区往返）
+    2026-08-14 08:41  修复时间函数 Windows 分支：date_string/datetime_string 按传入秒数换算，
+                       parse_date 用 TzSpecificLocalTimeToSystemTime 保证本地时区往返一致；
+                       测试与示例 probe-format
+
+    待办（下一批）：格式化 varargs（printf 风格 format）、递归目录遍历、
+                    二进制文件读写（u8[]）、网络/进程交互等进阶标准库
 
 二、已知限制
 
