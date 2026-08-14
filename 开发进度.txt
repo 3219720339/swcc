@@ -107,7 +107,14 @@ Sw 编译器（swcc）开发进度
                        CommandLineToArgvW+UTF-8，POSIX 用 CRT 参数）、std/os（getenv/exit）、
                        swc run 透传命令行参数；main 签名校验（0/1 个 string[] 参数、返回 int）
 
-    待办（下一批）：按行读文件的便捷封装、错误处理增强、更多标准库
+    2026-08-14 08:22  文件便捷封装：read_lines(path)（按行读取，去行尾换行/末尾空行）、
+                       write_all(path, text)（覆盖写）、append(path, text)（追加）
+    2026-08-14 08:25  错误处理增强：is_number 严格数字校验、parse_int_or/parse_float_or
+                       （失败返回显式 fallback，不再静默 0）；文本补充 repeat/from_code_point；
+                       时间补充 now_sec/date_string（YYYY-MM-DD）；链式方法表同步扩展；
+                       测试与示例 probe-io
+
+    待办（下一批）：标准库补强（见分析）
 
 二、已知限制
 

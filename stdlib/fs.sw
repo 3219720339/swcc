@@ -27,6 +27,15 @@ export extern c function write(fd: int, text: string): int;
 /// 一次性读取整个文件为字符串；文件不存在返回空字符串。
 export extern c function read_all(path: string): string;
 
+/// 按行读取整个文件为 string[]（去掉行尾 \n / \r，末尾换行不产生空行）。
+export extern c function read_lines(path: string): string[];
+
+/// 覆盖写入整个文件（不存在则创建）；返回写入字节数，失败返回 -1。
+export extern c function write_all(path: string, text: string): int;
+
+/// 追加写入文件（不存在则创建）；返回写入字节数，失败返回 -1。
+export extern c function append(path: string, text: string): int;
+
 /// 从文件按行读取（不含行尾 \n / \r）；EOF 返回空字符串。
 export extern c function read_line_from(fd: int): string;
 

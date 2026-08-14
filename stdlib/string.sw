@@ -49,3 +49,18 @@ export extern c function parse_int(text: string): int;
 
 /// 十进制字符串转浮点；无法解析时返回 0.0。
 export extern c function parse_float(text: string): float;
+
+/// 判断字符串是否为合法数字（整数或浮点，支持 +/- 与指数）。
+export extern c function is_number(text: string): bool;
+
+/// 解析整数；无法解析时返回 fallback（显式错误处理）。
+export extern c function parse_int_or(text: string, fallback: int): int;
+
+/// 解析浮点；无法解析时返回 fallback。
+export extern c function parse_float_or(text: string, fallback: float): float;
+
+/// 把字符串重复 count 次拼接（count <= 0 返回空串）。
+export extern c function repeat(text: string, count: int): string;
+
+/// 把 Unicode 码点编码为单个字符（UTF-8）。
+export extern c function from_code_point(code_point: int): string;

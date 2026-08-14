@@ -620,6 +620,66 @@ sw_string* read_all(sw_string* path) {
     return string;
 }
 
+sw_array* sw_array_new(int64_t elem_size, int64_t count);
+
+sw_array* read_lines(sw_string* path) {
+    sw_string* content = read_all(path);
+    if (content->len == 0) {
+        return sw_array_new(8, 0);
+    }
+    int64_t capacity = 1;
+    for (int64_t i = 0; i < content->len; i++) {
+        if (content->data[i] == '\n') {
+            capacity++;
+        }
+    }
+    sw_array* array = sw_array_new(8, capacity);
+    int64_t slot = 0;
+    int64_t start = 0;
+    for (int64_t i = 0; i < content->len; i++) {
+        if (content->data[i] == '\n') {
+            int64_t len = i - start;
+            if (len > 0 && content->data[start + len - 1] == '\r') {
+                len--;
+            }
+            ((int64_t*)array->data)[slot++] =
+                (int64_t)sw_string_from_literal(content->data + start, len);
+            start = i + 1;
+        }
+    }
+    int64_t len = content->len - start;
+    if (len > 0) {
+        if (content->data[start + len - 1] == '\r') {
+            len--;
+        }
+        ((int64_t*)array->data)[slot++] =
+            (int64_t)sw_string_from_literal(content->data + start, len);
+    }
+    array->len = slot;
+    array->cap = slot;
+    return array;
+}
+
+int64_t write_all(sw_string* path, sw_string* text) {
+    sw_file_handle* file = fopen(path->data, "wb");
+    if (file == NULL) {
+        return -1;
+    }
+    int64_t written = (int64_t)fwrite(text->data, 1, (uint64_t)text->len, file);
+    fclose(file);
+    return written;
+}
+
+int64_t append(sw_string* path, sw_string* text) {
+    sw_file_handle* file = fopen(path->data, "ab");
+    if (file == NULL) {
+        return -1;
+    }
+    int64_t written = (int64_t)fwrite(text->data, 1, (uint64_t)text->len, file);
+    fclose(file);
+    return written;
+}
+
 // ---------------------------------------------------------------------------
 // string：字节语义的查找/子串（UTF-8 边界由用户保证，与 .length 一致）。
 // ---------------------------------------------------------------------------
@@ -692,6 +752,96 @@ int64_t parse_int(sw_string* text) {
 
 double parse_float(sw_string* text) {
     return strtod(text->data, NULL);
+}
+
+int64_t is_number(sw_string* text) {
+    int64_t index = 0;
+    if (index < text->len && (text->data[index] == '+' || text->data[index] == '-')) {
+        index++;
+    }
+    int64_t digits = 0;
+    while (index < text->len && text->data[index] >= '0' && text->data[index] <= '9') {
+        index++;
+        digits++;
+    }
+    if (index < text->len && text->data[index] == '.') {
+        index++;
+        while (index < text->len && text->data[index] >= '0' && text->data[index] <= '9') {
+            index++;
+            digits++;
+        }
+    }
+    if (digits == 0) {
+        return 0;
+    }
+    if (index < text->len && (text->data[index] == 'e' || text->data[index] == 'E')) {
+        index++;
+        if (index < text->len && (text->data[index] == '+' || text->data[index] == '-')) {
+            index++;
+        }
+        int64_t exp_digits = 0;
+        while (index < text->len && text->data[index] >= '0' && text->data[index] <= '9') {
+            index++;
+            exp_digits++;
+        }
+        if (exp_digits == 0) {
+            return 0;
+        }
+    }
+    return index == text->len ? 1 : 0;
+}
+
+int64_t parse_int_or(sw_string* text, int64_t fallback) {
+    char* end = NULL;
+    long long value = strtoll(text->data, &end, 10);
+    if (end == text->data || *end != 0) {
+        return fallback;
+    }
+    return (int64_t)value;
+}
+
+double parse_float_or(sw_string* text, double fallback) {
+    char* end = NULL;
+    double value = strtod(text->data, &end);
+    if (end == text->data || *end != 0) {
+        return fallback;
+    }
+    return value;
+}
+
+sw_string* repeat(sw_string* text, int64_t count) {
+    if (count <= 0 || text->len == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t total = text->len * count;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)total + 1);
+    for (int64_t i = 0; i < count; i++) {
+        memcpy(buffer + i * text->len, text->data, (sw_size)(uint64_t)text->len);
+    }
+    buffer[total] = 0;
+    return sw_string_from_literal(buffer, total);
+}
+
+sw_string* from_code_point(int64_t cp) {
+    char buffer[5];
+    int64_t len = 0;
+    if (cp < 0x80) {
+        buffer[len++] = (char)cp;
+    } else if (cp < 0x800) {
+        buffer[len++] = (char)(0xC0 | (cp >> 6));
+        buffer[len++] = (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        buffer[len++] = (char)(0xE0 | (cp >> 12));
+        buffer[len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buffer[len++] = (char)(0x80 | (cp & 0x3F));
+    } else {
+        buffer[len++] = (char)(0xF0 | (cp >> 18));
+        buffer[len++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        buffer[len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buffer[len++] = (char)(0x80 | (cp & 0x3F));
+    }
+    buffer[len] = 0;
+    return sw_string_from_literal(buffer, len);
 }
 
 sw_string* to_upper(sw_string* text) {
@@ -956,6 +1106,36 @@ int64_t now_ms(void) {
     return seconds * 1000 + nanos / 1000000;
 }
 #endif
+
+int64_t now_sec(void) {
+    return now_ms() / 1000;
+}
+
+sw_string* date_string(int64_t seconds) {
+    char buffer[32];
+#if defined(_WIN32)
+    extern void GetLocalTime(void* system_time);
+    unsigned char st[16];
+    GetLocalTime(st);
+    int year = *(unsigned short*)st;
+    int month = *(unsigned short*)(st + 2);
+    int day = *(unsigned short*)(st + 6);
+    snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", year, month, day);
+#else
+    extern int localtime_r(const void* time, void* tm);
+    unsigned char tm[64];
+    unsigned char t[8];
+    *(int64_t*)t = seconds;
+    if (localtime_r(t, tm) == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int year = *(int*)(tm + 20) + 1900;
+    int month = *(int*)(tm + 16) + 1;
+    int day = *(int*)(tm + 12);
+    snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", year, month, day);
+#endif
+    return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
+}
 
 void sleep_ms(int64_t milliseconds) {
     if (milliseconds <= 0) {
