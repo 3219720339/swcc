@@ -827,6 +827,13 @@ fn extern_c_symbol(name: &str) -> &str {
         "map_remove" => "sw_map_remove",
         "map_len" => "sw_map_len",
         "map_keys" => "sw_map_keys",
+        "net_connect" => "sw_net_connect",
+        "net_send" => "sw_net_send",
+        "net_recv" => "sw_net_recv",
+        "net_close" => "sw_net_close",
+        "net_listen" => "sw_net_listen",
+        "net_accept" => "sw_net_accept",
+        "net_port" => "sw_net_port",
         _ => name,
     }
 }

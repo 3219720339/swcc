@@ -32,6 +32,7 @@ EXPECTED = {
     "probe-interface.sw": 0,
     "probe-io.sw": 0,
     "probe-json.sw": 0,
+    "probe-net.sw": 0,
     "probe-param-if.sw": 3,
     "probe-param.sw": 42,
     "probe-process.sw": 0,

@@ -374,12 +374,28 @@ Sw 编译器（swcc）开发进度
                          varargs 均正常）、51 测试全绿、六目标带新标志交叉编译通过、
                          aarch64 musl 链接通过
 
+    2026-08-14 22:07  网络 TCP 基础（std/net，阻塞式）：
+                       - 7 个函数：net_connect/net_send/net_recv/net_close/
+                         net_listen/net_accept/net_port
+                       - Windows WinSock2（WSAStartup 惰性初始化，链接补 -lws2_32）；
+                         POSIX socket/getaddrinfo
+                       - 排查并修复两个平台布局 bug：
+                         a) sw_net_port 字节交换漏掩码：(port<<8)|(port>>8) 高字节
+                            泄漏到 16-23 位（0x3DD0 被算成 0x3DD03D），
+                            补 (port & 0xFF) 后正确；
+                         b) addrinfo 布局：Linux/macOS 是 addr 在 24、canonname 在 32，
+                            Windows 相反（canonname 24、addr 32），
+                            按 _WIN32 排字段，否则 connect 读到 canonname 恒失败
+                       - 新增 examples/probe-net.sw（纯回环：listen(0)→取端口→
+                         connect/accept/send/recv/close + 拒绝连接测试），
+                         36 个 examples 全过；cargo test 51 全绿；runtime.c 六目标
+                         交叉编译通过；probe-net musl x86_64/aarch64 链接通过
+
     待办（下一批，按推荐优先级）：
-       1. 网络：TCP 连接/收发基础
-       2. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、
+       1. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、
           接口方法 struct 返回值、闭包 struct 参数
-       3. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
-       4. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
+       2. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
+       3. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
 二、已知限制
 

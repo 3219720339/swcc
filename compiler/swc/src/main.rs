@@ -292,7 +292,14 @@ fn link_windows(target: &str, objects: &[PathBuf], output: &Path) {
     }
     args.push("-L".into());
     args.push(lib_dir.as_os_str().to_os_string());
-    for library in ["-lucrt", "-lucrtbase", "-lkernel32", "-lshell32", "-lole32"] {
+    for library in [
+        "-lucrt",
+        "-lucrtbase",
+        "-lkernel32",
+        "-lshell32",
+        "-lole32",
+        "-lws2_32",
+    ] {
         args.push(library.into());
     }
     args.push(builtins.as_os_str().to_os_string());

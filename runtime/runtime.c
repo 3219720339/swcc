@@ -5323,3 +5323,238 @@ sw_array* sw_map_keys(void* handle) {
     }
     return array;
 }
+
+// ---------------------------------------------------------------------------
+// 网络：TCP 阻塞式（Windows WinSock2 / POSIX socket）
+// ---------------------------------------------------------------------------
+
+typedef struct sw_sockaddr_in {
+    unsigned short family;
+    unsigned short port;
+    unsigned int addr;
+    unsigned char zero[8];
+} sw_sockaddr_in;
+
+// addrinfo：Linux/macOS 是 addr 在前、canonname 在后；Windows 相反
+// （canonname 在 24、addr 在 32）。按平台排字段。
+typedef struct sw_addrinfo {
+    int flags;
+    int family;
+    int socktype;
+    int protocol;
+    uint64_t addrlen;
+#if defined(_WIN32)
+    char* canonname;
+    void* addr;
+#else
+    void* addr;
+    char* canonname;
+#endif
+    void* next;
+} sw_addrinfo;
+
+#if defined(_WIN32)
+static int sw_net_started = 0;
+
+static void sw_net_init(void) {
+    if (!sw_net_started) {
+        extern int WSAStartup(unsigned short version, void* data);
+        unsigned char data[408];
+        memset(data, 0, sizeof(data));
+        if (WSAStartup(0x0202, data) == 0) {
+            sw_net_started = 1;
+        }
+    }
+}
+#endif
+
+static int sw_net_be16(int64_t value) {
+    int v = (int)(value & 0xFFFF);
+    return ((v & 0xFF) << 8) | ((v >> 8) & 0xFF);
+}
+
+int64_t sw_net_connect(sw_string* host, int64_t port) {
+    if (host == NULL || port < 0 || port > 65535) {
+        return -1;
+    }
+    char* host_copy = (char*)sw_gc_alloc((uint64_t)host->len + 1);
+    memcpy(host_copy, host->data, (uint64_t)host->len);
+    host_copy[host->len] = 0;
+    char port_text[16];
+    int plen = snprintf(port_text, sizeof(port_text), "%lld", (long long)port);
+    (void)plen;
+#if defined(_WIN32)
+    extern int getaddrinfo(const char* node, const char* service, const void* hints, void** result);
+    extern void freeaddrinfo(void* result);
+    extern uintptr_t socket(int domain, int type, int protocol);
+    extern int connect(uintptr_t s, const void* name, int namelen);
+    extern int closesocket(uintptr_t s);
+    sw_net_init();
+#else
+    extern int getaddrinfo(const char* node, const char* service, const void* hints, void** result);
+    extern void freeaddrinfo(void* result);
+    extern int socket(int domain, int type, int protocol);
+    extern int connect(int s, const void* name, unsigned int namelen);
+    extern int close(int s);
+#endif
+    sw_addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.family = 2;    // AF_INET
+    hints.socktype = 1;  // SOCK_STREAM
+    void* results = NULL;
+    if (getaddrinfo(host_copy, port_text, &hints, &results) != 0 || results == NULL) {
+        return -1;
+    }
+    sw_addrinfo* info = (sw_addrinfo*)results;
+#if defined(_WIN32)
+    uintptr_t sock = socket(info->family, info->socktype, info->protocol);
+    if (sock == (uintptr_t)~0) {
+        freeaddrinfo(results);
+        return -1;
+    }
+    int ok = connect(sock, info->addr, (int)info->addrlen);
+#else
+    int sock = socket(info->family, info->socktype, info->protocol);
+    if (sock < 0) {
+        freeaddrinfo(results);
+        return -1;
+    }
+    int ok = connect(sock, info->addr, (unsigned int)info->addrlen);
+#endif
+    freeaddrinfo(results);
+    if (ok != 0) {
+#if defined(_WIN32)
+        closesocket(sock);
+#else
+        close(sock);
+#endif
+        return -1;
+    }
+    return (int64_t)sock;
+}
+
+int64_t sw_net_send(int64_t fd, sw_string* data) {
+    if (fd < 0 || data == NULL) {
+        return -1;
+    }
+#if defined(_WIN32)
+    extern int send(uintptr_t s, const char* buf, int len, int flags);
+    int64_t max = data->len > 0x7FFFFFFF ? 0x7FFFFFFF : data->len;
+    int sent = send((uintptr_t)fd, data->data, (int)max, 0);
+    return sent < 0 ? -1 : (int64_t)sent;
+#else
+    extern long send(int s, const void* buf, uintptr_t len, int flags);
+    long sent = send((int)fd, data->data, (uintptr_t)data->len, 0);
+    return sent < 0 ? -1 : (int64_t)sent;
+#endif
+}
+
+sw_string* sw_net_recv(int64_t fd, int64_t max_bytes) {
+    if (fd < 0 || max_bytes <= 0) {
+        return sw_string_from_literal("", 0);
+    }
+    if (max_bytes > 16777216) {
+        max_bytes = 16777216;
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)max_bytes + 1);
+#if defined(_WIN32)
+    extern int recv(uintptr_t s, char* buf, int len, int flags);
+    int got = recv((uintptr_t)fd, buffer, (int)max_bytes, 0);
+#else
+    extern long recv(int s, void* buf, uintptr_t len, int flags);
+    long got = recv((int)fd, buffer, (uintptr_t)max_bytes, 0);
+#endif
+    if (got <= 0) {
+        return sw_string_from_literal("", 0);
+    }
+    buffer[got] = 0;
+    return sw_string_from_literal(buffer, (int64_t)got);
+}
+
+int64_t sw_net_close(int64_t fd) {
+#if defined(_WIN32)
+    extern int closesocket(uintptr_t s);
+    return closesocket((uintptr_t)fd) == 0 ? 0 : -1;
+#else
+    extern int close(int s);
+    return close((int)fd) == 0 ? 0 : -1;
+#endif
+}
+
+int64_t sw_net_listen(int64_t port) {
+    if (port < 0 || port > 65535) {
+        return -1;
+    }
+#if defined(_WIN32)
+    extern uintptr_t socket(int domain, int type, int protocol);
+    extern int bind(uintptr_t s, const void* name, int namelen);
+    extern int listen(uintptr_t s, int backlog);
+    extern int closesocket(uintptr_t s);
+    sw_net_init();
+    uintptr_t sock = socket(2, 1, 6);
+    if (sock == (uintptr_t)~0) {
+        return -1;
+    }
+    sw_sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.family = 2;
+    addr.port = (unsigned short)sw_net_be16(port);
+    addr.addr = 0;  // INADDR_ANY
+    if (bind(sock, &addr, (int)sizeof(addr)) != 0 || listen(sock, 16) != 0) {
+        closesocket(sock);
+        return -1;
+    }
+    return (int64_t)sock;
+#else
+    extern int socket(int domain, int type, int protocol);
+    extern int bind(int s, const void* name, unsigned int namelen);
+    extern int listen(int s, int backlog);
+    extern int close(int s);
+    int sock = socket(2, 1, 6);
+    if (sock < 0) {
+        return -1;
+    }
+    sw_sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.family = 2;
+    addr.port = (unsigned short)sw_net_be16(port);
+    addr.addr = 0;
+    if (bind(sock, &addr, (unsigned int)sizeof(addr)) != 0 || listen(sock, 16) != 0) {
+        close(sock);
+        return -1;
+    }
+    return sock;
+#endif
+}
+
+int64_t sw_net_accept(int64_t fd) {
+    unsigned char name[128];
+    unsigned int namelen = sizeof(name);
+#if defined(_WIN32)
+    extern uintptr_t accept(uintptr_t s, void* name, int* namelen);
+    uintptr_t client = accept((uintptr_t)fd, name, (int*)&namelen);
+    return client == (uintptr_t)~0 ? -1 : (int64_t)client;
+#else
+    extern int accept(int s, void* name, unsigned int* namelen);
+    int client = accept((int)fd, name, &namelen);
+    return client < 0 ? -1 : client;
+#endif
+}
+
+int64_t sw_net_port(int64_t fd) {
+    unsigned char name[128];
+    unsigned int namelen = sizeof(name);
+#if defined(_WIN32)
+    extern int getsockname(uintptr_t s, void* name, int* namelen);
+    if (getsockname((uintptr_t)fd, name, (int*)&namelen) != 0) {
+        return -1;
+    }
+#else
+    extern int getsockname(int s, void* name, unsigned int* namelen);
+    if (getsockname((int)fd, name, &namelen) != 0) {
+        return -1;
+    }
+#endif
+    unsigned short net_port = *(unsigned short*)(name + 2);
+    return ((net_port & 0xFF) << 8) | (net_port >> 8);
+}
