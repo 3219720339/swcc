@@ -34,7 +34,7 @@ fn main() {
         print_help();
         return;
     }
-    if !matches!(command, "check" | "build" | "run") {
+    if !matches!(command, "check" | "build" | "run" | "test") {
         eprintln!("未知命令 `{command}`；可用 `swc help` 查看用法");
         std::process::exit(2);
     }
@@ -45,8 +45,8 @@ fn main() {
         std::process::exit(2);
     };
     let options = parse_options(&args);
-    if command == "run" && options.target != default_target() {
-        eprintln!("`run` 只支持宿主目标；当前目标 {}", options.target);
+    if matches!(command, "run" | "test") && options.target != default_target() {
+        eprintln!("`{command}` 只支持宿主目标；当前目标 {}", options.target);
         std::process::exit(2);
     }
 
@@ -225,7 +225,7 @@ fn main() {
         output.display(),
         started.elapsed().as_millis()
     );
-    if command == "run" {
+    if command == "run" || command == "test" {
         let run_path = fs::canonicalize(&output).unwrap_or(output.clone());
         let status = Command::new(&run_path).args(&options.run_args).status();
         match status {
@@ -250,6 +250,7 @@ fn print_help() {
     println!("  check              词法/语法/语义检查并生成 MIR");
     println!("  build              编译并链接生成可执行文件");
     println!("  run                编译、链接并运行");
+    println!("  test               编译并运行 @test 测试（退出码=失败数）");
     println!("  help               显示本帮助");
     println!();
     println!("选项:");

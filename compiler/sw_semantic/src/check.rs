@@ -4118,8 +4118,167 @@ impl<'m, 's> MirLowerer<'m, 's> {
         for function in std::mem::take(&mut self.hidden_functions) {
             module_mir.functions.push(function);
         }
+        // @test 测试函数：无 main 时合成测试 runner（返回失败数）。
+        let test_fns: Vec<(String, FunctionSig)> = items
+            .iter()
+            .filter_map(|item| {
+                if !item.attributes.iter().any(|attr| attr.name.name == "test") {
+                    return None;
+                }
+                let ItemKind::Function(function) = &item.kind else {
+                    return None;
+                };
+                let Some(SymbolKind::Function(sig)) = self.function_symbol(function) else {
+                    return None;
+                };
+                if !sig.params.is_empty() {
+                    self.error("test 函数不能有参数", function.span);
+                }
+                if sig.ret != Type::Int && sig.ret != Type::Void && sig.ret != Type::Unknown {
+                    self.error("test 函数返回类型必须为 int 或 void", function.span);
+                }
+                Some((stable_function_name(&sig), sig))
+            })
+            .collect();
+        if !test_fns.is_empty()
+            && !items.iter().any(|item| {
+                matches!(
+                    &item.kind,
+                    ItemKind::Function(function) if function.name.name == "main"
+                )
+            })
+        {
+            let main = self.build_test_main(&test_fns);
+            if let Some(main) = main {
+                module_mir.functions.push(main);
+            }
+        }
         module_mir.strings = self.state.mir_strings.clone();
         module_mir
+    }
+
+    fn build_test_main(&mut self, test_fns: &[(String, FunctionSig)]) -> Option<MirFunction> {
+        let mut locals = vec![
+            MirLocal {
+                name: "fail".to_owned(),
+                ty: Type::Int,
+                mutable: true,
+            },
+            MirLocal {
+                name: "$ret".to_owned(),
+                ty: Type::Int,
+                mutable: true,
+            },
+        ];
+        let mut body = vec![MirStmt::new(MirStmtKind::VarDecl {
+            local: 0,
+            init: Some(MirExpr::Int(0)),
+        })];
+        let ok_prefix = self.intern_string("[ok] ");
+        let fail_prefix = self.intern_string("[FAIL] ");
+        for (name, sig) in test_fns {
+            let ret_void = sig.ret == Type::Void || sig.ret == Type::Unknown;
+            let call = MirExpr::Call {
+                callee: MirCallee::Function {
+                    module: self.state.id.0,
+                    name: name.clone(),
+                    sig: sig.clone(),
+                },
+                args: vec![],
+            };
+            if ret_void {
+                body.push(MirStmt::new(MirStmtKind::Expr(call)));
+            } else {
+                body.push(MirStmt::new(MirStmtKind::VarDecl {
+                    local: 1,
+                    init: Some(call),
+                }));
+            }
+            let name_str = self.intern_string(&sig.name);
+            let ok_print = MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                callee: MirCallee::Extern {
+                    name: "println".to_owned(),
+                    sig: FunctionSig {
+                        module: ModuleId(0),
+                        name: "println".to_owned(),
+                        generics: Vec::new(),
+                        bounds: HashMap::new(),
+                        params: vec![ParamSig {
+                            name: "text".to_owned(),
+                            ty: Type::Str,
+                            has_default: false,
+                            rest: false,
+                        }],
+                        ret: Type::Void,
+                        extern_c: true,
+                        span: Span::empty(0),
+                    },
+                },
+                args: vec![MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "string_concat".to_owned(),
+                    },
+                    args: vec![MirExpr::Str(ok_prefix), MirExpr::Str(name_str)],
+                }],
+            }));
+            let fail_inc = MirStmt::new(MirStmtKind::Assign {
+                target: MirTarget::Local(0),
+                value: MirExpr::Binary {
+                    op: MirBinary::Add,
+                    left: Box::new(MirExpr::Local(0)),
+                    right: Box::new(MirExpr::Int(1)),
+                },
+            });
+            let fail_print = MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                callee: MirCallee::Extern {
+                    name: "println".to_owned(),
+                    sig: FunctionSig {
+                        module: ModuleId(0),
+                        name: "println".to_owned(),
+                        generics: Vec::new(),
+                        bounds: HashMap::new(),
+                        params: vec![ParamSig {
+                            name: "text".to_owned(),
+                            ty: Type::Str,
+                            has_default: false,
+                            rest: false,
+                        }],
+                        ret: Type::Void,
+                        extern_c: true,
+                        span: Span::empty(0),
+                    },
+                },
+                args: vec![MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "string_concat".to_owned(),
+                    },
+                    args: vec![MirExpr::Str(fail_prefix), MirExpr::Str(name_str)],
+                }],
+            }));
+            let cond = if ret_void {
+                MirExpr::Bool(false)
+            } else {
+                MirExpr::Binary {
+                    op: MirBinary::Ne,
+                    left: Box::new(MirExpr::Local(1)),
+                    right: Box::new(MirExpr::Int(0)),
+                }
+            };
+            body.push(MirStmt::new(MirStmtKind::If {
+                cond,
+                then: vec![fail_inc, fail_print],
+                else_: vec![ok_print],
+            }));
+        }
+        body.push(MirStmt::new(MirStmtKind::Return(Some(MirExpr::Local(0)))));
+        Some(MirFunction {
+            name: "sw_user_main".to_owned(),
+            params: Vec::new(),
+            ret: Type::Int,
+            locals,
+            body,
+            extern_c: false,
+        })
     }
 
     fn function_symbol(&self, function: &FunctionDecl) -> Option<SymbolKind> {

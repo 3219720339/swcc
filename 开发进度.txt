@@ -641,6 +641,19 @@ Sw 编译器（swcc）开发进度
                          examples/probe-slice.sw（5 项断言），47 个 examples
                          全过；cargo test 51 全绿
 
+    2026-08-15 01:31  @test 内嵌测试 + swc test（第二档 F）：
+                       - `@test function name(): int`（0 通过/非 0 失败，也允许
+                         void）；检查阶段校验无参数、返回类型
+                       - 无 main 时语义层自动合成 sw_user_main runner：
+                         逐个调用测试函数，非 0 记失败，拼接字符串经 println
+                         输出 `[ok]/[FAIL] 函数名`，返回失败数
+                       - CLI 新增 `swc test <file>`（同 run 流程，退出码=失败数）
+                       - 新增 examples/probe-test.sw（3 个测试：算术/字符串/
+                         match），负路径验证失败测试输出 [FAIL] 且退出码 1；
+                         48 个 examples 全过；cargo test 51 全绿
+                       - docs/08-能力清单.md 同步：泛型约束/泛型类接口/ADT+
+                         match/Result+?/迭代器/切片/@test 与限制说明
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
