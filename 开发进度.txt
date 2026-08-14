@@ -300,6 +300,19 @@ Sw 编译器（swcc）开发进度
                          musl x86_64/aarch64 交叉链接通过，nm 确认 sw_chmod/sw_remove/
                          sw_touch 无遮蔽
 
+    2026-08-14 20:50  macOS is_file 修复 + 编译缓存提速：
+                       - macOS CI 失败点：probe-stdlib 的 is_file。根因：stat 结构体
+                         偏移按平台区分时条件写错（写进 _WIN32 分支，而 Windows 根本
+                         不走 stat；macOS 需要 mode=4/mtime=48），导致 macOS 用了
+                         Linux 偏移（24/88），mode 读到 uid 上，is_file 恒返回 0。
+                         改为 __APPLE__ 条件
+                       - 编译慢分析（实测）：冷编译 runtime.c（-O2）约 0.6~1.0s
+                         （CI macOS 首编 1.7s）；热缓存约 65ms；git 检出/切分支只改
+                         mtime 不改内容也会触发整段重编（实测 571ms）
+                       - 新增内容哈希缓存：compile_if_stale 增加 .hash 侧车文件
+                         （FNV-1a 内容哈希 + 编译参数），mtime 判定为旧但内容一致时
+                         直接复用对象；实测 mtime 假变从 571ms 降到 73ms
+
     待办（下一批，按推荐优先级）：
        1. 网络：TCP 连接/收发基础
        2. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、

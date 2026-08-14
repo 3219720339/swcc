@@ -3912,7 +3912,10 @@ int64_t sw_file_size_path(sw_string* path) {
     return size < 0 ? -1 : (int64_t)size;
 }
 
-#if defined(_WIN32)
+// stat 结构体偏移按平台区分：Apple（macOS）的 mode 在 4、mtime 在 48；
+// Linux/musl（x86_64/aarch64 同布局）mode 在 24、mtime 在 88。
+// Windows 不使用 stat（走 GetFileAttributesExA），不受此影响。
+#if defined(__APPLE__)
 #define SW_STAT_MODE_OFFSET 4
 #define SW_STAT_MTIME_OFFSET 48
 #else

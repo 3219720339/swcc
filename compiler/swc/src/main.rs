@@ -464,13 +464,27 @@ fn compile_if_stale(
     let object_mtime = fs::metadata(object)
         .and_then(|metadata| metadata.modified())
         .ok();
-    let stale = !object.exists()
-        || source_mtime
+    let mut sidecar = object.as_os_str().to_owned();
+    sidecar.push(".hash");
+    let sidecar = PathBuf::from(sidecar);
+    if object.exists() {
+        let mtime_stale = source_mtime
             .zip(object_mtime)
             .map(|(source, object)| source > object)
             .unwrap_or(true);
-    if !stale {
-        return Ok(());
+        if !mtime_stale {
+            return Ok(());
+        }
+        // mtime 判定为旧但内容没变（如 git 检出只改时间戳）时不重编：
+        // 侧车文件记录「源文件内容哈希 + 编译参数」，两者都一致则复用。
+        let current = file_hash(source)
+            .map(|hash| format!("{hash}\n{}", prefix.join(" ")))
+            .unwrap_or_default();
+        if !current.is_empty()
+            && fs::read_to_string(&sidecar).map(|saved| saved == current).unwrap_or(false)
+        {
+            return Ok(());
+        }
     }
     let status = Command::new(compiler)
         .args(prefix)
@@ -482,7 +496,21 @@ fn compile_if_stale(
         eprintln!("编译失败：{}", source.display());
         return Err(());
     }
+    if let Some(hash) = file_hash(source) {
+        let _ = fs::write(&sidecar, format!("{hash}\n{}", prefix.join(" ")));
+    }
     Ok(())
+}
+
+/// FNV-1a 64 位内容哈希（十六进制），用于运行时缓存失效判断。
+fn file_hash(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in &bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Some(format!("{hash:016x}"))
 }
 
 /// SDK 布局：<root>/swc.exe、<root>/bin/ld.lld.exe、<root>/lib/*.a 与预编译运行时、<root>/stdlib/
