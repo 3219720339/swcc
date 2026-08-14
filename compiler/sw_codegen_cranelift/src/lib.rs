@@ -1343,6 +1343,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 self.field_type(&owner, *index)
             }
             MirExpr::New { class, .. } => Some(Type::Class(*class)),
+            MirExpr::Struct { ty, .. } => Some(ty.clone()),
             _ => None,
         }
     }
@@ -1743,17 +1744,10 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     MirCallee::Function { sig, .. }
                     | MirCallee::Method { sig, .. }
                     | MirCallee::Extern { sig, .. } => (sig.ret.clone(), false),
-                    MirCallee::InterfaceMethod { sig, .. } => {
-                        if is_struct_ret(&sig.ret) {
-                            return Err("接口方法暂不支持 struct 返回值".into());
-                        }
-                        (Type::Void, false)
-                    }
+                    MirCallee::InterfaceMethod { sig, .. } => (sig.ret.clone(), false),
                     MirCallee::Intrinsic { .. } => (Type::Void, false),
                 };
-                if closure_struct {
-                    return Err("闭包暂不支持 struct 参数".into());
-                }
+                let _ = closure_struct;
                 let mut call_args = Vec::new();
                 let mut sret = None;
                 if is_struct_ret(&ret_type) {
@@ -1806,6 +1800,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                         sig,
                     } => {
                         let mut values = call_args.into_iter();
+                        let sret_arg = if sret.is_some() { values.next() } else { None };
                         let receiver = values.next().ok_or("接口调用缺少接收者")?;
                         let vt =
                             self.builder
@@ -1822,15 +1817,25 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                                 .ins()
                                 .load(types::I64, MemFlagsData::new(), vt, slot);
                         let mut call_sig = Signature::new(self.module.isa().default_call_conv());
+                        if sret.is_some() {
+                            call_sig.params.push(AbiParam::new(types::I64));
+                        }
                         call_sig.params.push(AbiParam::new(types::I64));
                         for param in &sig.params {
                             call_sig.params.push(AbiParam::new(abi_type(&param.ty)?));
                         }
-                        if sig.ret != Type::Void && sig.ret != Type::Unknown {
+                        if sig.ret != Type::Void
+                            && sig.ret != Type::Unknown
+                            && !is_struct_ret(&sig.ret)
+                        {
                             call_sig.returns.push(AbiParam::new(abi_type(&sig.ret)?));
                         }
                         let sig_ref = self.builder.import_signature(call_sig);
-                        let mut final_args = vec![receiver];
+                        let mut final_args = Vec::new();
+                        if let Some(sret_arg) = sret_arg {
+                            final_args.push(sret_arg);
+                        }
+                        final_args.push(receiver);
                         final_args.extend(values);
                         self.builder
                             .ins()

@@ -2378,10 +2378,6 @@ impl<'s> Checker<'s> {
                 Type::Error
             }
             BinaryOp::Eq | BinaryOp::Ne => {
-                if matches!(left_ty, Type::Struct(_)) {
-                    self.error("v0.1 暂不支持 struct 相等比较", span);
-                    return Type::Bool;
-                }
                 if left_ty == right_ty
                     || (left_ty == Type::Null
                         && (right_ty.is_reference() || matches!(right_ty, Type::Nullable(_))))
@@ -4328,6 +4324,46 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         }
     }
 
+    /// struct 相等：按字段逐一比较（字符串字段按内容、嵌套 struct 递归、其余标量按值），
+    /// 全部相等才为 true。
+    fn struct_eq_mir(&mut self, left: MirExpr, right: MirExpr, id: u32) -> MirExpr {
+        let fields = self.lowerer.types.structs[id as usize].fields.clone();
+        let mut acc: Option<MirExpr> = None;
+        for (index, field) in fields.iter().enumerate() {
+            let lf = MirExpr::Field {
+                object: Box::new(left.clone()),
+                index,
+            };
+            let rf = MirExpr::Field {
+                object: Box::new(right.clone()),
+                index,
+            };
+            let cmp = match &field.ty {
+                Type::Str => MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "string_eq".to_owned(),
+                    },
+                    args: vec![lf, rf],
+                },
+                Type::Struct(inner) => self.struct_eq_mir(lf, rf, *inner),
+                _ => MirExpr::Binary {
+                    op: MirBinary::Eq,
+                    left: Box::new(lf),
+                    right: Box::new(rf),
+                },
+            };
+            acc = Some(match acc {
+                Some(prev) => MirExpr::Binary {
+                    op: MirBinary::And,
+                    left: Box::new(prev),
+                    right: Box::new(cmp),
+                },
+                None => cmp,
+            });
+        }
+        acc.unwrap_or(MirExpr::Bool(true))
+    }
+
     fn lower_expr(&mut self, expr: &Expr) -> MirExpr {
         match &expr.kind {
             ExprKind::Integer { text, suffix } => {
@@ -4460,6 +4496,21 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                 name: "string_concat".to_owned(),
                             },
                             args: vec![left, right],
+                        };
+                    }
+                }
+                if matches!(*op, BinaryOp::Eq | BinaryOp::Ne) {
+                    if let Type::Struct(id) = self.expr_type(left) {
+                        let left_mir = self.lower_expr(left);
+                        let right_mir = self.lower_expr(right);
+                        let eq = self.struct_eq_mir(left_mir, right_mir, id);
+                        return if *op == BinaryOp::Ne {
+                            MirExpr::Unary {
+                                op: MirUnary::Not,
+                                expr: Box::new(eq),
+                            }
+                        } else {
+                            eq
                         };
                     }
                 }
@@ -5003,11 +5054,6 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         return MirExpr::Null;
                     }
                 };
-                if matches!(lambda_ret, Type::Struct(_))
-                    || lambda_params.iter().any(|ty| matches!(ty, Type::Struct(_)))
-                {
-                    self.error("v0.1 暂不支持 struct 参与闭包签名", expr.span);
-                }
                 let param_names: Vec<String> =
                     params.iter().map(|param| param.name.name.clone()).collect();
                 let mut captures = Vec::new();

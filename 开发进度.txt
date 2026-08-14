@@ -391,9 +391,23 @@ Sw 编译器（swcc）开发进度
                          36 个 examples 全过；cargo test 51 全绿；runtime.c 六目标
                          交叉编译通过；probe-net musl x86_64/aarch64 链接通过
 
+    2026-08-14 22:17  数据模型补齐（第一批）：
+                       - struct ==/!=：语义层把比较降级为按字段逐一比较（MIR 层），
+                         字符串字段按内容（string_eq）、嵌套 struct 递归、其余标量按值；
+                         支持与类型化字面量比较；空 struct 恒等
+                       - 接口方法返回 struct：codegen 接口 vtable 间接调用补 sret
+                         （签名首参 sret、返回 void、调用后返回地址）；
+                         expr_owner_type 补 MirExpr::Struct（字面量可取字段）
+                       - 闭包 struct 参数：移除语义层与 codegen 的限制
+                         （struct 实参按地址传，间接调用一致）
+                       - 已知限制（沿用）：对象字面量目标类型只在带注解声明/
+                         嵌套字面量字段处传播（return/参数里需先赋给类型化变量）；
+                         块体 lambda 返回类型恒为 void
+                       - 新增 examples/probe-struct2.sw（8 项断言），37 个 examples
+                         全过；51 测试全绿；probe-struct2 musl x86_64/aarch64 链接通过
+
     待办（下一批，按推荐优先级）：
-       1. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、
-          接口方法 struct 返回值、闭包 struct 参数
+       1. 数据模型补齐（剩余）：类字段存 struct、struct 数组（布局级改动）
        2. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
        3. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
