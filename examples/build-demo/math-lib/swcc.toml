@@ -1,0 +1,5 @@
+[build]
+kind = "lib"
+
+[lib]
+name = "swmath"

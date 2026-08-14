@@ -1,0 +1,5 @@
+[build]
+kind = "dll"
+
+[lib]
+name = "swgreet"
