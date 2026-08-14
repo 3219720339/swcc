@@ -1,0 +1,29 @@
+﻿swc.exe : 正在读取并检查语法...
+At line:2 char:1
++ & 'C:\Users\Administrator\Desktop\swcc\target\release\swc.exe' run 'C ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (正在读取并检查语法...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+正在语义分析...
+正在生成目标代码...
+正在链接...
+编译成功：demo-batch6.exe（用时 1231 ms）
+2
+2
+3
+2
+2
+1
+2
+a:1
+b:2
+x:y
+8080
+127.0.0.1
+true
+hello
+hello-world
+multiple-spaces
+sw语言-test
+hello-world

@@ -9970,3 +9970,238 @@ sw_string* format_table(sw_array* headers, sw_array* rows) {
     buffer[used] = 0;
     return sw_string_from_literal(buffer, used);
 }
+
+// ---------------------------------------------------------------------------
+// 第二批：数组补充（zip/最后位置/极值位置）/ TOML / slugify
+// ---------------------------------------------------------------------------
+
+// string[] 中 value 最后一次出现的位置；不存在返回 -1。
+int64_t last_index_of_string(sw_array* items, sw_string* value) {
+    if (items == NULL || value == NULL) {
+        return -1;
+    }
+    sw_string** data = (sw_string**)items->data;
+    for (int64_t i = items->len - 1; i >= 0; i--) {
+        if (string_eq(data[i], value)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// int[] 中 value 最后一次出现的位置；不存在返回 -1。
+int64_t last_index_of_int(sw_array* items, int64_t value) {
+    if (items == NULL) {
+        return -1;
+    }
+    int64_t* data = (int64_t*)items->data;
+    for (int64_t i = items->len - 1; i >= 0; i--) {
+        if (data[i] == value) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// float[] 中 value 最后一次出现的位置；不存在返回 -1。
+int64_t last_index_of_float(sw_array* items, double value) {
+    if (items == NULL) {
+        return -1;
+    }
+    double* data = (double*)items->data;
+    for (int64_t i = items->len - 1; i >= 0; i--) {
+        if (data[i] == value) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// int[] 最小值所在位置；空数组返回 -1。
+int64_t min_index_int(sw_array* items) {
+    if (items == NULL || items->len == 0) {
+        return -1;
+    }
+    int64_t* data = (int64_t*)items->data;
+    int64_t best = 0;
+    for (int64_t i = 1; i < items->len; i++) {
+        if (data[i] < data[best]) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+// int[] 最大值所在位置；空数组返回 -1。
+int64_t max_index_int(sw_array* items) {
+    if (items == NULL || items->len == 0) {
+        return -1;
+    }
+    int64_t* data = (int64_t*)items->data;
+    int64_t best = 0;
+    for (int64_t i = 1; i < items->len; i++) {
+        if (data[i] > data[best]) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+// 两个 string[] 按位置配对，返回 string[][]（每行两元素，短者为准）。
+sw_array* zip_strings(sw_array* a, sw_array* b) {
+    int64_t count = 0;
+    if (a != NULL && b != NULL) {
+        count = a->len < b->len ? a->len : b->len;
+    }
+    sw_array* out = sw_array_new(8, count);
+    int64_t* odata = (int64_t*)out->data;
+    int64_t* adata = a != NULL ? (int64_t*)a->data : NULL;
+    int64_t* bdata = b != NULL ? (int64_t*)b->data : NULL;
+    for (int64_t i = 0; i < count; i++) {
+        sw_array* row = sw_array_new(8, 2);
+        ((int64_t*)row->data)[0] = adata[i];
+        ((int64_t*)row->data)[1] = bdata[i];
+        odata[i] = (int64_t)row;
+    }
+    return out;
+}
+
+// 解析 TOML 文本为 map：支持 [section]、key=value（字符串去引号、
+// 数字/布尔/数组按文本存）、# 注释、空行。
+void* toml_parse(sw_string* text) {
+    void* map = sw_map_new();
+    if (text == NULL) {
+        return map;
+    }
+    char* section = (char*)sw_gc_alloc(256);
+    int section_len = 0;
+    int64_t i = 0;
+    while (i <= text->len) {
+        int64_t line_end = i;
+        while (line_end < text->len && text->data[line_end] != '\n') {
+            line_end++;
+        }
+        int64_t start = i;
+        int64_t end = line_end;
+        while (start < end && (text->data[start] == ' ' || text->data[start] == '\t' ||
+                               text->data[start] == '\r')) {
+            start++;
+        }
+        while (end > start && (text->data[end - 1] == ' ' || text->data[end - 1] == '\t' ||
+                               text->data[end - 1] == '\r')) {
+            end--;
+        }
+        if (end > start) {
+            char first = text->data[start];
+            if (first == '#') {
+                // 注释
+            } else if (first == '[') {
+                int64_t close = start + 1;
+                while (close < end && text->data[close] != ']') {
+                    close++;
+                }
+                section_len = 0;
+                for (int64_t k = start + 1; k < close && k < end && section_len < 255; k++) {
+                    if (text->data[k] != ' ' && text->data[k] != '\t') {
+                        section[section_len++] = text->data[k];
+                    }
+                }
+                section[section_len] = 0;
+            } else {
+                int64_t eq = start;
+                while (eq < end && text->data[eq] != '=') {
+                    eq++;
+                }
+                if (eq < end) {
+                    int64_t key_start = start;
+                    int64_t key_end = eq;
+                    while (key_start < key_end &&
+                           (text->data[key_start] == ' ' || text->data[key_start] == '\t')) {
+                        key_start++;
+                    }
+                    while (key_end > key_start &&
+                           (text->data[key_end - 1] == ' ' || text->data[key_end - 1] == '\t')) {
+                        key_end--;
+                    }
+                    int64_t value_start = eq + 1;
+                    int64_t value_end = end;
+                    while (value_start < value_end &&
+                           (text->data[value_start] == ' ' || text->data[value_start] == '\t')) {
+                        value_start++;
+                    }
+                    while (value_end > value_start &&
+                           (text->data[value_end - 1] == ' ' || text->data[value_end - 1] == '\t')) {
+                        value_end--;
+                    }
+                    // 去掉行尾 # 注释（字符串内忽略，简化处理）
+                    for (int64_t k = value_start; k < value_end; k++) {
+                        if (text->data[k] == '#') {
+                            value_end = k;
+                            break;
+                        }
+                    }
+                    while (value_end > value_start &&
+                           (text->data[value_end - 1] == ' ' || text->data[value_end - 1] == '\t')) {
+                        value_end--;
+                    }
+                    // 字符串去引号
+                    if (value_end - value_start >= 2 &&
+                        text->data[value_start] == '"' &&
+                        text->data[value_end - 1] == '"') {
+                        value_start++;
+                        value_end--;
+                    }
+                    int64_t key_cap = section_len + (key_end - key_start) + 2;
+                    char* key = (char*)sw_gc_alloc((uint64_t)key_cap);
+                    int64_t key_used = 0;
+                    for (int64_t k = 0; k < section_len && key_used < key_cap - 1; k++) {
+                        key[key_used++] = section[k];
+                    }
+                    if (section_len > 0) {
+                        key[key_used++] = '.';
+                    }
+                    for (int64_t k = key_start; k < key_end && key_used < key_cap - 1; k++) {
+                        key[key_used++] = text->data[k];
+                    }
+                    key[key_used] = 0;
+                    sw_map_set(
+                        map,
+                        sw_string_from_literal(key, key_used),
+                        sw_string_from_literal(text->data + value_start, value_end - value_start)
+                    );
+                }
+            }
+        }
+        i = line_end + 1;
+    }
+    return map;
+}
+
+// 文本转 URL 友好 slug：小写，字母数字保留（中文保留），其余转 '-'，
+// 压缩连续 '-' 并去首尾。
+sw_string* slugify(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t cap = text->len + 1;
+    char* out = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t w = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char c = (unsigned char)text->data[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9')) {
+            out[w++] = (char)(c >= 'A' && c <= 'Z' ? c + 32 : c);
+        } else if (c >= 0x80) {
+            // 非 ASCII（中文等多字节）原样保留
+            out[w++] = (char)c;
+        } else if (w > 0 && out[w - 1] != '-') {
+            out[w++] = '-';
+        }
+    }
+    // 去尾 '-'
+    while (w > 0 && out[w - 1] == '-') {
+        w--;
+    }
+    out[w] = 0;
+    return sw_string_from_literal(out, w);
+}

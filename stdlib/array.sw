@@ -138,3 +138,45 @@ export function 统计出现次数(items: int[], value: int): int {
 export function 取数组平均值(items: int[]): float {
     return arr_avg_int(items);
 }
+
+/// string[] 中 value 最后一次出现的位置；不存在返回 -1。
+export extern c function last_index_of_string(items: string[], value: string): int;
+
+/// int[] 中 value 最后一次出现的位置；不存在返回 -1。
+export extern c function last_index_of_int(items: int[], value: int): int;
+
+/// float[] 中 value 最后一次出现的位置；不存在返回 -1。
+export extern c function last_index_of_float(items: float[], value: float): int;
+
+/// int[] 最小值所在位置；空数组返回 -1。
+export extern c function min_index_int(items: int[]): int;
+
+/// int[] 最大值所在位置；空数组返回 -1。
+export extern c function max_index_int(items: int[]): int;
+
+/// 两个 string[] 按位置配对，返回 string[][]（每行两元素，短者为准）。
+export extern c function zip_strings(a: string[], b: string[]): string[][];
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 取最后出现位置文本(items: string[], value: string): int {
+    return last_index_of_string(items, value);
+}
+
+export function 取最后出现位置整数(items: int[], value: int): int {
+    return last_index_of_int(items, value);
+}
+
+export function 取最小值位置(items: int[]): int {
+    return min_index_int(items);
+}
+
+export function 取最大值位置(items: int[]): int {
+    return max_index_int(items);
+}
+
+export function 数组配对(a: string[], b: string[]): string[][] {
+    return zip_strings(a, b);
+}

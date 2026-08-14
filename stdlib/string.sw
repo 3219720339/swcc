@@ -383,3 +383,11 @@ export extern c function render_template(text: string, map: ptr<void>): string;
 export function 模板渲染(text: string, map: ptr<void>): string {
     return render_template(text, map);
 }
+
+/// 文本转 URL 友好 slug：小写、字母数字保留（中文保留）、其余转 '-'
+/// 并压缩连续 '-'、去首尾。示例：slugify("Hello World!") == "hello-world"。
+export extern c function slugify(text: string): string;
+
+export function 转网址别名(text: string): string {
+    return slugify(text);
+}

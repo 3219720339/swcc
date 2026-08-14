@@ -1394,6 +1394,25 @@ Sw 编译器（swcc）开发进度
                        - 验证：81 examples 全过；cargo test 52 全绿；
                          fmt 通过；runtime.c 三平台交叉编译通过
 
+    2026-08-15 09:20  标准库第二批：数组补充 + TOML + slugify：
+                       - std/array 补 last_index_of_string/int/float
+                         （最后出现位置）、min_index_int/max_index_int
+                         （极值位置，空数组 -1）、zip_strings（两个
+                         string[] 按位置配对 → string[][]，短者为准）
+                         + 中文（取最后出现位置文本/整数、取最小值位置/
+                         取最大值位置、数组配对）
+                       - 新增 std/toml：toml_parse（[section]、key=value、
+                         字符串去引号、数字/布尔按文本存、# 注释）、
+                         toml_get/toml_set 包装 + 中文（解析TOML/取TOML项/
+                         置TOML项）
+                       - std/string 加 slugify：小写、字母数字保留（中文
+                         保留）、其余转 '-'、压缩连续 '-' 并去首尾 + 中文
+                         转网址别名
+                       - 新增探针 probe-batch6.sw（29 断言）；demo 新增
+                         demo-batch6.sw
+                       - 验证：82 examples 全过；cargo test 52 全绿；
+                         fmt 通过；runtime.c 三平台交叉编译通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
