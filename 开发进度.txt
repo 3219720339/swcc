@@ -160,6 +160,17 @@ Sw 编译器（swcc）开发进度
                        examples 全部回归通过（fib=0、probe-exc=42 等退出码不变）
     2026-08-14 09:16  跨平台验证：runtime.c 交叉编译 Linux x86_64/aarch64、macOS aarch64 通过；
                        aarch64-unknown-linux-musl 端到端链接（含 format 代码）成功
+    2026-08-14 09:40  examples 全量回归（29 个文件）：
+                       - 全部 swc check + swc run 通过；退出码与源码 return 逐一核对
+                         （0/1/3/10/42/43/77 均为探针设计值）；
+                       - 修复回归：probe-argv 编译失败（`home ?? "(none)"` 被误判类型），
+                         根因是本批给 FnLower::expr_type 新增的 Binary 分支把 `??` 短路成
+                         左操作数类型 string?，模板插值误走 float_to_string；
+                         check_expr 本就普遍记录表达式类型，删除多余分支后恢复，
+                         varargs 类型标签仍正确
+    2026-08-14 09:40  CI 增强：新增 tools/run-examples.py（三平台逐个编译运行全部 examples，
+                       断言预期退出码，超时 120s），接入 ci.yml 的 Windows/Linux/macOS smoke
+                       （保留原有 aarch64/musl 交叉编译与 Mach-O/ELF 校验）
 
     待办（下一批）：网络/进程交互等进阶标准库、泛型 struct/class、JSON/Unicode 字符串深化
 

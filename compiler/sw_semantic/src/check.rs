@@ -5241,7 +5241,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         }
     }
 
-    fn expr_type(&mut self, expr: &Expr) -> Type {
+    fn expr_type(&self, expr: &Expr) -> Type {
         // 成员访问表达式与对象标识符共用起始偏移，expr_types 会被覆盖；
         // Ident 直接从符号表取类型，避免碰撞。
         match &expr.kind {
@@ -5326,60 +5326,6 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     _ => {}
                 }
             }
-            ExprKind::Index { object, .. } => {
-                let object_ty = self.expr_type(object);
-                match object_ty.without_nullable() {
-                    Type::Array(inner) => return (**inner).clone(),
-                    Type::Str => return Type::Char,
-                    _ => {}
-                }
-            }
-            ExprKind::Call { .. } => {
-                if let Some(target) = self
-                    .lowerer
-                    .state
-                    .result
-                    .call_targets
-                    .get(&(expr.span.start, expr.span.end))
-                {
-                    let ret = match target {
-                        CallTarget::Function(symbol) => match &self.lowerer.symbol(*symbol).kind {
-                            SymbolKind::Function(sig) => Some(sig.ret.clone()),
-                            _ => None,
-                        },
-                        CallTarget::StrMethod { sig, .. } => Some(sig.ret.clone()),
-                        CallTarget::Method { class, index } => self
-                            .lowerer
-                            .types
-                            .classes
-                            .get(*class as usize)
-                            .and_then(|info| info.methods.get(*index))
-                            .map(|method| method.sig.ret.clone()),
-                        CallTarget::InterfaceMethod { interface, index } => self
-                            .lowerer
-                            .types
-                            .interfaces
-                            .get(*interface as usize)
-                            .and_then(|info| info.methods.get(*index))
-                            .map(|method| method.ret.clone()),
-                    };
-                    if let Some(ret) = ret {
-                        return substitute_type(&ret, &self.type_args);
-                    }
-                }
-            }
-            ExprKind::Cast { ty, .. } => {
-                let to = self.lowerer.lower_type_for_mir(ty);
-                return substitute_type(&to, &self.type_args);
-            }
-            ExprKind::Template(_) => return Type::Str,
-            ExprKind::Unary { expr: inner, .. } => return self.expr_type(inner),
-            ExprKind::Binary { left, .. } => return self.expr_type(left),
-            ExprKind::Array(items) => {
-                if let Some(first) = items.first() {
-                    return Type::Array(Box::new(self.expr_type(first)));
-                }
-            }
             _ => {}
         }
         self.lowerer
@@ -5392,7 +5338,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
     }
 
     /// 按对象类型 + 字段名解析字段目标（不依赖 span 表，避免嵌套成员链的起始偏移碰撞）。
-    fn resolve_field_target(&mut self, object: &Expr, name: &str) -> Option<FieldTarget> {
+    fn resolve_field_target(&self, object: &Expr, name: &str) -> Option<FieldTarget> {
         match self.expr_type(object).without_nullable() {
             Type::Struct(id) => self
                 .lowerer
