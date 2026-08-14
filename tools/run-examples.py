@@ -49,6 +49,7 @@ EXPECTED = {
     "probe-map-clear.sw": 0,
     "probe-map-values.sw": 0,
     "probe-net.sw": 0,
+    "probe-overload.sw": 0,
     "probe-param-if.sw": 3,
     "probe-param.sw": 42,
     "probe-process.sw": 0,

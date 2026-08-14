@@ -1035,6 +1035,23 @@ Sw 编译器（swcc）开发进度
                          文档注明）
                        - 66 个 examples 全过；cargo test 52 全绿；fmt 通过
 
+    2026-08-15 04:08  类方法重载 + 无构造类 new 修复：
+                       - 方法重载：check_call 的 Type::Class 分支收集继承链
+                         全部同名方法（TypeTable::class_methods_named），
+                         pick_overload 按实参选择签名（类型/个数），
+                         CallTarget::Method 存选中 index；顶层函数重载原本
+                         已支持
+                       - 修复检查阶段重载签名错配：check_all_functions 类
+                         方法原按名字 find 取第一个重载的签名，导致
+                         format(string) 用 format(int) 签名检查、参数类型错；
+                         改为按 class members 顺序的 method_index 精确定位
+                       - 修复无显式构造类 new 崩溃（"后端暂不支持类型
+                         错误类型"）：lower_module 对无 Constructor 的类补
+                         生成空 sw_ctor
+                       - 新增 examples/probe-overload.sw（5 断言：顶层重载
+                         类型/个数、方法重载 int/string、无构造 new），
+                         67 个 examples 全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

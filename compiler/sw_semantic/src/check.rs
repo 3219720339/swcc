@@ -1289,6 +1289,7 @@ impl Analyzer {
                         .iter()
                         .map(|g| g.name.clone())
                         .collect::<Vec<_>>();
+                    let mut method_index = 0usize;
                     for member in &class.members {
                         let (body, span) = match member {
                             ClassMember::Method(function) => {
@@ -1309,22 +1310,42 @@ impl Analyzer {
                                 ClassMember::Method(function) => function.static_,
                                 _ => false,
                             };
-                            let sig = class_info
-                                .methods
-                                .iter()
-                                .chain(class_info.static_methods.iter())
-                                .find(|method| method.name == method_name)
-                                .map(|method| method.sig.clone())
-                                .unwrap_or_else(|| FunctionSig {
-                                    module: module_id,
-                                    name: method_name.clone(),
-                                    generics: Vec::new(),
-                                    bounds: HashMap::new(),
-                                    params: Vec::new(),
-                                    ret: Type::Void,
-                                    extern_c: false,
-                                    span,
-                                });
+                            // 重载方法按 class members 顺序对应 methods 索引精确定位
+                            // （find 按名字只能拿到第一个重载的签名）。
+                            let sig = if is_static {
+                                class_info
+                                    .static_methods
+                                    .iter()
+                                    .find(|method| method.name == method_name)
+                                    .map(|method| method.sig.clone())
+                                    .unwrap_or_else(|| FunctionSig {
+                                        module: module_id,
+                                        name: method_name.clone(),
+                                        generics: Vec::new(),
+                                        bounds: HashMap::new(),
+                                        params: Vec::new(),
+                                        ret: Type::Void,
+                                        extern_c: false,
+                                        span,
+                                    })
+                            } else {
+                                let index = method_index;
+                                method_index += 1;
+                                class_info
+                                    .methods
+                                    .get(index)
+                                    .map(|method| method.sig.clone())
+                                    .unwrap_or_else(|| FunctionSig {
+                                        module: module_id,
+                                        name: method_name.clone(),
+                                        generics: Vec::new(),
+                                        bounds: HashMap::new(),
+                                        params: Vec::new(),
+                                        ret: Type::Void,
+                                        extern_c: false,
+                                        span,
+                                    })
+                            };
                             self.check_function_body(
                                 module_id,
                                 span,
@@ -3831,8 +3852,8 @@ impl<'s> Checker<'s> {
                         }
                     }
                     Type::Class(id) => {
-                        let Some((class_id, index)) = self.types.find_class_method(*id, &name.name)
-                        else {
+                        let methods = self.types.class_methods_named(*id, &name.name);
+                        if methods.is_empty() {
                             self.error(
                                 format!(
                                     "类 {} 没有方法 `{}`",
@@ -3842,11 +3863,20 @@ impl<'s> Checker<'s> {
                                 name.span,
                             );
                             return Type::Error;
+                        }
+                        let mut candidates = Vec::new();
+                        for (class_id, index) in &methods {
+                            let sig = self.types.classes[*class_id as usize].methods[*index]
+                                .sig
+                                .clone();
+                            candidates.push((SymbolId(candidates.len() as u32), sig));
+                        }
+                        let Some((SymbolId(choice), sig)) =
+                            self.pick_overload(&candidates, &args_ty, span, true)
+                        else {
+                            return Type::Error;
                         };
-                        let sig = self.types.classes[class_id as usize].methods[index]
-                            .sig
-                            .clone();
-                        self.match_call_args(&sig, &args_ty, span, true);
+                        let (class_id, index) = methods[choice as usize];
                         self.state.result.call_targets.insert(
                             (span.start, span.end),
                             CallTarget::Method {
@@ -4776,6 +4806,26 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     }
                     let mir_function = lower.lower_function(Some(body), false);
                     module_mir.functions.push(mir_function);
+                }
+                // 无显式构造函数的类：生成空 sw_ctor（`new` 需要）。
+                let has_constructor = class
+                    .members
+                    .iter()
+                    .any(|member| matches!(member, ClassMember::Constructor(_)));
+                if !has_constructor {
+                    module_mir.functions.push(MirFunction {
+                        name: format!("sw_ctor_{class_id}"),
+                        user_name: String::new(),
+                        exported: false,
+                        params: vec![MirParam {
+                            name: "self".to_owned(),
+                            ty: Type::Class(class_id),
+                        }],
+                        ret: Type::Void,
+                        locals: Vec::new(),
+                        body: Vec::new(),
+                        extern_c: false,
+                    });
                 }
             }
         }

@@ -159,6 +159,22 @@ impl TypeTable {
         None
     }
 
+    /// 类（含继承链，子类优先）中所有同名方法：支持方法重载。
+    pub fn class_methods_named(&self, class_id: u32, name: &str) -> Vec<(u32, usize)> {
+        let mut result = Vec::new();
+        let mut current = Some(class_id);
+        while let Some(id) = current {
+            let class = &self.classes[id as usize];
+            for (index, method) in class.methods.iter().enumerate() {
+                if method.name == name {
+                    result.push((id, index));
+                }
+            }
+            current = class.base;
+        }
+        result
+    }
+
     pub fn class_base_chain(&self, class_id: u32) -> Vec<u32> {
         let mut chain = Vec::new();
         let mut current = Some(class_id);
