@@ -94,6 +94,7 @@ EXPECTED = {
     "probe-vars.sw": 0,
     "showcase.sw": 0,
     "probe-generic-implements.sw": 0,
+    "probe-generic-signature.sw": 0,
     "probe-cross-module-iface.sw": 0,
 }
 

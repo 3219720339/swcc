@@ -589,3 +589,44 @@ fn accepts_nested_generic_class_instantiation() {
         result.diagnostics.items
     );
 }
+
+#[test]
+fn accepts_generic_class_in_generic_function_signature() {
+    let source = r#"
+        class Box<T> {
+            value: T;
+            constructor(value: T) { this.value = value; }
+            get(): T { return this.value; }
+        }
+        struct Pair<A, B> {
+            first: A;
+            second: B;
+        }
+        function make<T>(x: T): Box<T> {
+            return new Box<T>(x);
+        }
+        function read_box<T>(b: Box<T>): T {
+            return b.get();
+        }
+        function make_pair<A, B>(a: A, b: B): Pair<A, B> {
+            const p: Pair<A, B> = { first: a, second: b };
+            return p;
+        }
+        function main(): int {
+            const b = make(42);
+            const v: int = read_box(b);
+            const p = make_pair(1, "one");
+            return b.get() + v + p.first - 85;
+        }
+    "#;
+    let dir = std::env::temp_dir().join("swcc-semantic-test-gen-sig");
+    let _ = std::fs::create_dir_all(&dir);
+    let entry = dir.join("main.sw");
+    std::fs::write(&entry, source).expect("写入测试源码");
+    let result = analyze(&entry, None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+}

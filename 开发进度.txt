@@ -1508,9 +1508,47 @@ Sw 编译器（swcc）开发进度
                           Box<T>）仍不支持——签名把 Box<T> 急切实例化成伪
                           实例，返回类型无法按实参代换（fngen 探针复现）
 
+    2026-08-15 11:00  泛型类用于泛型函数签名/返回类型（遗留限制闭环）：
+                        - 原限制：`function make<T>(x: T): Box<T>` 编译失败——
+                          签名把 Box<T> 急切实例化成伪实例（实参含类型参数），
+                          返回类型无法按调用实参代换（"T 与 int"）
+                        - 方案：统一"伪实例解析"机制——泛型签名/表达式里的
+                          伪实例按 type_args 替换并实例化为具体类型：
+                          a) instantiate_class/struct/interface 抽成自由函数
+                             （instantiate_class_types/instantiate_struct_types/
+                             instantiate_interface，只依赖 TypeTable），
+                             TypeResolver 改委托，MirLowerer/Checker 可直接调用
+                          b) 新增 resolve_pseudo_generic（类/接口/struct/enum
+                             伪实例递归解析，含嵌套 Box<Box<T>>），Checker
+                             与 FnLower 各自薄封装调用
+                          c) 检查期 pick_overload 的参数/返回类型替换后解析
+                             （调用点类型正确：make(42) → Box<int>）
+                          d) 降级期 instantiate_generic 的实例签名解析 +
+                             new 表达式目标类解析（函数体 `new Box<T>` → 具体类）
+                             + CallTarget::Method 的接收者伪类解析
+                             （泛型函数体里 b.get() 不再残留 T）
+                          e) 类型推导支持伪实例：infer_type_arg 增加
+                             infer_from_pseudo——param 伪实例（Box<T>）对
+                             arg 同模板具体实例（Box<int>）按位置推导
+                             （read_box(b) 推得 T=int）
+                          f) 泛型类/接口/struct 实例化的方法签名/字段也解析
+                             （Factory<string>.make_box() → Box<string>）
+                          g) 防无限递归：resolve 仅当实参全具体时执行
+                             （伪实例本身保持模板级自洽，含嵌套判断
+                             contains_type_param）；resolve_args 加自引用防护
+                        - 新增探针 probe-generic-signature.sw（13 断言：
+                          返回泛型类 int/string/可变、泛型类参数、嵌套返回、
+                          泛型接口返回 x2、泛型 struct 返回、双参数推导、
+                          泛型调泛型、泛型类方法返回泛型类 x2），登记
+                          run-examples.py；语义单测 +1（22 项）
+                        - 验证：cargo test 56 全绿（词法 13/语法 12/
+                          语义 22/代码生成 9）；86 examples 全过；fmt 通过
+                        - 剩余相关限制：泛型 enum 用于泛型函数签名
+                          （Option<T> 返回）未专门验证；对象字面量直接
+                          return（无目标类型传播）仍按既有限制处理
+
     待办（下一批，按推荐优先级）：
-       1. 泛型类用于泛型函数签名/返回类型（new Box<T> 的伪实例代换）；
-          Windows aarch64；调试信息/LSP
+       1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
           或 regex 模块
 
@@ -1519,9 +1557,8 @@ Sw 编译器（swcc）开发进度
 - Windows aarch64（COFF）暂不支持：Cranelift 对象写入器未实现 AArch64 COFF 重定位
 - 单线程：异常帧栈为全局变量，多线程留待后续版本
 - 调试信息与错误诊断体验待完善（v0.2）
-- 泛型类用于泛型函数签名/返回类型（如 `function make<T>(x: T): Box<T>`）
-  暂不支持：签名把 Box<T> 急切实例化成带类型参数的伪实例，返回类型无法
-  按调用实参代换（tmp-analyze-fngen.sw 复现）
+- 泛型 enum 用于泛型函数签名/返回类型（如 `Option<T>` 返回值）未专门验证
+- 对象字面量直接作为 return/实参（无目标类型传播上下文）需先赋给类型化变量
 - 浮点全局变量未验证（全局按 64 位常量槽存储）
 - GC 为保守式：异常帧/抛出对象暂不参与回收，高频抛异常可能累积少量内存
 

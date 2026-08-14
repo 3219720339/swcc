@@ -1875,43 +1875,11 @@ impl<'a> TypeResolver<'a> {
         arg_refs: &[TypeRef],
         generics: &[String],
     ) -> Type {
-        let info = self.types.structs[struct_id as usize].clone();
-        if info.generics.len() != arg_refs.len() {
-            return Type::Error;
-        }
         let args: Vec<Type> = arg_refs
             .iter()
             .map(|arg| self.lower(arg, generics))
             .collect();
-        let key = (struct_id, args.clone());
-        if let Some(&id) = self.types.generic_struct_instances.get(&key) {
-            return Type::Struct(id);
-        }
-        let type_args: HashMap<String, Type> = info
-            .generics
-            .iter()
-            .cloned()
-            .zip(args.iter().cloned())
-            .collect();
-        let fields = info
-            .fields
-            .iter()
-            .map(|field| FieldInfo {
-                name: field.name.clone(),
-                ty: substitute_type(&field.ty, &type_args),
-                mutable: field.mutable,
-                span: field.span,
-            })
-            .collect();
-        let id = self.types.structs.len() as u32;
-        self.types.structs.push(StructInfo {
-            module: info.module,
-            name: info.name,
-            generics: Vec::new(),
-            fields,
-        });
-        self.types.generic_struct_instances.insert(key, id);
-        Type::Struct(id)
+        instantiate_struct_types(self.types, struct_id, &args)
     }
 
     fn instantiate_enum(
@@ -1964,56 +1932,7 @@ impl<'a> TypeResolver<'a> {
 
     /// 泛型 interface 实例化：替换方法签名类型实参，注册新 interface id。
     fn instantiate_interface(&mut self, interface_id: u32, args: &[Type]) -> u32 {
-        let info = self.types.interfaces[interface_id as usize].clone();
-        if info.generics.is_empty() {
-            return interface_id;
-        }
-        if info.generics.len() != args.len() {
-            return interface_id;
-        }
-        let key = (interface_id, args.to_vec());
-        if let Some(&id) = self.types.generic_interface_instances.get(&key) {
-            return id;
-        }
-        let type_args: HashMap<String, Type> = info
-            .generics
-            .iter()
-            .cloned()
-            .zip(args.iter().cloned())
-            .collect();
-        let methods = info
-            .methods
-            .iter()
-            .map(|method| FunctionSig {
-                module: method.module,
-                name: method.name.clone(),
-                generics: Vec::new(),
-                bounds: method.bounds.clone(),
-                params: method
-                    .params
-                    .iter()
-                    .map(|param| ParamSig {
-                        name: param.name.clone(),
-                        ty: substitute_type(&param.ty, &type_args),
-                        has_default: param.has_default,
-                        rest: param.rest,
-                    })
-                    .collect(),
-                ret: substitute_type(&method.ret, &type_args),
-                extern_c: method.extern_c,
-                span: method.span,
-            })
-            .collect();
-        let id = self.types.interfaces.len() as u32;
-        self.types.interfaces.push(InterfaceInfo {
-            module: info.module,
-            name: info.name,
-            generics: Vec::new(),
-            methods,
-            extends: info.extends,
-        });
-        self.types.generic_interface_instances.insert(key, id);
-        id
+        instantiate_interface(self.types, interface_id, args)
     }
 
     /// 泛型 class 实例化：替换字段与方法签名，注册新 class id（方法体在降级阶段生成）。
@@ -2034,113 +1953,7 @@ impl<'a> TypeResolver<'a> {
     /// 注册新 class id。基类若为泛型（如 `extends Box<T>`），按实例实参替换
     /// base_args 后解析出具体基类实例（SubBox<int> → Box<int>）。
     fn instantiate_class_with_types(&mut self, class_id: u32, args: &[Type]) -> Type {
-        let info = self.types.classes[class_id as usize].clone();
-        if info.generics.len() != args.len() {
-            return Type::Error;
-        }
-        let key = (class_id, args.to_vec());
-        if let Some(&id) = self.types.generic_class_instances.get(&key) {
-            return Type::Class(id);
-        }
-        let type_args: HashMap<String, Type> = info
-            .generics
-            .iter()
-            .cloned()
-            .zip(args.iter().cloned())
-            .collect();
-        let fields = info
-            .fields
-            .iter()
-            .map(|field| FieldInfo {
-                name: field.name.clone(),
-                ty: substitute_type(&field.ty, &type_args),
-                mutable: field.mutable,
-                span: field.span,
-            })
-            .collect();
-        let methods = info
-            .methods
-            .iter()
-            .map(|method| MethodInfo {
-                name: method.name.clone(),
-                sig: FunctionSig {
-                    module: method.sig.module,
-                    name: method.sig.name.clone(),
-                    generics: Vec::new(),
-                    bounds: HashMap::new(),
-                    params: method
-                        .sig
-                        .params
-                        .iter()
-                        .map(|param| ParamSig {
-                            name: param.name.clone(),
-                            ty: substitute_type(&param.ty, &type_args),
-                            has_default: param.has_default,
-                            rest: param.rest,
-                        })
-                        .collect(),
-                    ret: substitute_type(&method.sig.ret, &type_args),
-                    extern_c: false,
-                    span: method.sig.span,
-                },
-                virtual_: method.virtual_,
-                override_: method.override_,
-                span: method.span,
-            })
-            .collect();
-        // 基类：泛型基类（base_args 含类类型参数）按实例实参替换后实例化；
-        // 非泛型基类直接用模板 id。必须在取实例 id 之前解析（基类实例先入表）。
-        let base = match (&info.base, &info.base_args) {
-            (Some(base_template), Some(base_args)) => {
-                let base_is_generic = !self.types.classes[*base_template as usize]
-                    .generics
-                    .is_empty();
-                if base_is_generic {
-                    let resolved: Vec<Type> = base_args
-                        .iter()
-                        .map(|ty| substitute_type(ty, &type_args))
-                        .collect();
-                    match self.instantiate_class_with_types(*base_template, &resolved) {
-                        Type::Class(bid) => Some(bid),
-                        _ => None,
-                    }
-                } else {
-                    Some(*base_template)
-                }
-            }
-            (base, _) => *base,
-        };
-        let id = self.types.classes.len() as u32;
-        let template_interfaces = self.types.class_interfaces.get(&class_id).cloned();
-        self.types.classes.push(ClassInfo {
-            module: info.module,
-            name: info.name,
-            generics: Vec::new(),
-            base,
-            base_args: None,
-            fields,
-            methods,
-            static_fields: info.static_fields.clone(),
-            static_methods: info.static_methods.clone(),
-            final_: info.final_,
-            implements: info.implements.clone(),
-        });
-        // 泛型接口 implements（如 Box<T> implements Container<T>）：
-        // 替换类型实参后实例化接口并注册到实例类的 vtable 表。
-        let mut iface_ids = template_interfaces.unwrap_or_default();
-        for (template_id, args) in &info.implements {
-            let resolved_args: Vec<Type> = args
-                .iter()
-                .map(|ty| substitute_type(ty, &type_args))
-                .collect();
-            let instance_id = self.instantiate_interface(*template_id, &resolved_args);
-            iface_ids.push(instance_id);
-        }
-        if !iface_ids.is_empty() {
-            self.types.class_interfaces.insert(id, iface_ids);
-        }
-        self.types.generic_class_instances.insert(key, id);
-        Type::Class(id)
+        instantiate_class_types(self.types, class_id, args)
     }
 }
 
@@ -4434,6 +4247,7 @@ impl<'s> Checker<'s> {
                     &sig.params[index]
                 };
                 let param_ty = self.substitute(&param.ty, &type_args);
+                let param_ty = self.resolve_pseudo_class(&param_ty, &type_args);
                 if self.is_assignable(arg, &param_ty) {
                     exact += usize::from(arg == &param_ty);
                 } else if let Some(inferred) = self.infer_type_arg(&param.ty, arg, &type_args) {
@@ -4454,6 +4268,7 @@ impl<'s> Checker<'s> {
             // 保证泛型返回类型可被替换）。
             self.derive_bound_params_checker(&sig.bounds, &mut type_args);
             let ret = self.substitute(&sig.ret, &type_args);
+            let ret = self.resolve_pseudo_class(&ret, &type_args);
             let sig = FunctionSig { ret, ..sig.clone() };
             match &best {
                 Some((_, _, best_mismatch, best_exact)) => {
@@ -4508,6 +4323,13 @@ impl<'s> Checker<'s> {
         }
     }
 
+    /// 检查期版伪实例解析：泛型签名里的 `Box<T>`/`Container<T>`/`Pair<A, B>`
+    /// 是急切实例化的伪实例（实参含类型参数），按 type_args 替换后实例化为
+    /// 具体类型，否则调用点返回/参数类型残留 T，成员访问类型错误。
+    fn resolve_pseudo_class(&mut self, ty: &Type, type_args: &HashMap<String, Type>) -> Type {
+        resolve_pseudo_generic(&mut self.types, ty, type_args)
+    }
+
     fn infer_type_arg(
         &self,
         param_ty: &Type,
@@ -4530,7 +4352,19 @@ impl<'s> Checker<'s> {
             (Type::Nullable(param_inner), Type::Nullable(arg_inner)) => {
                 self.infer_type_arg(param_inner, arg_inner, known)
             }
-            _ => None,
+            // 伪实例（Box<T>/Pair<A,B>）对同模板具体实例（Box<int>）：按位置推导。
+            _ => {
+                let mut inferred = HashMap::new();
+                infer_from_pseudo(&self.types, param_ty, arg_ty, &mut inferred);
+                if inferred.is_empty() {
+                    return None;
+                }
+                let fresh: HashMap<String, Type> = inferred
+                    .into_iter()
+                    .filter(|(name, _)| !known.contains_key(name))
+                    .collect();
+                if fresh.is_empty() { None } else { Some(fresh) }
+            }
         }
     }
 
@@ -4697,18 +4531,401 @@ fn types_compatible(actual: &Type, expected: &Type) -> bool {
     actual == expected
 }
 
-fn infer_type_arg(param: &Type, arg: &Type, known: &mut HashMap<String, Type>) {
+/// 泛型 interface 实例化（只依赖类型表）：替换方法签名类型实参，注册新 interface id。
+fn instantiate_interface(types: &mut TypeTable, interface_id: u32, args: &[Type]) -> u32 {
+    let info = types.interfaces[interface_id as usize].clone();
+    if info.generics.is_empty() {
+        return interface_id;
+    }
+    if info.generics.len() != args.len() {
+        return interface_id;
+    }
+    let key = (interface_id, args.to_vec());
+    if let Some(&id) = types.generic_interface_instances.get(&key) {
+        return id;
+    }
+    let type_args: HashMap<String, Type> = info
+        .generics
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect();
+    // 实参全具体才解析伪实例；伪实例本身（含嵌套）保持模板级自洽（防无限递归）。
+    let resolving = !args.iter().any(|t| contains_type_param(types, t));
+    let mut substitute = |ty: &Type| {
+        let substituted = substitute_type(ty, &type_args);
+        if resolving {
+            resolve_pseudo_generic(types, &substituted, &type_args)
+        } else {
+            substituted
+        }
+    };
+    let methods = info
+        .methods
+        .iter()
+        .map(|method| FunctionSig {
+            module: method.module,
+            name: method.name.clone(),
+            generics: Vec::new(),
+            bounds: method.bounds.clone(),
+            params: method
+                .params
+                .iter()
+                .map(|param| ParamSig {
+                    name: param.name.clone(),
+                    ty: substitute(&param.ty),
+                    has_default: param.has_default,
+                    rest: param.rest,
+                })
+                .collect(),
+            ret: substitute(&method.ret),
+            extern_c: method.extern_c,
+            span: method.span,
+        })
+        .collect();
+    let id = types.interfaces.len() as u32;
+    types.interfaces.push(InterfaceInfo {
+        module: info.module,
+        name: info.name,
+        generics: Vec::new(),
+        methods,
+        extends: info.extends,
+    });
+    types.generic_interface_instances.insert(key, id);
+    id
+}
+
+/// 泛型 class 实例化（类型实参已是 Type，只依赖类型表）：替换字段/方法签名/
+/// 基类/接口，注册新 class id。基类若为泛型（如 `extends Box<T>`），按实例实参
+/// 替换 base_args 后解析出具体基类实例（SubBox<int> → Box<int>）。
+fn instantiate_class_types(types: &mut TypeTable, class_id: u32, args: &[Type]) -> Type {
+    let info = types.classes[class_id as usize].clone();
+    if info.generics.len() != args.len() {
+        return Type::Error;
+    }
+    let key = (class_id, args.to_vec());
+    if let Some(&id) = types.generic_class_instances.get(&key) {
+        return Type::Class(id);
+    }
+    let type_args: HashMap<String, Type> = info
+        .generics
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect();
+    // 实参全具体才解析伪实例（如方法返回 `Box<T>` → Box<int>）；伪实例本身
+    // （实参含类型参数，含嵌套 `Box<Box<T>>`）保持模板级自洽，强行解析会因
+    // T → 自身伪实例而无限递归。
+    let resolving = !args.iter().any(|t| contains_type_param(types, t));
+    let mut substitute = |ty: &Type| {
+        let substituted = substitute_type(ty, &type_args);
+        if resolving {
+            resolve_pseudo_generic(types, &substituted, &type_args)
+        } else {
+            substituted
+        }
+    };
+    let fields = info
+        .fields
+        .iter()
+        .map(|field| FieldInfo {
+            name: field.name.clone(),
+            ty: substitute(&field.ty),
+            mutable: field.mutable,
+            span: field.span,
+        })
+        .collect();
+    let methods = info
+        .methods
+        .iter()
+        .map(|method| MethodInfo {
+            name: method.name.clone(),
+            sig: FunctionSig {
+                module: method.sig.module,
+                name: method.sig.name.clone(),
+                generics: Vec::new(),
+                bounds: HashMap::new(),
+                params: method
+                    .sig
+                    .params
+                    .iter()
+                    .map(|param| ParamSig {
+                        name: param.name.clone(),
+                        ty: substitute(&param.ty),
+                        has_default: param.has_default,
+                        rest: param.rest,
+                    })
+                    .collect(),
+                ret: substitute(&method.sig.ret),
+                extern_c: false,
+                span: method.sig.span,
+            },
+            virtual_: method.virtual_,
+            override_: method.override_,
+            span: method.span,
+        })
+        .collect();
+    // 基类：泛型基类（base_args 含类类型参数）按实例实参替换后实例化；
+    // 非泛型基类直接用模板 id。必须在取实例 id 之前解析（基类实例先入表）。
+    let base = match (&info.base, &info.base_args) {
+        (Some(base_template), Some(base_args)) => {
+            let base_is_generic = !types.classes[*base_template as usize].generics.is_empty();
+            if base_is_generic {
+                let resolved: Vec<Type> = base_args
+                    .iter()
+                    .map(|ty| substitute_type(ty, &type_args))
+                    .collect();
+                match instantiate_class_types(types, *base_template, &resolved) {
+                    Type::Class(bid) => Some(bid),
+                    _ => None,
+                }
+            } else {
+                Some(*base_template)
+            }
+        }
+        (base, _) => *base,
+    };
+    let id = types.classes.len() as u32;
+    let template_interfaces = types.class_interfaces.get(&class_id).cloned();
+    types.classes.push(ClassInfo {
+        module: info.module,
+        name: info.name,
+        generics: Vec::new(),
+        base,
+        base_args: None,
+        fields,
+        methods,
+        static_fields: info.static_fields.clone(),
+        static_methods: info.static_methods.clone(),
+        final_: info.final_,
+        implements: info.implements.clone(),
+    });
+    // 泛型接口 implements（如 Box<T> implements Container<T>）：
+    // 替换类型实参后实例化接口并注册到实例类的 vtable 表。
+    let mut iface_ids = template_interfaces.unwrap_or_default();
+    for (template_id, args) in &info.implements {
+        let resolved_args: Vec<Type> = args
+            .iter()
+            .map(|ty| substitute_type(ty, &type_args))
+            .collect();
+        let instance_id = instantiate_interface(types, *template_id, &resolved_args);
+        iface_ids.push(instance_id);
+    }
+    if !iface_ids.is_empty() {
+        types.class_interfaces.insert(id, iface_ids);
+    }
+    types.generic_class_instances.insert(key, id);
+    Type::Class(id)
+}
+
+/// 泛型 struct 实例化（类型实参已是 Type，只依赖类型表）。
+fn instantiate_struct_types(types: &mut TypeTable, struct_id: u32, args: &[Type]) -> Type {
+    let info = types.structs[struct_id as usize].clone();
+    if info.generics.len() != args.len() {
+        return Type::Error;
+    }
+    let key = (struct_id, args.to_vec());
+    if let Some(&id) = types.generic_struct_instances.get(&key) {
+        return Type::Struct(id);
+    }
+    let type_args: HashMap<String, Type> = info
+        .generics
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect();
+    // 实参全具体才解析伪实例；伪实例本身（含嵌套）保持模板级自洽（防无限递归）。
+    let resolving = !args.iter().any(|t| contains_type_param(types, t));
+    let fields = info
+        .fields
+        .iter()
+        .map(|field| FieldInfo {
+            name: field.name.clone(),
+            ty: {
+                let substituted = substitute_type(&field.ty, &type_args);
+                if resolving {
+                    resolve_pseudo_generic(types, &substituted, &type_args)
+                } else {
+                    substituted
+                }
+            },
+            mutable: field.mutable,
+            span: field.span,
+        })
+        .collect();
+    let id = types.structs.len() as u32;
+    types.structs.push(StructInfo {
+        module: info.module,
+        name: info.name,
+        generics: Vec::new(),
+        fields,
+    });
+    types.generic_struct_instances.insert(key, id);
+    Type::Struct(id)
+}
+
+/// 在 `(模板 id, 类型实参) → 实例 id` 表中反查实例的模板与实参。
+fn pseudo_lookup(instances: &HashMap<(u32, Vec<Type>), u32>, id: u32) -> Option<(u32, Vec<Type>)> {
+    instances
+        .iter()
+        .find(|((_, _), i)| **i == id)
+        .map(|((t, a), _)| (*t, a.clone()))
+}
+
+/// 类型是否含类型参数（递归深入泛型实例内部，如 `Box<Box<T>>` 的 T）。
+fn contains_type_param(types: &TypeTable, ty: &Type) -> bool {
+    match ty {
+        Type::TypeParam(_) => true,
+        Type::Array(inner) | Type::Nullable(inner) | Type::Ptr(inner) => {
+            contains_type_param(types, inner)
+        }
+        Type::Function { params, ret } => {
+            params.iter().any(|t| contains_type_param(types, t)) || contains_type_param(types, ret)
+        }
+        Type::Class(id) => pseudo_lookup(&types.generic_class_instances, *id)
+            .map(|(_, args)| args.iter().any(|t| contains_type_param(types, t)))
+            .unwrap_or(false),
+        Type::Struct(id) => pseudo_lookup(&types.generic_struct_instances, *id)
+            .map(|(_, args)| args.iter().any(|t| contains_type_param(types, t)))
+            .unwrap_or(false),
+        Type::Interface(id) => pseudo_lookup(&types.generic_interface_instances, *id)
+            .map(|(_, args)| args.iter().any(|t| contains_type_param(types, t)))
+            .unwrap_or(false),
+        Type::Enum(id) => pseudo_lookup(&types.generic_enum_instances, *id)
+            .map(|(_, args)| args.iter().any(|t| contains_type_param(types, t)))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// 把泛型签名/表达式里的伪实例（类型实参含类型参数，如 `Box<T>`、
+/// `Container<T>`、`Pair<A, B>`）按 type_args 替换并实例化为具体类型；
+/// 递归处理嵌套（`Box<Box<T>>`）；非伪实例/仍未具体化的原样返回。
+/// 伪实例是模板上下文急切实例化的产物，字段/方法签名残留类型参数，
+/// 不解析则调用点成员访问类型错误（"T 与 int"）、vtable 槽位错位。
+fn resolve_pseudo_generic(
+    types: &mut TypeTable,
+    ty: &Type,
+    type_args: &HashMap<String, Type>,
+) -> Type {
+    let resolve_args = |types: &mut TypeTable,
+                        args: &[Type],
+                        type_args: &HashMap<String, Type>|
+     -> Option<Vec<Type>> {
+        let resolved: Vec<Type> = args
+            .iter()
+            .map(|a| {
+                let sub = substitute_type(a, type_args);
+                // 自引用防护（T → 自身伪实例，如 Box<Box<T>> 模板检查期）：
+                // 替换结果与正在解析的实例相同则不再递归。
+                if &sub == ty {
+                    return sub;
+                }
+                resolve_pseudo_generic(types, &sub, type_args)
+            })
+            .collect();
+        if resolved.iter().any(|t| matches!(t, Type::TypeParam(_))) {
+            None
+        } else {
+            Some(resolved)
+        }
+    };
+    match ty {
+        Type::Class(id) => {
+            let (template, args) = match pseudo_lookup(&types.generic_class_instances, *id) {
+                Some(found) => found,
+                None => return ty.clone(),
+            };
+            match resolve_args(types, &args, type_args) {
+                Some(resolved) => instantiate_class_types(types, template, &resolved),
+                None => ty.clone(),
+            }
+        }
+        Type::Struct(id) => {
+            let (template, args) = match pseudo_lookup(&types.generic_struct_instances, *id) {
+                Some(found) => found,
+                None => return ty.clone(),
+            };
+            match resolve_args(types, &args, type_args) {
+                Some(resolved) => instantiate_struct_types(types, template, &resolved),
+                None => ty.clone(),
+            }
+        }
+        Type::Interface(id) => {
+            let (template, args) = match pseudo_lookup(&types.generic_interface_instances, *id) {
+                Some(found) => found,
+                None => return ty.clone(),
+            };
+            match resolve_args(types, &args, type_args) {
+                Some(resolved) => {
+                    Type::Interface(instantiate_interface(types, template, &resolved))
+                }
+                None => ty.clone(),
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+fn infer_type_arg(types: &TypeTable, param: &Type, arg: &Type, known: &mut HashMap<String, Type>) {
     match (param, arg) {
         (Type::TypeParam(name), actual) => {
             known.entry(name.clone()).or_insert_with(|| actual.clone());
         }
         (Type::Array(param_inner), Type::Array(arg_inner)) => {
-            infer_type_arg(param_inner, arg_inner, known);
+            infer_type_arg(types, param_inner, arg_inner, known);
         }
         (Type::Nullable(param_inner), Type::Nullable(arg_inner)) => {
-            infer_type_arg(param_inner, arg_inner, known);
+            infer_type_arg(types, param_inner, arg_inner, known);
+        }
+        _ => infer_from_pseudo(types, param, arg, known),
+    }
+}
+
+/// 伪实例类型参数推导：param 是泛型伪实例（类型实参含类型参数，如 `Box<T>`、
+/// `Pair<A, B>`），arg 是同模板具体实例（Box<int>）时按位置逐参数推导
+/// （T=int、A=int、B=string），递归处理嵌套。
+fn infer_from_pseudo(
+    types: &TypeTable,
+    param: &Type,
+    arg: &Type,
+    known: &mut HashMap<String, Type>,
+) {
+    match (param, arg) {
+        (Type::Class(p), Type::Class(a)) => {
+            infer_pseudo_pair(&types.generic_class_instances, *p, *a, known, types)
+        }
+        (Type::Struct(p), Type::Struct(a)) => {
+            infer_pseudo_pair(&types.generic_struct_instances, *p, *a, known, types)
+        }
+        (Type::Interface(p), Type::Interface(a)) => {
+            infer_pseudo_pair(&types.generic_interface_instances, *p, *a, known, types)
+        }
+        (Type::Enum(p), Type::Enum(a)) => {
+            infer_pseudo_pair(&types.generic_enum_instances, *p, *a, known, types)
         }
         _ => {}
+    }
+}
+
+fn infer_pseudo_pair(
+    instances: &HashMap<(u32, Vec<Type>), u32>,
+    param_id: u32,
+    arg_id: u32,
+    known: &mut HashMap<String, Type>,
+    types: &TypeTable,
+) {
+    let Some((param_template, param_args)) = pseudo_lookup(instances, param_id) else {
+        return;
+    };
+    let Some((arg_template, arg_args)) = pseudo_lookup(instances, arg_id) else {
+        return;
+    };
+    if param_template != arg_template || param_args.len() != arg_args.len() {
+        return;
+    }
+    for (param_arg, arg_arg) in param_args.iter().zip(arg_args.iter()) {
+        infer_type_arg(types, param_arg, arg_arg, known);
     }
 }
 
@@ -5575,6 +5792,13 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             .unwrap_or(class)
     }
 
+    /// 把检查期记录的泛型伪实例（类型实参含类型参数，如 `new Box<T>` 或
+    /// 泛型函数签名里的 `Box<T>`/`Container<T>`/`Pair<A, B>`）按 type_args
+    /// 替换并实例化为具体类型；非伪实例/仍未具体化的原样返回。
+    fn resolve_pseudo_class(&mut self, ty: &Type, type_args: &HashMap<String, Type>) -> Type {
+        resolve_pseudo_generic(&mut self.lowerer.types, ty, type_args)
+    }
+
     fn declare_local(&mut self, name: &str, ty: Type, mutable: bool) -> usize {
         let ty = substitute_type(&ty, &self.type_args);
         let index = self.locals.len();
@@ -6328,7 +6552,12 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         let mut type_args = HashMap::new();
         for (index, param) in template.params.iter().enumerate() {
             if let Some(arg_ty) = ast_args.get(index) {
-                infer_type_arg(&param.ty, &self.expr_type(arg_ty), &mut type_args);
+                infer_type_arg(
+                    &self.lowerer.types,
+                    &param.ty,
+                    &self.expr_type(arg_ty),
+                    &mut type_args,
+                );
             }
         }
         // 校验 where 约束：类型实参必须实现约束接口（沿基类链收集，与 vtable/
@@ -6412,10 +6641,11 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             .iter()
             .map(|param| MirParam {
                 name: param.name.clone(),
-                ty: substitute_type(&param.ty, &type_args),
+                ty: self.resolve_pseudo_class(&substitute_type(&param.ty, &type_args), &type_args),
             })
             .collect();
-        let instance_ret = substitute_type(&template.ret, &type_args);
+        let instance_ret =
+            self.resolve_pseudo_class(&substitute_type(&template.ret, &type_args), &type_args);
         let instance_sig = FunctionSig {
             module: template.module,
             name: instance_name.clone(),
@@ -6426,7 +6656,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 .iter()
                 .map(|param| ParamSig {
                     name: param.name.clone(),
-                    ty: substitute_type(&param.ty, &type_args),
+                    ty: self
+                        .resolve_pseudo_class(&substitute_type(&param.ty, &type_args), &type_args),
                     has_default: param.has_default,
                     rest: param.rest,
                 })
@@ -7190,6 +7421,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         // 泛型实例方法：检查期登记的是模板层类 id（签名含类型参数），
                         // 映射到当前实例上下文对应的实例类（super 基类 / this 方法）。
                         let class = self.remap_class_to_instance(class);
+                        // 泛型函数体里方法调用接收者是伪实例（如 `b: Box<T>` 的 b.get()）：
+                        // 按当前实例的 type_args 解析为具体类（Box<int>）。
+                        let type_args = self.type_args.clone();
+                        let class = match self.resolve_pseudo_class(&Type::Class(class), &type_args)
+                        {
+                            Type::Class(id) => id,
+                            _ => class,
+                        };
                         let class_info = self.lowerer.types.classes.get(class as usize);
                         let method_name = class_info
                             .and_then(|info| info.methods.get(index))
@@ -7666,6 +7905,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .get(&expr.span.start)
                     .cloned()
                     .unwrap_or(Type::Error);
+                // 泛型函数体里的 `new Box<T>`：检查期登记的是伪实例（实参含
+                // 类型参数），按当前实例的 type_args 解析为具体类（Box<int>）。
+                let type_args = self.type_args.clone();
+                let class = self.resolve_pseudo_class(&class, &type_args);
                 let class = match class {
                     Type::Class(id) => id,
                     _ => {
