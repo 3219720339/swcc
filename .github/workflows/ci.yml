@@ -83,6 +83,11 @@ jobs:
           ./target/release/swc run dir-debug.sw || true
           echo '--- dir trace ---'
           cat dir-trace.txt 2>/dev/null || true
+          ./target/release/swc build dir-debug.sw -o build-check/dir-debug
+          ./build-check/dir-debug
+          echo "direct-exit=$?"
+          echo '--- dir trace 2 ---'
+          cat dir-trace.txt 2>/dev/null || true
           ./target/release/swc run examples/fib.sw
           python3 tools/run-examples.py ./target/release/swc
           ./target/release/swc build examples/fib.sw --target aarch64-unknown-linux-musl -o build-check/fib-aarch64

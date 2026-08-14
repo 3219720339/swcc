@@ -28,6 +28,12 @@ function main(): int {
     trace(`write-a=${r2}`);
     const r3 = write_all("dir-demo/b.txt", "world");
     trace(`write-b=${r3}`);
+    const r4 = mkdir("dir-empty");
+    trace(`mkdir-empty=${r4}`);
+    const i1 = is_dir("dir-demo");
+    trace(`isdir-demo=${i1}`);
+    const e0 = list_dir("dir-empty");
+    trace(`list-empty=${e0.length}`);
     const entries = list_dir("dir-demo");
     trace(`list=${entries.length}`);
     let names = "";
@@ -37,22 +43,6 @@ function main(): int {
         i = i + 1;
     }
     trace(`names=${names}`);
-    const r4 = rename("dir-demo/a.txt", "dir-demo/renamed.txt");
-    trace(`rename=${r4}`);
-    const r5 = copy_file("dir-demo/b.txt", "dir-demo/copy.txt");
-    trace(`copy=${r5}`);
-    const b1 = path_basename("dir-demo/renamed.txt");
-    const d1 = path_dirname("dir-demo/renamed.txt");
-    const e1 = path_ext("dir-demo/renamed.txt");
-    trace(`path=${b1}|${d1}|${e1}`);
-    const r6 = exists("dir-demo/copy.txt");
-    trace(`exists=${r6}`);
-    const r7 = is_dir("dir-demo");
-    trace(`isdir=${r7}`);
-    const r8 = remove("dir-demo/copy.txt");
-    trace(`remove=${r8}`);
-    const r9 = exists("dir-demo/copy.txt");
-    trace(`removed-exists=${r9}`);
     trace("done");
     return 0;
 }
