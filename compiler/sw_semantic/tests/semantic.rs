@@ -149,6 +149,16 @@ fn checks_generic_struct_and_class() {
     );
 }
 
+#[test]
+fn checks_string_methods_and_content_compare() {
+    let result = analyze(&fixture("string-methods.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+}
+
 fn collect_expr_kinds(
     statement: &sw_semantic::MirStmt,
     found_assign: &mut bool,

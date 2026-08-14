@@ -91,9 +91,9 @@ struct ModuleState {
 
 #[derive(Default)]
 struct CheckResult {
-    expr_types: HashMap<usize, Type>,
+    expr_types: HashMap<(usize, usize), Type>,
     ident_symbols: HashMap<usize, SymbolId>,
-    call_targets: HashMap<usize, CallTarget>,
+    call_targets: HashMap<(usize, usize), CallTarget>,
     field_targets: HashMap<usize, FieldTarget>,
     new_types: HashMap<usize, Type>,
     object_types: HashMap<usize, Type>,
@@ -104,8 +104,19 @@ struct CheckResult {
 #[derive(Clone, Debug)]
 enum CallTarget {
     Function(SymbolId),
-    Method { class: u32, index: usize },
-    InterfaceMethod { interface: u32, index: usize },
+    Method {
+        class: u32,
+        index: usize,
+    },
+    InterfaceMethod {
+        interface: u32,
+        index: usize,
+    },
+    /// 字符串/字符串数组内建方法：接收者作为第一个参数，按 extern 符号调用。
+    StrMethod {
+        runtime_name: String,
+        sig: FunctionSig,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -1499,7 +1510,10 @@ impl<'s> Checker<'s> {
     }
 
     fn record_call_result(&mut self, span: Span, ty: Type) -> Type {
-        self.state.result.expr_types.insert(span.start, ty.clone());
+        self.state
+            .result
+            .expr_types
+            .insert((span.start, span.end), ty.clone());
         ty
     }
 
@@ -1873,7 +1887,7 @@ impl<'s> Checker<'s> {
         self.state
             .result
             .expr_types
-            .insert(expr.span.start, ty.clone());
+            .insert((expr.span.start, expr.span.end), ty.clone());
         ty
     }
 
@@ -2586,10 +2600,10 @@ impl<'s> Checker<'s> {
                             if let Some((symbol_id, sig)) =
                                 self.pick_overload(&candidates, &args_ty, span, true)
                             {
-                                self.state
-                                    .result
-                                    .call_targets
-                                    .insert(span.start, CallTarget::Function(symbol_id));
+                                self.state.result.call_targets.insert(
+                                    (span.start, span.end),
+                                    CallTarget::Function(symbol_id),
+                                );
                                 return self.record_call_result(span, sig.ret);
                             }
                             return Type::Error;
@@ -2619,7 +2633,7 @@ impl<'s> Checker<'s> {
                             self.state
                                 .result
                                 .expr_types
-                                .insert(ident.span.start, symbol_type.clone());
+                                .insert((ident.span.start, ident.span.end), symbol_type.clone());
                             let args_ty: Vec<Type> =
                                 args.iter().map(|arg| self.check_expr(arg)).collect();
                             if args_ty.len() != params.len() {
@@ -2670,7 +2684,7 @@ impl<'s> Checker<'s> {
                     self.state
                         .result
                         .call_targets
-                        .insert(span.start, CallTarget::Function(symbol_id));
+                        .insert((span.start, span.end), CallTarget::Function(symbol_id));
                     return self.record_call_result(span, sig.ret);
                 }
                 Type::Error
@@ -2698,7 +2712,7 @@ impl<'s> Checker<'s> {
                 let sig = info.methods[constructor].sig.clone();
                 self.match_call_args(&sig, &args_ty, span, true);
                 self.state.result.call_targets.insert(
-                    span.start,
+                    (span.start, span.end),
                     CallTarget::Method {
                         class: base,
                         index: constructor,
@@ -2732,7 +2746,7 @@ impl<'s> Checker<'s> {
                             .clone();
                         self.match_call_args(&sig, &args_ty, span, true);
                         self.state.result.call_targets.insert(
-                            span.start,
+                            (span.start, span.end),
                             CallTarget::Method {
                                 class: class_id,
                                 index,
@@ -2749,7 +2763,7 @@ impl<'s> Checker<'s> {
                             let sig = self.types.interfaces[*id as usize].methods[index].clone();
                             self.match_call_args(&sig, &args_ty, span, true);
                             self.state.result.call_targets.insert(
-                                span.start,
+                                (span.start, span.end),
                                 CallTarget::InterfaceMethod {
                                     interface: *id,
                                     index,
@@ -2761,6 +2775,112 @@ impl<'s> Checker<'s> {
                                 format!(
                                     "接口 {} 没有方法 `{}`",
                                     self.types.interfaces[*id as usize].name, name.name
+                                ),
+                                name.span,
+                            );
+                            Type::Error
+                        }
+                    }
+                    Type::Str => {
+                        if let Some((runtime_name, param_tys, ret)) = string_method(&name.name) {
+                            if args_ty.len() != param_tys.len() {
+                                self.error(
+                                    format!(
+                                        "方法 `{}` 需要 {} 个参数，实际 {} 个",
+                                        name.name,
+                                        param_tys.len(),
+                                        args_ty.len()
+                                    ),
+                                    span,
+                                );
+                                return Type::Error;
+                            }
+                            for (index, (arg_ty, param_ty)) in
+                                args_ty.iter().zip(param_tys.iter()).enumerate()
+                            {
+                                if !self.is_assignable(arg_ty, param_ty) {
+                                    self.error(
+                                        format!(
+                                            "方法 `{}` 参数 {index} 类型不匹配：{} 不能赋给 {}",
+                                            name.name,
+                                            arg_ty.display(),
+                                            param_ty.display()
+                                        ),
+                                        span,
+                                    );
+                                }
+                            }
+                            let mut params = vec![ParamSig {
+                                name: "self".to_owned(),
+                                ty: Type::Str,
+                                has_default: false,
+                            }];
+                            for (index, ty) in param_tys.iter().enumerate() {
+                                params.push(ParamSig {
+                                    name: format!("arg{index}"),
+                                    ty: ty.clone(),
+                                    has_default: false,
+                                });
+                            }
+                            let sig = FunctionSig {
+                                module: self.state.id,
+                                name: runtime_name.clone(),
+                                generics: Vec::new(),
+                                params,
+                                ret: ret.clone(),
+                                extern_c: true,
+                                span,
+                            };
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::StrMethod { runtime_name, sig },
+                            );
+                            ret
+                        } else {
+                            self.error(format!("string 没有方法 `{}`", name.name), name.span);
+                            Type::Error
+                        }
+                    }
+                    Type::Array(inner) => {
+                        if name.name == "join" && matches!(**inner, Type::Str) {
+                            if args_ty.len() != 1 || !self.is_assignable(&args_ty[0], &Type::Str) {
+                                self.error("`join` 需要一个 string 分隔符", span);
+                                return Type::Error;
+                            }
+                            let sig = FunctionSig {
+                                module: self.state.id,
+                                name: "join".to_owned(),
+                                generics: Vec::new(),
+                                params: vec![
+                                    ParamSig {
+                                        name: "self".to_owned(),
+                                        ty: Type::Array(Box::new(Type::Str)),
+                                        has_default: false,
+                                    },
+                                    ParamSig {
+                                        name: "sep".to_owned(),
+                                        ty: Type::Str,
+                                        has_default: false,
+                                    },
+                                ],
+                                ret: Type::Str,
+                                extern_c: true,
+                                span,
+                            };
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::StrMethod {
+                                    runtime_name: "join".to_owned(),
+                                    sig,
+                                },
+                            );
+                            Type::Str
+                        } else {
+                            self.error(
+                                format!(
+                                    "{} 没有方法 `{}`",
+                                    Type::Array(inner.clone()).display(),
+                                    name.name
                                 ),
                                 name.span,
                             );
@@ -3010,6 +3130,30 @@ fn optional_fallback(ty: &Type) -> MirExpr {
         ty if ty.is_reference() => MirExpr::Null,
         _ => MirExpr::Int(0),
     }
+}
+
+/// 字符串内建方法表：方法名 → (运行时符号, 参数类型, 返回类型)。接收者隐式为 string。
+fn string_method(method: &str) -> Option<(String, Vec<Type>, Type)> {
+    Some(match method {
+        "to_upper" | "to_lower" | "trim" => (method.to_owned(), vec![], Type::Str),
+        "contains" => ("contains".to_owned(), vec![Type::Str], Type::Bool),
+        "index_of" => ("index_of".to_owned(), vec![Type::Str], Type::Int),
+        "starts_with" => ("starts_with".to_owned(), vec![Type::Str], Type::Bool),
+        "substring" => (
+            "substring".to_owned(),
+            vec![Type::Int, Type::Int],
+            Type::Str,
+        ),
+        "replace" => ("replace".to_owned(), vec![Type::Str, Type::Str], Type::Str),
+        "split" => (
+            "split".to_owned(),
+            vec![Type::Str],
+            Type::Array(Box::new(Type::Str)),
+        ),
+        "parse_int" => ("parse_int".to_owned(), vec![], Type::Int),
+        "parse_float" => ("parse_float".to_owned(), vec![], Type::F64),
+        _ => return None,
+    })
 }
 
 impl<'m, 's> MirLowerer<'m, 's> {
@@ -3513,12 +3657,22 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 let index_local = self.declare_local("$index", Type::Int, true);
                 let index_expr = MirExpr::Local(index_local);
                 let mut body_stmts = Vec::new();
-                body_stmts.push(MirStmt::new(MirStmtKind::Assign {
-                    target: MirTarget::Local(element_local),
-                    value: MirExpr::Index {
+                let element_value = if is_string {
+                    MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "string_char_at".to_owned(),
+                        },
+                        args: vec![array.clone(), index_expr.clone()],
+                    }
+                } else {
+                    MirExpr::Index {
                         object: Box::new(array.clone()),
                         index: Box::new(index_expr.clone()),
-                    },
+                    }
+                };
+                body_stmts.push(MirStmt::new(MirStmtKind::Assign {
+                    target: MirTarget::Local(element_local),
+                    value: element_value,
                 }));
                 body_stmts.extend(self.lower_stmts(&[body.as_ref().clone()]));
                 body_stmts.push(MirStmt::new(MirStmtKind::Assign {
@@ -3739,7 +3893,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .state
                     .result
                     .expr_types
-                    .get(&expr.span.start)
+                    .get(&(expr.span.start, expr.span.end))
                     .cloned()
                     .unwrap_or(Type::Error);
                 let type_id = match ty {
@@ -4164,6 +4318,19 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         args: vec![self.lower_expr(left), self.lower_expr(right)],
                     };
                 }
+                if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && self.expr_type(left) == Type::Str {
+                    let name = if *op == BinaryOp::Eq {
+                        "string_eq"
+                    } else {
+                        "string_ne"
+                    };
+                    return MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: name.to_owned(),
+                        },
+                        args: vec![self.lower_expr(left), self.lower_expr(right)],
+                    };
+                }
                 MirExpr::Binary {
                     op: mir_binary(op),
                     left: Box::new(self.lower_expr(left)),
@@ -4251,7 +4418,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .state
                     .result
                     .call_targets
-                    .get(&expr.span.start)
+                    .get(&(expr.span.start, expr.span.end))
                     .cloned();
                 let ast_args = args;
                 let mut args: Vec<MirExpr> =
@@ -4334,6 +4501,18 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             sig: method_sig,
                         }
                     }
+                    Some(CallTarget::StrMethod { runtime_name, sig }) => {
+                        match &callee.kind {
+                            ExprKind::Member { object, .. } => {
+                                args.insert(0, self.lower_expr(object));
+                            }
+                            _ => {}
+                        }
+                        MirCallee::Extern {
+                            name: runtime_name,
+                            sig,
+                        }
+                    }
                     None => {
                         self.error("调用目标未解析", expr.span);
                         MirCallee::Intrinsic {
@@ -4370,10 +4549,19 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 let access = if name.name == "length"
                     && matches!(self.expr_type(object), Type::Array(_) | Type::Str)
                 {
-                    let is_string = self.expr_type(object) == Type::Str;
-                    MirExpr::Len {
-                        object: Box::new(self.lower_expr(object)),
-                        string: is_string,
+                    if self.expr_type(object) == Type::Str {
+                        // string.length 按字符数（UTF-8 码点）。
+                        MirExpr::Call {
+                            callee: MirCallee::Intrinsic {
+                                name: "string_char_len".to_owned(),
+                            },
+                            args: vec![self.lower_expr(object)],
+                        }
+                    } else {
+                        MirExpr::Len {
+                            object: Box::new(self.lower_expr(object)),
+                            string: false,
+                        }
                     }
                 } else if let Some(field) = self.resolve_field_target(object, &name.name) {
                     match field {
@@ -4434,9 +4622,19 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 index,
                 optional,
             } => {
-                let access = MirExpr::Index {
-                    object: Box::new(self.lower_expr(object)),
-                    index: Box::new(self.lower_expr(index)),
+                let access = if self.expr_type(object) == Type::Str {
+                    // s[i] 按字符（UTF-8 码点）。
+                    MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "string_char_at".to_owned(),
+                        },
+                        args: vec![self.lower_expr(object), self.lower_expr(index)],
+                    }
+                } else {
+                    MirExpr::Index {
+                        object: Box::new(self.lower_expr(object)),
+                        index: Box::new(self.lower_expr(index)),
+                    }
                 };
                 if *optional {
                     let object_mir = self.lower_expr(object);
@@ -4472,7 +4670,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .state
                     .result
                     .expr_types
-                    .get(&expr.span.start)
+                    .get(&(expr.span.start, expr.span.end))
                     .cloned()
                     .unwrap_or(Type::Error);
                 let elem = match elem {
@@ -4911,6 +5109,18 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         // 成员访问表达式与对象标识符共用起始偏移，expr_types 会被覆盖；
         // Ident 直接从符号表取类型，避免碰撞。
         match &expr.kind {
+            ExprKind::Str(_) => return Type::Str,
+            ExprKind::Integer { .. } => return Type::Int,
+            ExprKind::Float { suffix, .. } => {
+                return if matches!(suffix, Some(sw_frontend::FloatSuffix::F32)) {
+                    Type::F32
+                } else {
+                    Type::F64
+                };
+            }
+            ExprKind::Bool(_) => return Type::Bool,
+            ExprKind::Char(_) => return Type::Char,
+            ExprKind::Null => return Type::Null,
             ExprKind::This => {
                 if let Some(class_id) = self.this_class {
                     return Type::Class(class_id);
@@ -4986,7 +5196,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             .state
             .result
             .expr_types
-            .get(&expr.span.start)
+            .get(&(expr.span.start, expr.span.end))
             .cloned()
             .unwrap_or(Type::Error)
     }

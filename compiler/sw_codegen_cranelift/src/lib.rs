@@ -650,6 +650,10 @@ fn intrinsic_name(name: &str) -> &str {
         "pow_f64" => "sw_pow_f64",
         "pow_i64" => "sw_pow_i64",
         "frem_f64" => "sw_frem_f64",
+        "string_eq" => "string_eq",
+        "string_ne" => "string_ne",
+        "string_char_at" => "utf8_char_at",
+        "string_char_len" => "utf8_len",
         "int_to_string" => "sw_int_to_string",
         "uint_to_string" => "sw_uint_to_string",
         "float_to_string" => "sw_float_to_string",
@@ -711,6 +715,11 @@ fn intrinsic_signature(name: &str, isa: &dyn cranelift_codegen::isa::TargetIsa) 
             sig.returns.push(AbiParam::new(types::F64));
         }
         "sw_pow_i64" => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        "string_eq" | "string_ne" | "utf8_char_at" => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));

@@ -21,6 +21,7 @@ extern void free(void* ptr);
 extern void* calloc(sw_size count, sw_size size);
 extern void* memcpy(void* dest, const void* src, sw_size count);
 extern void* memset(void* dest, int value, sw_size count);
+extern int memcmp(const void* a, const void* b, sw_size count);
 extern int snprintf(char* buffer, sw_size size, const char* format, ...);
 extern uint64_t fwrite(const void* data, sw_size size, sw_size count, void* stream);
 extern int fputc(int character, void* stream);
@@ -495,6 +496,7 @@ extern uint64_t fread(void* data, uint64_t size, uint64_t count, sw_file_handle*
 extern int fseek(sw_file_handle* file, long offset, int origin);
 extern long ftell(sw_file_handle* file);
 extern void rewind(sw_file_handle* file);
+extern char* fgets(char* buffer, int size, void* stream);
 
 int64_t open(sw_string* path, sw_string* mode) {
     for (int64_t index = 0; index < SW_MAX_FILES; index++) {
@@ -526,6 +528,72 @@ int64_t write(int64_t fd, sw_string* text) {
     return (int64_t)fwrite(text->data, 1, (uint64_t)text->len, sw_files[fd]);
 }
 
+sw_string* read_line_from(int64_t fd) {
+    if (fd < 0 || fd >= SW_MAX_FILES || sw_files[fd] == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char buffer[4096];
+    if (fgets(buffer, 4096, sw_files[fd]) == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t len = 0;
+    while (len < 4096 && buffer[len] != 0 && buffer[len] != '\n') {
+        len++;
+    }
+    if (len > 0 && buffer[len - 1] == '\r') {
+        len--;
+    }
+    return sw_string_from_literal(buffer, len);
+}
+
+int64_t seek(int64_t fd, int64_t offset, int64_t origin) {
+    if (fd < 0 || fd >= SW_MAX_FILES || sw_files[fd] == NULL) {
+        return -1;
+    }
+    return fseek(sw_files[fd], (long)offset, (int)origin) == 0 ? 0 : -1;
+}
+
+int64_t file_size(int64_t fd) {
+    if (fd < 0 || fd >= SW_MAX_FILES || sw_files[fd] == NULL) {
+        return -1;
+    }
+    fseek(sw_files[fd], 0, 2);
+    long size = ftell(sw_files[fd]);
+    rewind(sw_files[fd]);
+    return size < 0 ? -1 : (int64_t)size;
+}
+
+int64_t exists(sw_string* path) {
+    sw_file_handle* file = fopen(path->data, "rb");
+    if (file == NULL) {
+        return 0;
+    }
+    fclose(file);
+    return 1;
+}
+
+sw_string* path_join(sw_string* a, sw_string* b) {
+#if defined(_WIN32)
+    const char separator = '\\';
+#else
+    const char separator = '/';
+#endif
+    int64_t len = a->len + b->len + 1;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)len + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < a->len; i++) {
+        buffer[out++] = a->data[i];
+    }
+    if (a->len > 0 && a->data[a->len - 1] != separator) {
+        buffer[out++] = separator;
+    }
+    for (int64_t i = 0; i < b->len; i++) {
+        buffer[out++] = b->data[i];
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
 sw_string* read_all(sw_string* path) {
     sw_file_handle* file = fopen(path->data, "rb");
     if (file == NULL) {
@@ -553,6 +621,17 @@ sw_string* read_all(sw_string* path) {
 // ---------------------------------------------------------------------------
 // string：字节语义的查找/子串（UTF-8 边界由用户保证，与 .length 一致）。
 // ---------------------------------------------------------------------------
+
+int64_t string_eq(sw_string* a, sw_string* b) {
+    if (a->len != b->len) {
+        return 0;
+    }
+    return memcmp(a->data, b->data, (uint64_t)a->len) == 0 ? 1 : 0;
+}
+
+int64_t string_ne(sw_string* a, sw_string* b) {
+    return string_eq(a, b) ? 0 : 1;
+}
 
 int64_t index_of(sw_string* text, sw_string* needle) {
     if (needle->len == 0) {
@@ -600,6 +679,169 @@ sw_string* substring(sw_string* text, int64_t start, int64_t length) {
         length = text->len - start;
     }
     return sw_string_from_literal(text->data + start, length);
+}
+
+extern long long strtoll(const char* text, char** end, int base);
+extern double strtod(const char* text, char** end);
+
+int64_t parse_int(sw_string* text) {
+    return strtoll(text->data, NULL, 10);
+}
+
+double parse_float(sw_string* text) {
+    return strtod(text->data, NULL);
+}
+
+sw_string* to_upper(sw_string* text) {
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    for (int64_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        buffer[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+    }
+    buffer[text->len] = 0;
+    return sw_string_from_literal(buffer, text->len);
+}
+
+sw_string* to_lower(sw_string* text) {
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    for (int64_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        buffer[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    buffer[text->len] = 0;
+    return sw_string_from_literal(buffer, text->len);
+}
+
+sw_string* trim(sw_string* text) {
+    int64_t start = 0;
+    int64_t end = text->len;
+    while (start < end &&
+           (text->data[start] == ' ' || text->data[start] == '\t' ||
+            text->data[start] == '\n' || text->data[start] == '\r')) {
+        start++;
+    }
+    while (end > start &&
+           (text->data[end - 1] == ' ' || text->data[end - 1] == '\t' ||
+            text->data[end - 1] == '\n' || text->data[end - 1] == '\r')) {
+        end--;
+    }
+    return sw_string_from_literal(text->data + start, end - start);
+}
+
+sw_array* sw_array_new(int64_t elem_size, int64_t count);
+
+sw_array* split(sw_string* text, sw_string* sep) {
+    if (sep->len == 0) {
+        sw_array* single = sw_array_new(8, 1);
+        ((int64_t*)single->data)[0] = (int64_t)sw_string_from_literal(text->data, text->len);
+        return single;
+    }
+    int64_t count = 1;
+    for (int64_t i = 0; i + sep->len <= text->len; i++) {
+        int64_t match = 1;
+        for (int64_t j = 0; j < sep->len; j++) {
+            if (text->data[i + j] != sep->data[j]) {
+                match = 0;
+                break;
+            }
+        }
+        if (match) {
+            count++;
+            i += sep->len - 1;
+        }
+    }
+    sw_array* array = sw_array_new(8, count);
+    int64_t start = 0;
+    int64_t slot = 0;
+    for (int64_t i = 0; i + sep->len <= text->len; i++) {
+        int64_t match = 1;
+        for (int64_t j = 0; j < sep->len; j++) {
+            if (text->data[i + j] != sep->data[j]) {
+                match = 0;
+                break;
+            }
+        }
+        if (match) {
+            ((int64_t*)array->data)[slot++] =
+                (int64_t)sw_string_from_literal(text->data + start, i - start);
+            i += sep->len - 1;
+            start = i + 1;
+        }
+    }
+    ((int64_t*)array->data)[slot] =
+        (int64_t)sw_string_from_literal(text->data + start, text->len - start);
+    return array;
+}
+
+sw_string* join(sw_array* array, sw_string* sep) {
+    int64_t total = 0;
+    for (int64_t i = 0; i < array->len; i++) {
+        sw_string* item = (sw_string*)((int64_t*)array->data)[i];
+        total += item->len;
+        if (i > 0) {
+            total += sep->len;
+        }
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)total + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < array->len; i++) {
+        sw_string* item = (sw_string*)((int64_t*)array->data)[i];
+        if (i > 0) {
+            for (int64_t j = 0; j < sep->len; j++) {
+                buffer[out++] = sep->data[j];
+            }
+        }
+        for (int64_t j = 0; j < item->len; j++) {
+            buffer[out++] = item->data[j];
+        }
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, total);
+}
+
+sw_string* replace(sw_string* text, sw_string* from, sw_string* to) {
+    if (from->len == 0) {
+        return sw_string_from_literal(text->data, text->len);
+    }
+    int64_t count = 0;
+    for (int64_t i = 0; i + from->len <= text->len; i++) {
+        int64_t match = 1;
+        for (int64_t j = 0; j < from->len; j++) {
+            if (text->data[i + j] != from->data[j]) {
+                match = 0;
+                break;
+            }
+        }
+        if (match) {
+            count++;
+            i += from->len - 1;
+        }
+    }
+    int64_t total = text->len + count * (to->len - from->len);
+    char* buffer = (char*)sw_gc_alloc((uint64_t)total + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < text->len;) {
+        int64_t match = i + from->len <= text->len;
+        if (match) {
+            for (int64_t j = 0; j < from->len; j++) {
+                if (text->data[i + j] != from->data[j]) {
+                    match = 0;
+                    break;
+                }
+            }
+        }
+        if (match) {
+            for (int64_t j = 0; j < to->len; j++) {
+                buffer[out++] = to->data[j];
+            }
+            i += from->len;
+        } else {
+            buffer[out++] = text->data[i];
+            i++;
+        }
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, total);
 }
 
 // ---------------------------------------------------------------------------

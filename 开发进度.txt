@@ -93,7 +93,15 @@ Sw 编译器（swcc）开发进度
                        泛型类实例的方法按实例 id 生成（this_class + 类型实参替换）；
                        泛型类暂不支持 implements 接口（显式报错）；测试与示例 probe-generic
 
-    待办（下一批）：文本/文件操作等基础能力（见分析）
+    2026-08-14 08:05  文本地基修复：字符串 ==/!= 按内容比较、s[i] 按字符（UTF-8 码点）、
+                       string.length 按字符数、字符串 for-of 按字符；表达式类型表改 (start,end) 复合键，
+                       消除嵌套调用链的 span 碰撞
+    2026-08-14 08:08  字符串链式方法：to_upper/to_lower/trim/replace/split/join/parse_int/parse_float/
+                       contains/index_of/starts_with/substring（string[].join 支持 split().join() 链）
+    2026-08-14 08:10  文件补齐：read_line_from/seek/file_size/exists/path_join；std/fs 与 std/string 声明更新；
+                       测试与示例 probe-string
+
+    待办（下一批）：进程基础（argv/getenv/exit）、按行读文件的便捷封装、更多标准库
 
 二、已知限制
 
