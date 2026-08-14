@@ -18,6 +18,63 @@ struct BuildOptions {
     run_args: Vec<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum BuildKind {
+    #[default]
+    Console,
+    Dll,
+    Lib,
+}
+
+#[derive(Default)]
+struct SwConfig {
+    kind: BuildKind,
+    lib_name: String,
+}
+
+/// 极简 swcc.toml 解析：只读 [build] kind 与 [lib] name。
+fn load_config(entry: &Path) -> SwConfig {
+    let mut config = SwConfig::default();
+    let mut dir = entry.parent().map(Path::to_path_buf).unwrap_or_default();
+    loop {
+        let candidate = dir.join("swcc.toml");
+        if candidate.is_file() {
+            if let Ok(text) = fs::read_to_string(&candidate) {
+                let mut section = String::new();
+                for line in text.lines() {
+                    let line = line.trim();
+                    if line.starts_with('[') && line.ends_with(']') {
+                        section = line[1..line.len() - 1].trim().to_string();
+                        continue;
+                    }
+                    if let Some((key, value)) = line.split_once('=') {
+                        let key = key.trim();
+                        let value = value.trim().trim_matches('"').trim_matches('\'');
+                        match (section.as_str(), key) {
+                            ("build", "kind") => {
+                                config.kind = match value {
+                                    "dll" => BuildKind::Dll,
+                                    "lib" => BuildKind::Lib,
+                                    _ => BuildKind::Console,
+                                };
+                            }
+                            ("lib", "name") | ("project", "name") if config.lib_name.is_empty() => {
+                                config.lib_name = value.to_string();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    config
+}
+
 fn main() {
     let started = Instant::now();
     let args: Vec<String> = env::args().collect();
@@ -202,21 +259,46 @@ fn main() {
         return;
     }
 
+    let config = load_config(Path::new(path));
+    let stem = Path::new(path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "main".to_owned());
     let output = options.output.clone().unwrap_or_else(|| {
-        let stem = Path::new(path)
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "main".to_owned());
-        PathBuf::from(format!("{stem}{}", executable_suffix(&options.target)))
+        let base = if config.lib_name.is_empty() {
+            stem.clone()
+        } else {
+            config.lib_name.clone()
+        };
+        let suffix = match config.kind {
+            BuildKind::Console => executable_suffix(&options.target).to_string(),
+            BuildKind::Dll => match target_family(&options.target) {
+                "windows" => ".dll".to_string(),
+                "linux" => ".so".to_string(),
+                "macos" => ".dylib".to_string(),
+                _ => ".dll".to_string(),
+            },
+            BuildKind::Lib => match target_family(&options.target) {
+                "windows" => ".lib".to_string(),
+                _ => ".a".to_string(),
+            },
+        };
+        PathBuf::from(format!("{base}{suffix}"))
     });
 
-    match target_family(&options.target) {
-        "windows" => link_windows(&options.target, &objects, &output),
-        "linux" => link_linux(&options.target, &objects, &output),
-        "macos" => link_macos(&options.target, &objects, &output),
-        other => {
-            eprintln!("暂不支持链接目标 `{other}`；可用 --emit-object 生成对象文件");
-            std::process::exit(2);
+    match config.kind {
+        BuildKind::Lib => build_lib(&options.target, &objects, &output),
+        _ => {
+            let dll = config.kind == BuildKind::Dll;
+            match target_family(&options.target) {
+                "windows" => link_windows(&options.target, &objects, &output, dll),
+                "linux" => link_linux(&options.target, &objects, &output, dll),
+                "macos" => link_macos(&options.target, &objects, &output, dll),
+                other => {
+                    eprintln!("暂不支持链接目标 `{other}`；可用 --emit-object 生成对象文件");
+                    std::process::exit(2);
+                }
+            }
         }
     }
 
@@ -264,27 +346,43 @@ fn print_help() {
     println!("  SW_STDLIB     指向标准库目录（默认查找可执行文件旁或当前目录的 stdlib/）");
 }
 
-fn link_windows(target: &str, objects: &[PathBuf], output: &Path) {
+fn link_windows(target: &str, objects: &[PathBuf], output: &Path, dll: bool) {
     let sdk = locate_sdk(target).unwrap_or_else(|| {
         eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
         std::process::exit(2);
     });
-    let (runtime_objects, need_compile) = match runtime_objects_for(&sdk, target) {
-        Some(objects) => (objects, false),
-        None => {
-            let clang = sdk.mingw_clang.as_ref().expect("工具链缺少 clang");
-            (compile_runtime_objects(clang, target, "windows"), true)
+    let (runtime_objects, need_compile) = if dll {
+        let clang = sdk.mingw_clang.as_ref().expect("工具链缺少 clang");
+        (
+            compile_runtime_objects(clang, target, "windows", true),
+            true,
+        )
+    } else {
+        match runtime_objects_for(&sdk, target) {
+            Some(objects) => (objects, false),
+            None => {
+                let clang = sdk.mingw_clang.as_ref().expect("工具链缺少 clang");
+                (
+                    compile_runtime_objects(clang, target, "windows", false),
+                    true,
+                )
+            }
         }
     };
     let _ = need_compile;
     let lld = sdk.lld.as_path();
     let lib_dir = sdk.mingw_lib.as_path();
     let builtins = sdk.builtins.as_ref().expect("缺少 compiler-rt");
-    let mut args: Vec<std::ffi::OsString> = vec![
-        "-m".into(),
-        pe_emulation(arch_of(target)).into(),
-        "--gc-sections".into(),
-    ];
+    let mut args: Vec<std::ffi::OsString> = vec!["-m".into(), pe_emulation(arch_of(target)).into()];
+    if dll {
+        args.push("--dll".into());
+        args.push("--export-all-symbols".into());
+        let implib = output.with_extension("lib");
+        args.push("--out-implib".into());
+        args.push(implib.as_os_str().to_os_string());
+    } else {
+        args.push("--gc-sections".into());
+    }
     for object in objects {
         args.push(object.as_os_str().to_os_string());
     }
@@ -309,19 +407,27 @@ fn link_windows(target: &str, objects: &[PathBuf], output: &Path) {
     run_linker(lld, &args);
 }
 
-fn link_linux(target: &str, objects: &[PathBuf], output: &Path) {
+fn link_linux(target: &str, objects: &[PathBuf], output: &Path, dll: bool) {
     let sdk = locate_sdk(target).unwrap_or_else(|| {
         eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
         std::process::exit(2);
     });
-    let (runtime_objects, need_compile) = match runtime_objects_for(&sdk, target) {
-        Some(objects) => (objects, false),
-        None => {
-            let clang = sdk.mingw_clang.as_ref().unwrap_or_else(|| {
-                eprintln!("缺少 clang 且无预编译运行时，无法链接 Linux 目标");
-                std::process::exit(2);
-            });
-            (compile_runtime_objects(clang, target, "linux"), true)
+    let (runtime_objects, need_compile) = if dll {
+        let clang = sdk.mingw_clang.as_ref().unwrap_or_else(|| {
+            eprintln!("缺少 clang 且无预编译运行时，无法链接 Linux 目标");
+            std::process::exit(2);
+        });
+        (compile_runtime_objects(clang, target, "linux", true), true)
+    } else {
+        match runtime_objects_for(&sdk, target) {
+            Some(objects) => (objects, false),
+            None => {
+                let clang = sdk.mingw_clang.as_ref().unwrap_or_else(|| {
+                    eprintln!("缺少 clang 且无预编译运行时，无法链接 Linux 目标");
+                    std::process::exit(2);
+                });
+                (compile_runtime_objects(clang, target, "linux", false), true)
+            }
         }
     };
     let _ = need_compile;
@@ -333,12 +439,14 @@ fn link_linux(target: &str, objects: &[PathBuf], output: &Path) {
         );
         std::process::exit(2);
     });
-    let mut args: Vec<std::ffi::OsString> = vec![
-        "-m".into(),
-        elf_emulation(arch_of(target)).into(),
-        "-static".into(),
-        "--gc-sections".into(),
-    ];
+    let mut args: Vec<std::ffi::OsString> =
+        vec!["-m".into(), elf_emulation(arch_of(target)).into()];
+    if dll {
+        args.push("-shared".into());
+    } else {
+        args.push("-static".into());
+        args.push("--gc-sections".into());
+    }
     for object in objects {
         args.push(object.as_os_str().to_os_string());
     }
@@ -363,11 +471,15 @@ fn link_linux(target: &str, objects: &[PathBuf], output: &Path) {
 }
 
 /// macOS 原生链接：用系统 clang（cc）编译运行时并链接，目标机直接出可执行文件。
-fn link_macos(target: &str, objects: &[PathBuf], output: &Path) {
+fn link_macos(target: &str, objects: &[PathBuf], output: &Path, dll: bool) {
     let cc = Path::new("cc");
-    let runtime_objects = compile_runtime_objects(cc, target, "macos");
-    let mut args: Vec<std::ffi::OsString> =
-        vec!["-target".into(), target.into(), "-Wl,-dead_strip".into()];
+    let runtime_objects = compile_runtime_objects(cc, target, "macos", dll);
+    let mut args: Vec<std::ffi::OsString> = vec!["-target".into(), target.into()];
+    if dll {
+        args.push("-dynamiclib".into());
+    } else {
+        args.push("-Wl,-dead_strip".into());
+    }
     for object in objects {
         args.push(object.as_os_str().to_os_string());
     }
@@ -395,7 +507,35 @@ fn run_cc(cc: &Path, args: &[std::ffi::OsString]) {
     }
 }
 
-fn compile_runtime_objects(clang: &Path, target: &str, family: &str) -> Vec<PathBuf> {
+/// 静态库：用 llvm-ar 打包 Sw 模块对象（不含运行时，使用方自行链接运行时）。
+fn build_lib(target: &str, objects: &[PathBuf], output: &Path) {
+    let sdk = locate_sdk(target).unwrap_or_else(|| {
+        eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
+        std::process::exit(2);
+    });
+    let bin_dir = sdk.lld.parent().expect("lld 所在目录");
+    let ar = bin_dir.join(host_exe_name("llvm-ar"));
+    if !ar.is_file() {
+        eprintln!("缺少 llvm-ar，无法打包静态库；可先用 --emit-object 生成对象");
+        std::process::exit(2);
+    }
+    let mut args: Vec<std::ffi::OsString> = vec!["rcs".into(), output.as_os_str().to_os_string()];
+    for object in objects {
+        args.push(object.as_os_str().to_os_string());
+    }
+    let status = Command::new(&ar).args(&args).status();
+    if !status.map(|status| status.success()).unwrap_or(false) {
+        eprintln!("打包静态库失败（llvm-ar）");
+        std::process::exit(1);
+    }
+}
+
+fn compile_runtime_objects(
+    clang: &Path,
+    target: &str,
+    family: &str,
+    no_main: bool,
+) -> Vec<PathBuf> {
     let cache_dir = PathBuf::from(".swcache").join("obj");
     let runtime_dir = locate_runtime_dir().unwrap_or_else(|| {
         eprintln!("找不到 runtime 源目录；请设置 SW_RUNTIME 指向 swcc/runtime 目录");
@@ -405,30 +545,29 @@ fn compile_runtime_objects(clang: &Path, target: &str, family: &str) -> Vec<Path
     let runtime_s = runtime_dir.join(runtime_asm_file(arch_of(target)));
     let suffix = if family == "windows" { "obj" } else { "o" };
     let target_tag = target.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
-    let runtime_obj = cache_dir.join(format!("runtime_{target_tag}.{suffix}"));
+    let runtime_obj = cache_dir.join(format!(
+        "runtime_{}{target_tag}.{suffix}",
+        if no_main { "dll_" } else { "" }
+    ));
     let runtime_asm_obj = cache_dir.join(format!("runtime_asm_{target_tag}.{suffix}"));
     let startup_obj = cache_dir.join(format!("startup_{target_tag}.{suffix}"));
     let mut result = Vec::new();
+    let mut main_args = vec!["-target".to_owned(), target.to_owned(), "-O2".to_owned()];
+    if no_main {
+        main_args.push("-DSW_NO_MAIN".to_owned());
+    }
+    main_args.push("-ffunction-sections".to_owned());
+    main_args.push("-fdata-sections".to_owned());
+    main_args.push("-c".to_owned());
     let mut tasks = vec![
-        (
-            runtime_c.clone(),
-            runtime_obj.clone(),
-            vec![
-                "-target".to_owned(),
-                target.to_owned(),
-                "-O2".to_owned(),
-                "-ffunction-sections".to_owned(),
-                "-fdata-sections".to_owned(),
-                "-c".to_owned(),
-            ],
-        ),
+        (runtime_c.clone(), runtime_obj.clone(), main_args),
         (
             runtime_s.clone(),
             runtime_asm_obj.clone(),
             vec!["-target".to_owned(), target.to_owned(), "-c".to_owned()],
         ),
     ];
-    if family == "windows" {
+    if family == "windows" && !no_main {
         let startup_s = runtime_dir.join(startup_file(arch_of(target)));
         tasks.push((
             startup_s,

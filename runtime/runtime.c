@@ -2581,6 +2581,7 @@ void __main(void) {}
 extern char** environ;
 #endif
 
+#if !defined(SW_NO_MAIN)
 int main(int argc, char** argv) {
 #if defined(_WIN32)
     // ucrt 不导出 __argc/__argv，用 CommandLineToArgvW + UTF-8 转换。
@@ -2625,6 +2626,15 @@ int main(int argc, char** argv) {
     exit((int)result);
     return 0;
 }
+#elif defined(_WIN32)
+// DLL 模式：提供 CRT 约定的入口（无初始化，返回成功）。
+int DllMainCRTStartup(void* instance, unsigned long reason, void* reserved) {
+    (void)instance;
+    (void)reason;
+    (void)reserved;
+    return 1;
+}
+#endif
 
 sw_string* sw_getenv(sw_string* name) {
 #if defined(_WIN32)

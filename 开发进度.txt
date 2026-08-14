@@ -950,6 +950,27 @@ Sw 编译器（swcc）开发进度
                        - 新增 examples/probe-static.sw（4 断言），66 个
                          examples 全过；cargo test 52 全绿；fmt 通过
 
+    2026-08-15 03:31  编译产物类型 + swcc.toml（console/dll/lib）：
+                       - swcc.toml 极简解析（无外部依赖，手写）：向上查找
+                         入口文件目录；[build] kind = "console"|"dll"|"lib"、
+                         [lib] name 决定产物名
+                       - lib：llvm-ar rcs 打包 Sw 模块对象（不含运行时，
+                         使用方自行链接）；Windows .lib、Linux/macOS .a；
+                         验证 llvm-ar t 含 sw_fn_* 导出符号
+                       - dll：Windows --dll + --export-all-symbols +
+                         --out-implib（导入库）、Linux -shared、macOS
+                         -dynamiclib；runtime 编译加 -DSW_NO_MAIN（不生成
+                         main，Windows 提供 DllMainCRTStartup 入口，跳过
+                         exe startup 对象）；产物 .dll/.so/.dylib + 导入库
+                       - 验证：Windows 本机 swmath.dll（97KB）+ 导入库
+                         （48KB）生成，导出 DllMainCRTStartup/sw_fn_*；
+                         C 程序链接导入库调用 sw_fn_0_add_7 输出 42；
+                         swmath.lib（静态库）打包验证
+                       - 限制：dll 导出名为 Sw stable 符号（sw_fn_*），
+                         用户友好名映射（.def）列入待办；lib 不含运行时
+                       - 66 个 examples 全过（console 无回归）；cargo test
+                         52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
