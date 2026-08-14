@@ -76,10 +76,18 @@ EXPECTED = {
     "probe-test.sw": 0,
     "probe-text.sw": 0,
     "probe-time.sw": 0,
+    "probe-regex.sw": 0,
+    "probe-map-typed.sw": 0,
+    "probe-flags.sw": 0,
     "probe-trait.sw": 0,
     "probe-unicode.sw": 0,
     "probe-vars.sw": 0,
     "showcase.sw": 0,
+}
+
+# 需要额外命令行参数的探针：name -> [参数...]
+ARGS = {
+    "probe-flags.sw": ["--verbose", "--port=8080", "--host", "127.0.0.1", "--mode", "fast", "-v"],
 }
 
 
@@ -90,9 +98,10 @@ def main() -> int:
     failed = []
     for name, want in EXPECTED.items():
         path = os.path.join("examples", name)
+        cmd = [swc, "run", path] + ARGS.get(name, [])
         try:
             proc = subprocess.run(
-                [swc, "run", path],
+                cmd,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

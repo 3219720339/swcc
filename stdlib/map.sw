@@ -43,3 +43,58 @@ export extern c function map_keys(map: ptr<void>): string[];
 
 /// 全部值（string[]，与 map_keys 同序——插入顺序）。
 export extern c function map_values(map: ptr<void>): string[];
+
+/// 设置整数键值（覆盖 string 值）；成功返回 0，失败返回 -1。
+export extern c function map_set_int(map: ptr<void>, key: string, value: int): int;
+
+/// 读取整数键值；键不存在或类型不符返回 fallback。
+/// 示例：map_get_int(m, "count", 0)。
+export extern c function map_get_int(map: ptr<void>, key: string, fallback: int): int;
+
+/// 计数累加：键存在且为 int 则加 delta，否则以 delta 初始化；返回新值。
+/// 示例：map_inc(m, "访问数", 1)（词频统计）。
+export extern c function map_inc(map: ptr<void>, key: string, delta: int): int;
+
+/// 设置浮点键值；成功返回 0，失败返回 -1。
+export extern c function map_set_float(map: ptr<void>, key: string, value: float): int;
+
+/// 读取浮点键值；键不存在或类型不符返回 fallback。
+export extern c function map_get_float(map: ptr<void>, key: string, fallback: float): float;
+
+/// 设置布尔键值；成功返回 0，失败返回 -1。
+export extern c function map_set_bool(map: ptr<void>, key: string, value: bool): int;
+
+/// 读取布尔键值；键不存在或类型不符返回 fallback。
+export extern c function map_get_bool(map: ptr<void>, key: string, fallback: bool): bool;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 置整数(map: ptr<void>, key: string, value: int): int {
+    return map_set_int(map, key, value);
+}
+
+export function 取整数(map: ptr<void>, key: string, fallback: int): int {
+    return map_get_int(map, key, fallback);
+}
+
+export function 计数累加(map: ptr<void>, key: string, delta: int): int {
+    return map_inc(map, key, delta);
+}
+
+export function 置小数(map: ptr<void>, key: string, value: float): int {
+    return map_set_float(map, key, value);
+}
+
+export function 取小数(map: ptr<void>, key: string, fallback: float): float {
+    return map_get_float(map, key, fallback);
+}
+
+export function 置逻辑(map: ptr<void>, key: string, value: bool): int {
+    return map_set_bool(map, key, value);
+}
+
+export function 取逻辑(map: ptr<void>, key: string, fallback: bool): bool {
+    return map_get_bool(map, key, fallback);
+}

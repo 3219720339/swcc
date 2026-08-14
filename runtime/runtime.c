@@ -5542,7 +5542,8 @@ sw_array* sw_unique_string(sw_array* items) {
 typedef struct sw_map_node {
     struct sw_map_node* next;
     sw_string* key;
-    sw_string* value;
+    int64_t tag;
+    int64_t value;  // string 时为指针，int 为数值，float 为位模式，bool 为 0/1
 } sw_map_node;
 
 typedef struct sw_map {
@@ -5575,13 +5576,15 @@ int64_t sw_map_set(void* handle, sw_string* key, sw_string* value) {
     }
     sw_map_node* node = sw_map_find(map, key);
     if (node != NULL) {
-        node->value = value;
+        node->tag = SW_TAG_STR;
+        node->value = (int64_t)value;
         return 0;
     }
     sw_map_node* fresh = (sw_map_node*)sw_gc_alloc(sizeof(sw_map_node));
     fresh->next = NULL;
     fresh->key = key;
-    fresh->value = value;
+    fresh->tag = SW_TAG_STR;
+    fresh->value = (int64_t)value;
     if (map->tail != NULL) {
         map->tail->next = fresh;
     } else {
@@ -5598,7 +5601,140 @@ sw_string* sw_map_get(void* handle, sw_string* key) {
         return NULL;
     }
     sw_map_node* node = sw_map_find(map, key);
-    return node != NULL ? node->value : NULL;
+    return node != NULL && node->tag == SW_TAG_STR ? (sw_string*)node->value : NULL;
+}
+
+int64_t sw_map_set_int(void* handle, sw_string* key, int64_t value) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL || key == NULL) {
+        return -1;
+    }
+    sw_map_node* node = sw_map_find(map, key);
+    if (node != NULL) {
+        node->tag = SW_TAG_INT;
+        node->value = value;
+        return 0;
+    }
+    sw_map_node* fresh = (sw_map_node*)sw_gc_alloc(sizeof(sw_map_node));
+    fresh->next = NULL;
+    fresh->key = key;
+    fresh->tag = SW_TAG_INT;
+    fresh->value = value;
+    if (map->tail != NULL) {
+        map->tail->next = fresh;
+    } else {
+        map->head = fresh;
+    }
+    map->tail = fresh;
+    map->count++;
+    return 0;
+}
+
+// 读取 int 值；键不存在或类型不符返回 fallback。
+int64_t sw_map_get_int(void* handle, sw_string* key, int64_t fallback) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL) {
+        return fallback;
+    }
+    sw_map_node* node = sw_map_find(map, key);
+    return node != NULL && node->tag == SW_TAG_INT ? node->value : fallback;
+}
+
+// 计数累加：键存在且为 int 则加 delta，否则以 delta 初始化；返回新值。
+int64_t sw_map_inc(void* handle, sw_string* key, int64_t delta) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL || key == NULL) {
+        return 0;
+    }
+    sw_map_node* node = sw_map_find(map, key);
+    if (node != NULL && node->tag == SW_TAG_INT) {
+        node->value += delta;
+        return node->value;
+    }
+    if (node != NULL) {
+        node->tag = SW_TAG_INT;
+        node->value = delta;
+        return delta;
+    }
+    sw_map_set_int(handle, key, delta);
+    return delta;
+}
+
+int64_t sw_map_set_float(void* handle, sw_string* key, double value) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL || key == NULL) {
+        return -1;
+    }
+    int64_t bits = 0;
+    memcpy(&bits, &value, 8);
+    sw_map_node* node = sw_map_find(map, key);
+    if (node != NULL) {
+        node->tag = SW_TAG_FLOAT;
+        node->value = bits;
+        return 0;
+    }
+    sw_map_node* fresh = (sw_map_node*)sw_gc_alloc(sizeof(sw_map_node));
+    fresh->next = NULL;
+    fresh->key = key;
+    fresh->tag = SW_TAG_FLOAT;
+    fresh->value = bits;
+    if (map->tail != NULL) {
+        map->tail->next = fresh;
+    } else {
+        map->head = fresh;
+    }
+    map->tail = fresh;
+    map->count++;
+    return 0;
+}
+
+double sw_map_get_float(void* handle, sw_string* key, double fallback) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL) {
+        return fallback;
+    }
+    sw_map_node* node = sw_map_find(map, key);
+    if (node != NULL && node->tag == SW_TAG_FLOAT) {
+        double value;
+        memcpy(&value, &node->value, 8);
+        return value;
+    }
+    return fallback;
+}
+
+int64_t sw_map_set_bool(void* handle, sw_string* key, int64_t value) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL || key == NULL) {
+        return -1;
+    }
+    sw_map_node* node = sw_map_find(map, key);
+    if (node != NULL) {
+        node->tag = SW_TAG_BOOL;
+        node->value = value ? 1 : 0;
+        return 0;
+    }
+    sw_map_node* fresh = (sw_map_node*)sw_gc_alloc(sizeof(sw_map_node));
+    fresh->next = NULL;
+    fresh->key = key;
+    fresh->tag = SW_TAG_BOOL;
+    fresh->value = value ? 1 : 0;
+    if (map->tail != NULL) {
+        map->tail->next = fresh;
+    } else {
+        map->head = fresh;
+    }
+    map->tail = fresh;
+    map->count++;
+    return 0;
+}
+
+int64_t sw_map_get_bool(void* handle, sw_string* key, int64_t fallback) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL) {
+        return fallback;
+    }
+    sw_map_node* node = sw_map_find(map, key);
+    return node != NULL && node->tag == SW_TAG_BOOL ? node->value : fallback;
 }
 
 int64_t sw_map_has(void* handle, sw_string* key) {
@@ -5670,7 +5806,8 @@ sw_array* sw_map_values(void* handle) {
     }
     int64_t slot = 0;
     for (sw_map_node* node = map->head; node != NULL; node = node->next) {
-        ((int64_t*)array->data)[slot++] = (int64_t)node->value;
+        // 值数组：string 值存指针；其余类型存数值（与 map_values 语义一致）。
+        ((int64_t*)array->data)[slot++] = node->value;
     }
     return array;
 }
@@ -6672,4 +6809,1002 @@ int64_t uptime_ms(void) {
     int64_t nsec = *(int64_t*)(ts + 8);
     return sec * 1000 + nsec / 1000000;
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// 命令行参数解析（flag 风格）
+// args 为 string[]（元素为 sw_string*），支持：
+//   flag_has(args, "--verbose") / flag_has(args, "-v")
+//   flag_value(args, "--port")  // "--port=8080" 或 "--port 8080"
+// ---------------------------------------------------------------------------
+
+static int64_t sw_arg_string_eq(sw_string* arg, const char* text) {
+    if (arg == NULL) {
+        return 0;
+    }
+    int64_t len = (int64_t)strlen(text);
+    if (arg->len != len) {
+        return 0;
+    }
+    for (int64_t i = 0; i < len; i++) {
+        if (arg->data[i] != text[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int64_t sw_arg_starts_with(sw_string* arg, const char* prefix) {
+    if (arg == NULL) {
+        return 0;
+    }
+    int64_t len = (int64_t)strlen(prefix);
+    if (arg->len < len) {
+        return 0;
+    }
+    for (int64_t i = 0; i < len; i++) {
+        if (arg->data[i] != prefix[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// 是否存在该 flag：等于 name 或形如 name=value。
+int64_t flag_has(sw_array* args, sw_string* name) {
+    if (args == NULL || name == NULL) {
+        return 0;
+    }
+    // name 转 C 字符串（仅 ASCII 比较；flag 名一般为 ASCII）。
+    char* name_c = (char*)sw_gc_alloc((uint64_t)name->len + 1);
+    for (int64_t i = 0; i < name->len; i++) {
+        name_c[i] = name->data[i];
+    }
+    name_c[name->len] = 0;
+    int64_t* data = (int64_t*)args->data;
+    for (int64_t i = 0; i < args->len; i++) {
+        sw_string* arg = (sw_string*)data[i];
+        if (sw_arg_string_eq(arg, name_c)) {
+            return 1;
+        }
+        if (sw_arg_starts_with(arg, name_c)) {
+            // 检查 name=value
+            int64_t name_len = name->len;
+            if (arg->len > name_len && arg->data[name_len] == '=') {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// 取 flag 值：--name=value 或 --name value；无则返回 NULL。
+sw_string* flag_value(sw_array* args, sw_string* name) {
+    if (args == NULL || name == NULL) {
+        return NULL;
+    }
+    char* name_c = (char*)sw_gc_alloc((uint64_t)name->len + 1);
+    for (int64_t i = 0; i < name->len; i++) {
+        name_c[i] = name->data[i];
+    }
+    name_c[name->len] = 0;
+    int64_t* data = (int64_t*)args->data;
+    for (int64_t i = 0; i < args->len; i++) {
+        sw_string* arg = (sw_string*)data[i];
+        if (sw_arg_starts_with(arg, name_c)) {
+            int64_t name_len = name->len;
+            if (arg->len > name_len && arg->data[name_len] == '=') {
+                // name=value：切出 value。
+                sw_string* value = sw_string_from_literal(
+                    arg->data + name_len + 1,
+                    arg->len - name_len - 1
+                );
+                return value;
+            }
+            if (sw_arg_string_eq(arg, name_c) && i + 1 < args->len) {
+                // 独立 flag，取下一个参数为值。
+                sw_string* next = (sw_string*)data[i + 1];
+                if (next != NULL && next->len > 0 && next->data[0] != '-') {
+                    return next;
+                }
+                return NULL;
+            }
+        }
+    }
+    return NULL;
+}
+
+// ---------------------------------------------------------------------------
+// 正则表达式（最小引擎，纯自包含）
+// 支持：字面量、. * + ? [] 字符类（范围/取反）、^ $ 锚点、() 捕获分组、
+//       | 交替、\d \w \s \D \W \S 与转义字符。文本按 Unicode 码点处理，
+//       中文安全。
+// ---------------------------------------------------------------------------
+
+typedef enum {
+    RX_CHAR,
+    RX_ANY,
+    RX_CLASS,
+    RX_CONCAT,
+    RX_ALT,
+    RX_STAR,
+    RX_PLUS,
+    RX_QUEST,
+    RX_GROUP,
+    RX_ANCHOR_BEGIN,
+    RX_ANCHOR_END,
+    RX_DIGIT,
+    RX_WORD,
+    RX_SPACE,
+    RX_NDIGIT,
+    RX_NWORD,
+    RX_NSPACE
+} rx_kind;
+
+typedef struct rx_node {
+    rx_kind kind;
+    int64_t ch;                  // RX_CHAR
+    struct rx_node** children;   // RX_CONCAT / RX_ALT
+    int64_t child_count;
+    struct rx_node* child;       // RX_STAR / RX_PLUS / RX_QUEST / RX_GROUP
+    int64_t negate;              // RX_CLASS
+    int64_t* class_chars;        // RX_CLASS 字符集（排序去重）
+    int64_t class_count;
+    int64_t group_index;         // RX_GROUP
+} rx_node;
+
+typedef struct {
+    int64_t* data;
+    int64_t len;
+} rx_codepoints;
+
+// UTF-8 解码：把字符串转成码点数组。
+static rx_codepoints rx_decode(const char* data, int64_t len) {
+    rx_codepoints cp;
+    cp.data = (int64_t*)sw_gc_alloc((uint64_t)(len + 1) * 8);
+    cp.len = 0;
+    int64_t i = 0;
+    while (i < len) {
+        unsigned char c = (unsigned char)data[i];
+        int64_t code = 0;
+        int64_t extra = 0;
+        if (c < 0x80) {
+            code = c;
+        } else if ((c & 0xE0) == 0xC0) {
+            code = c & 0x1F;
+            extra = 1;
+        } else if ((c & 0xF0) == 0xE0) {
+            code = c & 0x0F;
+            extra = 2;
+        } else if ((c & 0xF8) == 0xF0) {
+            code = c & 0x07;
+            extra = 3;
+        } else {
+            code = c;
+        }
+        for (int64_t k = 1; k <= extra && i + k < len; k++) {
+            code = (code << 6) | ((unsigned char)data[i + k] & 0x3F);
+        }
+        cp.data[cp.len++] = code;
+        i += extra + 1;
+    }
+    return cp;
+}
+
+static rx_node* rx_new(rx_kind kind) {
+    rx_node* node = (rx_node*)sw_gc_alloc(sizeof(rx_node));
+    node->kind = kind;
+    node->ch = 0;
+    node->children = NULL;
+    node->child_count = 0;
+    node->child = NULL;
+    node->negate = 0;
+    node->class_chars = NULL;
+    node->class_count = 0;
+    node->group_index = 0;
+    return node;
+}
+
+static rx_node* rx_concat(rx_node** items, int64_t count) {
+    if (count == 1) {
+        return items[0];
+    }
+    rx_node* node = rx_new(RX_CONCAT);
+    node->children = (rx_node**)sw_gc_alloc((uint64_t)count * sizeof(rx_node*));
+    node->child_count = count;
+    for (int64_t i = 0; i < count; i++) {
+        node->children[i] = items[i];
+    }
+    return node;
+}
+
+static int64_t rx_class_lookup(int64_t* chars, int64_t count, int64_t ch) {
+    for (int64_t i = 0; i < count; i++) {
+        if (chars[i] == ch) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// 解析器状态：模式码点、长度、位置、分组计数。
+typedef struct {
+    int64_t* data;
+    int64_t len;
+    int64_t pos;
+    int64_t groups;
+} rx_parser;
+
+static rx_node* rx_parse_alt(rx_parser* p);
+static rx_node* rx_parse_escape(rx_parser* p);
+
+static void rx_class_add(rx_node* node, int64_t ch) {
+    if (rx_class_lookup(node->class_chars, node->class_count, ch)) {
+        return;
+    }
+    int64_t* bigger = (int64_t*)sw_gc_alloc((uint64_t)(node->class_count + 1) * 8);
+    for (int64_t i = 0; i < node->class_count; i++) {
+        bigger[i] = node->class_chars[i];
+    }
+    bigger[node->class_count] = ch;
+    node->class_chars = bigger;
+    node->class_count++;
+}
+
+static void rx_class_range(rx_node* node, int64_t lo, int64_t hi) {
+    if (lo > hi) {
+        int64_t t = lo;
+        lo = hi;
+        hi = t;
+    }
+    for (int64_t ch = lo; ch <= hi && ch < 0x110000; ch++) {
+        rx_class_add(node, ch);
+    }
+}
+
+// 解析字符类 [...]；进入时 pos 指向 '['，返回时 pos 指向 ']' 之后。
+static rx_node* rx_parse_class(rx_parser* p) {
+    rx_node* node = rx_new(RX_CLASS);
+    p->pos++;  // 跳过 '['
+    if (p->pos < p->len && p->data[p->pos] == '^') {
+        node->negate = 1;
+        p->pos++;
+    }
+    while (p->pos < p->len && p->data[p->pos] != ']') {
+        int64_t ch = p->data[p->pos];
+        if (ch == '\\' && p->pos + 1 < p->len) {
+            p->pos++;
+            int64_t esc = p->data[p->pos];
+            if (esc == 'd') {
+                rx_class_range(node, '0', '9');
+            } else if (esc == 'w') {
+                rx_class_range(node, 'a', 'z');
+                rx_class_range(node, 'A', 'Z');
+                rx_class_range(node, '0', '9');
+                rx_class_add(node, '_');
+            } else if (esc == 's') {
+                rx_class_add(node, ' ');
+                rx_class_add(node, '\t');
+                rx_class_add(node, '\n');
+                rx_class_add(node, '\r');
+                rx_class_add(node, '\f');
+                rx_class_add(node, '\v');
+            } else {
+                rx_class_add(node, esc);
+            }
+            p->pos++;
+            continue;
+        }
+        // 范围：a-z
+        if (p->pos + 2 < p->len && p->data[p->pos + 1] == '-' &&
+            p->data[p->pos + 2] != ']') {
+            int64_t hi = p->data[p->pos + 2];
+            rx_class_range(node, ch, hi);
+            p->pos += 3;
+        } else {
+            rx_class_add(node, ch);
+            p->pos++;
+        }
+    }
+    if (p->pos < p->len) {
+        p->pos++;  // 跳过 ']'
+    }
+    return node;
+}
+
+static rx_node* rx_parse_atom(rx_parser* p) {
+    if (p->pos >= p->len) {
+        return NULL;
+    }
+    int64_t ch = p->data[p->pos];
+    if (ch == '(') {
+        p->pos++;
+        rx_node* inner = rx_parse_alt(p);
+        if (p->pos < p->len && p->data[p->pos] == ')') {
+            p->pos++;
+        }
+        rx_node* group = rx_new(RX_GROUP);
+        group->child = inner;
+        group->group_index = p->groups++;
+        return group;
+    }
+    if (ch == '[') {
+        return rx_parse_class(p);
+    }
+    if (ch == '^') {
+        p->pos++;
+        return rx_new(RX_ANCHOR_BEGIN);
+    }
+    if (ch == '$') {
+        p->pos++;
+        return rx_new(RX_ANCHOR_END);
+    }
+    if (ch == '.') {
+        p->pos++;
+        return rx_new(RX_ANY);
+    }
+    if (ch == '\\') {
+        return rx_parse_escape(p);
+    }
+    if (ch == '|' || ch == ')' || ch == '*' || ch == '+' || ch == '?') {
+        return NULL;
+    }
+    rx_node* node = rx_new(RX_CHAR);
+    node->ch = ch;
+    p->pos++;
+    return node;
+}
+
+static rx_node* rx_parse_escape(rx_parser* p) {
+    p->pos++;  // 跳过 '\'
+    if (p->pos >= p->len) {
+        return NULL;
+    }
+    int64_t esc = p->data[p->pos];
+    rx_node* node = NULL;
+    switch (esc) {
+        case 'd':
+            node = rx_new(RX_DIGIT);
+            break;
+        case 'w':
+            node = rx_new(RX_WORD);
+            break;
+        case 's':
+            node = rx_new(RX_SPACE);
+            break;
+        case 'D':
+            node = rx_new(RX_NDIGIT);
+            break;
+        case 'W':
+            node = rx_new(RX_NWORD);
+            break;
+        case 'S':
+            node = rx_new(RX_NSPACE);
+            break;
+        default:
+            node = rx_new(RX_CHAR);
+            node->ch = esc;
+            break;
+    }
+    p->pos++;
+    return node;
+}
+
+static rx_node* rx_parse_repeat(rx_parser* p) {
+    rx_node* atom = rx_parse_atom(p);
+    if (atom == NULL) {
+        return NULL;
+    }
+    if (p->pos >= p->len) {
+        return atom;
+    }
+    int64_t q = p->data[p->pos];
+    if (q == '*') {
+        rx_node* star = rx_new(RX_STAR);
+        star->child = atom;
+        p->pos++;
+        return star;
+    }
+    if (q == '+') {
+        rx_node* plus = rx_new(RX_PLUS);
+        plus->child = atom;
+        p->pos++;
+        return plus;
+    }
+    if (q == '?') {
+        rx_node* quest = rx_new(RX_QUEST);
+        quest->child = atom;
+        p->pos++;
+        return quest;
+    }
+    return atom;
+}
+
+static rx_node* rx_parse_concat(rx_parser* p) {
+    rx_node** items = (rx_node**)sw_gc_alloc(64 * sizeof(rx_node*));
+    int64_t count = 0;
+    while (p->pos < p->len) {
+        int64_t ch = p->data[p->pos];
+        if (ch == '|' || ch == ')') {
+            break;
+        }
+        rx_node* item = rx_parse_repeat(p);
+        if (item == NULL) {
+            break;
+        }
+        if (count < 63) {
+            items[count++] = item;
+        }
+    }
+    return rx_concat(items, count);
+}
+
+static rx_node* rx_parse_alt(rx_parser* p) {
+    rx_node* first = rx_parse_concat(p);
+    if (p->pos >= p->len || p->data[p->pos] != '|') {
+        return first;
+    }
+    rx_node** branches = (rx_node**)sw_gc_alloc(32 * sizeof(rx_node*));
+    int64_t branch_count = 0;
+    branches[branch_count++] = first;
+    while (p->pos < p->len && p->data[p->pos] == '|') {
+        p->pos++;
+        rx_node* branch = rx_parse_concat(p);
+        branches[branch_count++] = branch;
+    }
+    rx_node* alt = rx_new(RX_ALT);
+    alt->children = branches;
+    alt->child_count = branch_count;
+    return alt;
+}
+
+// 编译模式字符串为 AST，并记录分组数。
+static rx_node* rx_compile(const char* data, int64_t len, int64_t* groups) {
+    rx_codepoints cp = rx_decode(data, len);
+    rx_parser p;
+    p.data = cp.data;
+    p.len = cp.len;
+    p.pos = 0;
+    p.groups = 1;  // 0 号组为整个匹配
+    rx_node* node = rx_parse_alt(&p);
+    *groups = p.groups;
+    return node;
+}
+
+typedef struct {
+    int64_t* caps;
+    int64_t count;
+} rx_captures;
+
+static int64_t rx_match_seq(
+    rx_node** nodes,
+    int64_t count,
+    int64_t index,
+    int64_t* text,
+    int64_t len,
+    int64_t pos,
+    int64_t* caps,
+    int64_t cap_count
+);
+
+// 匹配 node 从 pos 开始（码点索引），返回结束位置；失败返回 -1。
+// 仅处理原子节点与 CONCAT/ALT/GROUP；量词由 rx_match_seq 展开。
+static int64_t rx_match_node(
+    rx_node* node,
+    int64_t* text,
+    int64_t len,
+    int64_t pos,
+    int64_t* caps,
+    int64_t cap_count
+) {
+    if (node == NULL) {
+        return pos;
+    }
+    switch (node->kind) {
+        case RX_CHAR:
+            if (pos < len && text[pos] == node->ch) {
+                return pos + 1;
+            }
+            return -1;
+        case RX_ANY:
+            if (pos < len) {
+                return pos + 1;
+            }
+            return -1;
+        case RX_ANCHOR_BEGIN:
+            return pos == 0 ? pos : -1;
+        case RX_ANCHOR_END:
+            return pos == len ? pos : -1;
+        case RX_DIGIT:
+            if (pos < len && text[pos] >= '0' && text[pos] <= '9') {
+                return pos + 1;
+            }
+            return -1;
+        case RX_NDIGIT:
+            if (pos < len && !(text[pos] >= '0' && text[pos] <= '9')) {
+                return pos + 1;
+            }
+            return -1;
+        case RX_WORD:
+            if (pos < len) {
+                int64_t c = text[pos];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '_') {
+                    return pos + 1;
+                }
+            }
+            return -1;
+        case RX_NWORD:
+            if (pos < len) {
+                int64_t c = text[pos];
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '_')) {
+                    return pos + 1;
+                }
+            }
+            return -1;
+        case RX_SPACE:
+            if (pos < len) {
+                int64_t c = text[pos];
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+                    c == '\f' || c == '\v') {
+                    return pos + 1;
+                }
+            }
+            return -1;
+        case RX_NSPACE:
+            if (pos < len) {
+                int64_t c = text[pos];
+                if (c != ' ' && c != '\t' && c != '\n' && c != '\r' &&
+                    c != '\f' && c != '\v') {
+                    return pos + 1;
+                }
+            }
+            return -1;
+        case RX_CLASS: {
+            if (pos >= len) {
+                return -1;
+            }
+            int64_t hit = rx_class_lookup(node->class_chars, node->class_count, text[pos]);
+            if (node->negate ? !hit : hit) {
+                return pos + 1;
+            }
+            return -1;
+        }
+        case RX_CONCAT: {
+            return rx_match_seq(
+                node->children,
+                node->child_count,
+                0,
+                text,
+                len,
+                pos,
+                caps,
+                cap_count
+            );
+        }
+        case RX_ALT: {
+            for (int64_t i = 0; i < node->child_count; i++) {
+                rx_node* wrapper = rx_new(RX_CONCAT);
+                wrapper->children = (rx_node**)sw_gc_alloc(sizeof(rx_node*));
+                wrapper->child_count = 1;
+                wrapper->children[0] = node->children[i];
+                int64_t p = rx_match_seq(
+                    wrapper->children,
+                    wrapper->child_count,
+                    0,
+                    text,
+                    len,
+                    pos,
+                    caps,
+                    cap_count
+                );
+                if (p >= 0) {
+                    return p;
+                }
+            }
+            return -1;
+        }
+        case RX_GROUP: {
+            int64_t g = node->group_index;
+            int64_t old_start = g * 2 < cap_count ? caps[g * 2] : -1;
+            int64_t old_end = g * 2 + 1 < cap_count ? caps[g * 2 + 1] : -1;
+            if (g * 2 < cap_count) {
+                caps[g * 2] = pos;
+            }
+            rx_node* wrapper = rx_new(RX_CONCAT);
+            wrapper->children = (rx_node**)sw_gc_alloc(sizeof(rx_node*));
+            wrapper->child_count = 1;
+            wrapper->children[0] = node->child;
+            int64_t p = rx_match_seq(
+                wrapper->children,
+                wrapper->child_count,
+                0,
+                text,
+                len,
+                pos,
+                caps,
+                cap_count
+            );
+            if (p >= 0) {
+                if (g * 2 + 1 < cap_count) {
+                    caps[g * 2 + 1] = p;
+                }
+                return p;
+            }
+            if (g * 2 < cap_count) {
+                caps[g * 2] = old_start;
+            }
+            if (g * 2 + 1 < cap_count) {
+                caps[g * 2 + 1] = old_end;
+            }
+            return -1;
+        }
+        case RX_STAR:
+        case RX_PLUS:
+        case RX_QUEST:
+            // 量词只在序列匹配（rx_match_seq）中展开。
+            return -1;
+        default:
+            return -1;
+    }
+}
+
+// 序列匹配：按顺序匹配 nodes[index..count)，量词贪心并回溯配合后续。
+static int64_t rx_match_seq(
+    rx_node** nodes,
+    int64_t count,
+    int64_t index,
+    int64_t* text,
+    int64_t len,
+    int64_t pos,
+    int64_t* caps,
+    int64_t cap_count
+) {
+    if (index >= count) {
+        return pos;
+    }
+    rx_node* node = nodes[index];
+    switch (node->kind) {
+        case RX_STAR: {
+            int64_t* positions = (int64_t*)sw_gc_alloc((uint64_t)(len + 1) * 8);
+            int64_t pos_count = 0;
+            int64_t p = pos;
+            positions[pos_count++] = p;
+            while (pos_count < len + 1) {
+                int64_t q = rx_match_node(node->child, text, len, p, caps, cap_count);
+                if (q < 0 || q == p) {
+                    break;
+                }
+                positions[pos_count++] = q;
+                p = q;
+            }
+            for (int64_t i = pos_count - 1; i >= 0; i--) {
+                int64_t r = rx_match_seq(
+                    nodes,
+                    count,
+                    index + 1,
+                    text,
+                    len,
+                    positions[i],
+                    caps,
+                    cap_count
+                );
+                if (r >= 0) {
+                    return r;
+                }
+            }
+            return -1;
+        }
+        case RX_PLUS: {
+            int64_t q = rx_match_node(node->child, text, len, pos, caps, cap_count);
+            if (q < 0) {
+                return -1;
+            }
+            int64_t* positions = (int64_t*)sw_gc_alloc((uint64_t)(len + 1) * 8);
+            int64_t pos_count = 0;
+            int64_t p = q;
+            positions[pos_count++] = q;
+            while (pos_count < len + 1) {
+                int64_t r = rx_match_node(node->child, text, len, p, caps, cap_count);
+                if (r < 0 || r == p) {
+                    break;
+                }
+                positions[pos_count++] = r;
+                p = r;
+            }
+            for (int64_t i = pos_count - 1; i >= 0; i--) {
+                int64_t r = rx_match_seq(
+                    nodes,
+                    count,
+                    index + 1,
+                    text,
+                    len,
+                    positions[i],
+                    caps,
+                    cap_count
+                );
+                if (r >= 0) {
+                    return r;
+                }
+            }
+            return -1;
+        }
+        case RX_QUEST: {
+            int64_t q = rx_match_node(node->child, text, len, pos, caps, cap_count);
+            if (q >= 0) {
+                int64_t r = rx_match_seq(
+                    nodes,
+                    count,
+                    index + 1,
+                    text,
+                    len,
+                    q,
+                    caps,
+                    cap_count
+                );
+                if (r >= 0) {
+                    return r;
+                }
+            }
+            return rx_match_seq(nodes, count, index + 1, text, len, pos, caps, cap_count);
+        }
+        default: {
+            int64_t p = rx_match_node(node, text, len, pos, caps, cap_count);
+            if (p < 0) {
+                return -1;
+            }
+            return rx_match_seq(
+                nodes,
+                count,
+                index + 1,
+                text,
+                len,
+                p,
+                caps,
+                cap_count
+            );
+        }
+    }
+}
+
+// 匹配整个表达式（从 pos 起），返回结束位置或 -1。
+static int64_t rx_match_full(
+    rx_node* node,
+    int64_t* text,
+    int64_t len,
+    int64_t pos,
+    int64_t* caps,
+    int64_t cap_count
+) {
+    rx_node* wrapper = rx_new(RX_CONCAT);
+    wrapper->children = (rx_node**)sw_gc_alloc(sizeof(rx_node*));
+    wrapper->child_count = 1;
+    wrapper->children[0] = node;
+    return rx_match_seq(
+        wrapper->children,
+        wrapper->child_count,
+        0,
+        text,
+        len,
+        pos,
+        caps,
+        cap_count
+    );
+}
+
+// 在文本中查找第一个匹配，返回 [start, end)（码点索引）；无匹配返回 0。
+// matched_start/matched_end 为码点索引。
+static int64_t rx_search(
+    rx_node* node,
+    int64_t* text,
+    int64_t len,
+    int64_t* matched_start,
+    int64_t* matched_end
+) {
+    for (int64_t start = 0; start <= len; start++) {
+        int64_t caps[16];
+        for (int64_t i = 0; i < 16; i++) {
+            caps[i] = -1;
+        }
+        int64_t end = rx_match_full(node, text, len, start, caps, 16);
+        if (end >= 0) {
+            *matched_start = start;
+            *matched_end = end;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// 从码点区间切出字符串。
+static sw_string* rx_slice(int64_t* text, int64_t start, int64_t end) {
+    // 需要把码点重新编码为 UTF-8。
+    int64_t cap = (end - start) * 4 + 1;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    for (int64_t i = start; i < end; i++) {
+        int64_t ch = text[i];
+        if (ch < 0x80) {
+            buffer[used++] = (char)ch;
+        } else if (ch < 0x800) {
+            buffer[used++] = (char)(0xC0 | (ch >> 6));
+            buffer[used++] = (char)(0x80 | (ch & 0x3F));
+        } else if (ch < 0x10000) {
+            buffer[used++] = (char)(0xE0 | (ch >> 12));
+            buffer[used++] = (char)(0x80 | ((ch >> 6) & 0x3F));
+            buffer[used++] = (char)(0x80 | (ch & 0x3F));
+        } else {
+            buffer[used++] = (char)(0xF0 | (ch >> 18));
+            buffer[used++] = (char)(0x80 | ((ch >> 12) & 0x3F));
+            buffer[used++] = (char)(0x80 | ((ch >> 6) & 0x3F));
+            buffer[used++] = (char)(0x80 | (ch & 0x3F));
+        }
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
+}
+
+// 正则匹配：整个文本是否完全匹配模式（bool）。
+int64_t regex_match(sw_string* text, sw_string* pattern) {
+    if (text == NULL || pattern == NULL) {
+        return 0;
+    }
+    int64_t groups = 0;
+    rx_node* node = rx_compile(pattern->data, pattern->len, &groups);
+    rx_codepoints cp = rx_decode(text->data, text->len);
+    int64_t caps[16];
+    for (int64_t i = 0; i < 16; i++) {
+        caps[i] = -1;
+    }
+    int64_t end = rx_match_full(node, cp.data, cp.len, 0, caps, 16);
+    return end == cp.len ? 1 : 0;
+}
+
+// 正则查找：返回第一个匹配子串；无匹配返回空串。
+sw_string* regex_find(sw_string* text, sw_string* pattern) {
+    if (text == NULL || pattern == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t groups = 0;
+    rx_node* node = rx_compile(pattern->data, pattern->len, &groups);
+    rx_codepoints cp = rx_decode(text->data, text->len);
+    int64_t start = 0;
+    int64_t end = 0;
+    if (rx_search(node, cp.data, cp.len, &start, &end)) {
+        return rx_slice(cp.data, start, end);
+    }
+    return sw_string_from_literal("", 0);
+}
+
+// 正则查找全部：返回所有匹配子串（非重叠，string[]）。
+sw_array* regex_find_all(sw_string* text, sw_string* pattern) {
+    sw_array* out = sw_array_new(8, 16);
+    if (text == NULL || pattern == NULL) {
+        out->len = 0;
+        return out;
+    }
+    int64_t groups = 0;
+    rx_node* node = rx_compile(pattern->data, pattern->len, &groups);
+    rx_codepoints cp = rx_decode(text->data, text->len);
+    int64_t slot = 0;
+    int64_t from = 0;
+    while (from <= cp.len) {
+        int64_t start = 0;
+        int64_t end = 0;
+        // 从 from 起查找：先尝试 from 位置匹配，否则跳过单码点。
+        int64_t caps[16];
+        for (int64_t i = 0; i < 16; i++) {
+            caps[i] = -1;
+        }
+        int64_t e = rx_match_full(node, cp.data, cp.len, from, caps, 16);
+        if (e >= 0) {
+            start = from;
+            end = e;
+            if (slot >= out->len) {
+                sw_array* bigger = sw_array_new(8, out->len * 2 + 1);
+                for (int64_t i = 0; i < slot; i++) {
+                    ((int64_t*)bigger->data)[i] = ((int64_t*)out->data)[i];
+                }
+                out = bigger;
+            }
+            ((int64_t*)out->data)[slot++] = (int64_t)rx_slice(cp.data, start, end);
+            from = end > start ? end : start + 1;
+        } else {
+            from++;
+        }
+    }
+    out->len = slot;
+    out->cap = slot;
+    return out;
+}
+
+// 正则替换：把 text 中所有匹配替换为 replacement（支持 $0 与 $1..$9 分组引用）。
+sw_string* regex_replace(sw_string* text, sw_string* pattern, sw_string* replacement) {
+    if (text == NULL || pattern == NULL || replacement == NULL) {
+        return text;
+    }
+    int64_t groups = 0;
+    rx_node* node = rx_compile(pattern->data, pattern->len, &groups);
+    rx_codepoints cp = rx_decode(text->data, text->len);
+    // 收集所有匹配区间。
+    int64_t* starts = (int64_t*)sw_gc_alloc((uint64_t)(cp.len + 1) * 8);
+    int64_t* ends = (int64_t*)sw_gc_alloc((uint64_t)(cp.len + 1) * 8);
+    int64_t match_count = 0;
+    int64_t from = 0;
+    while (from <= cp.len) {
+        int64_t caps[16];
+        for (int64_t i = 0; i < 16; i++) {
+            caps[i] = -1;
+        }
+        int64_t e = rx_match_full(node, cp.data, cp.len, from, caps, 16);
+        if (e >= 0) {
+            starts[match_count] = from;
+            ends[match_count] = e;
+            match_count++;
+            from = e > from ? e : from + 1;
+        } else {
+            from++;
+        }
+    }
+    // 拼接：原文本 + 替换。
+    // 先计算输出字节容量（上限：原文 + 替换 × 匹配数）。
+    int64_t cap = text->len + replacement->len * match_count + 16;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    // 拷贝原文码点 → 字节，需要把替换片段也转为字节。
+    char* text_bytes = (char*)sw_gc_alloc((uint64_t)(text->len + 1));
+    for (int64_t i = 0; i < text->len; i++) {
+        text_bytes[i] = text->data[i];
+    }
+    text_bytes[text->len] = 0;
+    int64_t cursor = 0;
+    int64_t byte_cursor = 0;
+    for (int64_t m = 0; m < match_count; m++) {
+        int64_t start = starts[m];
+        int64_t end = ends[m];
+        // 拷贝匹配前原文：码点 [cursor, start) → 字节。
+        sw_string* prefix = rx_slice(cp.data, cursor, start);
+        for (int64_t i = 0; i < prefix->len && used + 1 < cap; i++) {
+            buffer[used++] = prefix->data[i];
+        }
+        // 解析 replacement 中的 $N。
+        for (int64_t i = 0; i < replacement->len; i++) {
+            if (replacement->data[i] == '$' && i + 1 < replacement->len) {
+                int64_t n = replacement->data[i + 1];
+                if (n >= '0' && n <= '9') {
+                    int64_t idx = n - '0';
+                    if (idx == 0) {
+                        sw_string* whole = rx_slice(cp.data, start, end);
+                        for (int64_t k = 0; k < whole->len && used + 1 < cap; k++) {
+                            buffer[used++] = whole->data[k];
+                        }
+                    } else {
+                        // $1..$9 分组捕获：当前引擎在替换时未保留分组区间，
+                        // 先按字面 $N 输出（避免静默丢字符）。
+                        if (used + 1 < cap) {
+                            buffer[used++] = replacement->data[i];
+                        }
+                        if (used + 1 < cap) {
+                            buffer[used++] = replacement->data[i + 1];
+                        }
+                    }
+                    i++;
+                    continue;
+                }
+            }
+            if (used + 1 < cap) {
+                buffer[used++] = replacement->data[i];
+            }
+        }
+        cursor = end;
+        byte_cursor = end;
+    }
+    // 尾部原文。
+    sw_string* tail = rx_slice(cp.data, cursor, cp.len);
+    for (int64_t i = 0; i < tail->len && used + 1 < cap; i++) {
+        buffer[used++] = tail->data[i];
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
 }

@@ -1169,6 +1169,32 @@ Sw 编译器（swcc）开发进度
                          交叉编译 x86_64/aarch64 Linux + aarch64 macOS
                          全部通过；已提交 097bb38 推送 Gitee + GitHub
 
+    2026-08-15 05:40  标准库三连：正则 + map 任意类型值 + 命令行 flag：
+                       - 新增 std/regex（最小引擎，纯运行时，零依赖）：
+                         字面量/./*/+/?/[]（范围/取反）/^$ 锚点/() 分组/
+                         | 交替/\d \w \s \D \W \S/转义；文本按 Unicode
+                         码点处理，中文安全；API：regex_match/find/
+                         find_all/replace + 中文转发（正则匹配/正则查找/
+                         正则查找全部/正则替换）
+                       - std/map 任意类型值：节点带类型标签（复用 varargs
+                         SW_TAG），新增 map_set_int/map_get_int/map_inc
+                         （计数累加）/map_set_float/map_get_float/
+                         map_set_bool/map_get_bool + 中文（置整数/取整数/
+                         计数累加/置小数/取小数/置逻辑/取逻辑）；string 值
+                         与数值可混存同一 map
+                       - std/os 命令行 flag：flag_has/flag_value（支持
+                         --name=value 与 --name value 两种写法）+ 中文
+                         （含参数/取参数值）；修复 swc run 透传参数 bug：
+                         parse_options 原先吞掉所有 - 开头参数，未知选项
+                         现在透传给程序（--verbose/-v/--port=8080 等）
+                       - 新增探针 probe-regex.sw（33 断言）/probe-map-typed.sw
+                         （17 断言）/probe-flags.sw（10 断言，带参运行），
+                         run-examples.py 加 ARGS 支持带参数探针
+                       - demo 新增 demo-regex.sw / demo-flags.sw，demo-map.sw
+                         补任意类型值演示，输出存 outputs/demo-*.txt
+                       - 验证：73 examples 全过；cargo test 52 全绿；
+                         fmt 通过；demo 输出正确
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

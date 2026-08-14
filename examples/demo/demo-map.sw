@@ -9,6 +9,15 @@ import {
     map_clear,
     map_keys,
     map_values,
+    map_set_int,
+    map_get_int,
+    map_inc,
+    map_set_float,
+    map_get_float,
+    map_set_bool,
+    map_get_bool,
+    取整数,
+    计数累加,
 } from "std/map";
 import { join } from "std/string";
 
@@ -29,5 +38,20 @@ function main(): int {
     println(`after_remove len=${map_len(m)} has_year=${map_has(m, "year")}`);
     map_clear(m);
     println(`after_clear len=${map_len(m)}`);
+
+    // 任意类型值
+    const typed = map_new();
+    map_set_int(typed, "count", 10);
+    map_inc(typed, "count", 5);
+    map_inc(typed, "fresh", 3);
+    map_set_float(typed, "score", 3.14);
+    map_set_bool(typed, "enabled", true);
+    println(map_get_int(typed, "count", 0));
+    println(map_get_int(typed, "missing", -1));
+    println(计数累加(typed, "count", 2));
+    println(map_get_float(typed, "score", 0.0));
+    println(map_get_bool(typed, "enabled", false));
+    println(取整数(typed, "count", 0));
+    println(map_len(typed));
     return 0;
 }

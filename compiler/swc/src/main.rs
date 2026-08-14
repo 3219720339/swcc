@@ -1078,7 +1078,11 @@ fn parse_options(args: &[String]) -> BuildOptions {
                 emit_object = args.get(index + 1).map(PathBuf::from);
                 index += 2;
             }
-            flag if flag.starts_with('-') => index += 1,
+            flag if flag.starts_with('-') => {
+                // 未知选项透传给程序（如 --verbose、--port=8080、-v）。
+                run_args.push(flag.to_owned());
+                index += 1;
+            }
             value => {
                 run_args.push(value.to_owned());
                 index += 1;

@@ -1,0 +1,10 @@
+﻿构建成功：demo-flags.exe（用时 39 ms）
+true
+true
+false
+8080
+127.0.0.1
+fast
+(无)
+true
+8080

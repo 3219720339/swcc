@@ -1,7 +1,14 @@
-﻿构建成功：demo-map.exe（用时 41 ms）
+﻿构建成功：demo-map.exe（用时 44 ms）
 len=3 has_name=true has_missing=false
 get_name=sw get_missing=(null)
 keys=name,year,lang values=sw,2026,cn
 after_set name=swcc
 after_remove len=2 has_year=false
 after_clear len=0
+15
+-1
+17
+3.14
+true
+17
+4

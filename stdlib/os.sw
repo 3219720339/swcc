@@ -117,3 +117,23 @@ export extern c function pid(): int;
 
 /// 机器架构："x86_64" / "aarch64"。
 export extern c function arch(): string;
+
+/// 命令行参数中是否存在指定 flag：等于 name 或形如 name=value。
+/// 示例：flag_has(args, "--verbose")、flag_has(args, "-v")。
+export extern c function flag_has(args: string[], name: string): bool;
+
+/// 取 flag 的值：支持 "--name=value" 与 "--name value" 两种写法；
+/// 未提供返回 null。示例：flag_value(args, "--port") == "8080"。
+export extern c function flag_value(args: string[], name: string): string?;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 含参数(args: string[], name: string): bool {
+    return flag_has(args, name);
+}
+
+export function 取参数值(args: string[], name: string): string? {
+    return flag_value(args, name);
+}
