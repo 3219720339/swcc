@@ -717,6 +717,44 @@ Sw 编译器（swcc）开发进度
                        进度/验证现状/常用命令/已知限制/待办），供新窗口
                        快速接手上下文
 
+    2026-08-15 02:20  标准库扩充（std/map +1）：
+                       - 新增 map_values(map)：返回全部值的 string[]，与 map_keys
+                         同序（插入顺序）；runtime 加 sw_map_values（遍历节点收集
+                         值，模式同 sw_map_keys）；stdlib/map.sw 声明 + codegen
+                         extern_c_symbol 映射
+                       - 新增 examples/probe-map-values.sw（6 项断言：key/value
+                         顺序对应、覆盖更新后取值、空 map），注册进 run-examples.py
+                       - 验证：cargo test 51 全绿、showcase 通过、probe-map-values 通过
+
+    2026-08-15 02:25  修复 u8[] 切片数据损坏 bug：
+                       - 根因：sw_array_slice 硬编码 8 字节元素步长（原实现
+                         start*8 / count*8），而 u8[] 是紧凑布局（步长 1），
+                         对 u8[] 切片错位复制 → 元素全变 0
+                       - 修复：sw_array_slice 增加 elem_size 参数（第 4 参），
+                         按 elem_size 做偏移与 memcpy；语义层 slice 降级按对象
+                         元素类型传步长（U8→1、其余→8）；codegen 签名扩为 4 参
+                       - 复现：examples 下临时探针（[1u8,2u8,..6u8][1:4] 原输出
+                         全 0，修复后 [2,3,4]）
+                       - 新增 examples/probe-slice-u8.sw（5 项断言：u8 中/头/尾
+                         切片、原数组 intact、int 切片不回归），注册进
+                         run-examples.py
+                       - 验证：cargo test 51 全绿、showcase/probe-slice/
+                         probe-array 无回归、probe-slice-u8 通过
+
+    2026-08-15 02:30  泛型约束剩余项（其一）：where 约束校验沿基类链查：
+                       - 修复不一致：instantiate_generic 校验 where 约束时只查
+                         实参类自己的 class_interfaces，但 vtable 生成与
+                         Class→Interface 赋值都沿基类链收集——接口若只被基类
+                         implements（子类未写），fn f<T>(x: T) where T: Shape
+                         传子类实参会误报"未实现约束接口"
+                       - 修复：校验改为沿 class_base_chain 收集接口（symbols.rs
+                         class_base_chain 已存在），与 vtable/赋值规则对齐
+                       - 新增 examples/probe-bound-inherit.sw（3 项断言：基类满足
+                         约束、派生类经基类继承满足约束、派生类可赋给基类接口），
+                         注册进 run-examples.py
+                       - 验证：53 个 examples 全过（含新探针，设计退出码不变）、
+                         cargo test 51 全绿、showcase 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 

@@ -962,6 +962,7 @@ fn extern_c_symbol(name: &str) -> &str {
         "map_remove" => "sw_map_remove",
         "map_len" => "sw_map_len",
         "map_keys" => "sw_map_keys",
+        "map_values" => "sw_map_values",
         "net_connect" => "sw_net_connect",
         "net_send" => "sw_net_send",
         "net_recv" => "sw_net_recv",
@@ -1034,6 +1035,7 @@ fn intrinsic_signature(name: &str, isa: &dyn cranelift_codegen::isa::TargetIsa) 
             sig.returns.push(AbiParam::new(types::I64));
         }
         "sw_array_slice" => {
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));

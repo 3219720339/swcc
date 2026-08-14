@@ -2244,9 +2244,12 @@ void sw_array_set(sw_array* array, int64_t index, int64_t value) {
 }
 
 // 数组切片（复制）：a[start:end]，越界自动裁剪，返回新数组。
-sw_array* sw_array_slice(sw_array* array, int64_t start, int64_t end) {
+sw_array* sw_array_slice(sw_array* array, int64_t start, int64_t end, int64_t elem_size) {
+    if (elem_size <= 0) {
+        elem_size = 1;
+    }
     if (array == NULL) {
-        return sw_array_new(8, 0);
+        return sw_array_new(elem_size, 0);
     }
     if (start < 0) {
         start = 0;
@@ -2255,14 +2258,14 @@ sw_array* sw_array_slice(sw_array* array, int64_t start, int64_t end) {
         end = array->len;
     }
     if (start >= end) {
-        return sw_array_new(8, 0);
+        return sw_array_new(elem_size, 0);
     }
     int64_t count = end - start;
-    sw_array* result = sw_array_new(8, count);
+    sw_array* result = sw_array_new(elem_size, count);
     memcpy(
         result->data,
-        (char*)array->data + (uint64_t)start * 8,
-        (sw_size)((uint64_t)count * 8)
+        (char*)array->data + (uintptr_t)start * elem_size,
+        (sw_size)((uint64_t)count * elem_size)
     );
     return result;
 }
@@ -5368,6 +5371,19 @@ sw_array* sw_map_keys(void* handle) {
     int64_t slot = 0;
     for (sw_map_node* node = map->head; node != NULL; node = node->next) {
         ((int64_t*)array->data)[slot++] = (int64_t)node->key;
+    }
+    return array;
+}
+
+sw_array* sw_map_values(void* handle) {
+    sw_map* map = (sw_map*)handle;
+    sw_array* array = sw_array_new(8, map != NULL ? map->count : 0);
+    if (map == NULL) {
+        return array;
+    }
+    int64_t slot = 0;
+    for (sw_map_node* node = map->head; node != NULL; node = node->next) {
+        ((int64_t*)array->data)[slot++] = (int64_t)node->value;
     }
     return array;
 }

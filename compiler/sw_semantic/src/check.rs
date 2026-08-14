@@ -5269,7 +5269,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 infer_type_arg(&param.ty, &self.expr_type(arg_ty), &mut type_args);
             }
         }
-        // 校验 where 约束：类型实参必须实现约束接口。
+        // 校验 where 约束：类型实参必须实现约束接口（沿基类链收集，与 vtable/
+        // 接口赋值规则一致——接口只需被基类 implements，子类实参即满足约束）。
         for (param_name, bound_tys) in &template.bounds {
             let Some(actual) = type_args.get(param_name) else {
                 continue;
@@ -5277,13 +5278,16 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             for bound_ty in bound_tys {
                 if let Type::Interface(interface_id) = bound_ty {
                     let implements = match actual {
-                        Type::Class(class_id) => self
-                            .lowerer
-                            .types
-                            .class_interfaces
-                            .get(class_id)
-                            .map(|ids| ids.contains(interface_id))
-                            .unwrap_or(false),
+                        Type::Class(class_id) => {
+                            let types = &self.lowerer.types;
+                            types.class_base_chain(*class_id).iter().any(|id| {
+                                types
+                                    .class_interfaces
+                                    .get(id)
+                                    .map(|ids| ids.contains(interface_id))
+                                    .unwrap_or(false)
+                            })
+                        }
                         _ => false,
                     };
                     if !implements {
@@ -6115,6 +6119,11 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 access
             }
             ExprKind::Slice { object, start, end } => {
+                let object_ty = self.expr_type(object);
+                let elem_size = match object_ty.without_nullable() {
+                    Type::Array(inner) if matches!(&**inner, Type::U8) => 1,
+                    _ => 8,
+                };
                 let object_mir = self.lower_expr(object);
                 let start_mir = start
                     .as_ref()
@@ -6131,7 +6140,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     callee: MirCallee::Intrinsic {
                         name: "array_slice".to_owned(),
                     },
-                    args: vec![object_mir, start_mir, end_mir],
+                    args: vec![object_mir, start_mir, end_mir, MirExpr::Int(elem_size)],
                 }
             }
             ExprKind::Postfix { expr: inner, op } => {
