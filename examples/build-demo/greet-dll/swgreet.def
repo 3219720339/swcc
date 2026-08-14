@@ -1,4 +1,0 @@
-EXPORTS
-greet = sw_fn_greeter_greet_s
-repeat = sw_fn_greeter_repeat_si
-double = sw_fn_greeter_double_i

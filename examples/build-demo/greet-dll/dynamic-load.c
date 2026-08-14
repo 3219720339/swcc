@@ -31,10 +31,10 @@ int main(void) {
     }
 #if defined(_WIN32)
     fn_greet greet = (fn_greet)GetProcAddress((HMODULE)lib, "greet");
-    fn_double dbl = (fn_double)GetProcAddress((HMODULE)lib, "double");
+    fn_double dbl = (fn_double)GetProcAddress((HMODULE)lib, "twice");
 #else
     fn_greet greet = (fn_greet)dlsym(lib, "sw_fn_greeter_greet_s");
-    fn_double dbl = (fn_double)dlsym(lib, "sw_fn_greeter_double_i");
+    fn_double dbl = (fn_double)dlsym(lib, "sw_fn_greeter_twice_i");
 #endif
     if (greet == NULL || dbl == NULL) {
         printf("找不到导出符号\n");
@@ -43,7 +43,7 @@ int main(void) {
     sw_string name = { "Dynamic", 7 };
     sw_string* result = greet(&name);
     printf("greet = %s (len=%lld)\n", result->data, result->len);
-    printf("double(21) = %lld\n", dbl(21));
+    printf("twice(21) = %lld\n", dbl(21));
 #if defined(_WIN32)
     FreeLibrary((HMODULE)lib);
 #else

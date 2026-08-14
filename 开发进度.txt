@@ -1024,6 +1024,17 @@ Sw 编译器（swcc）开发进度
                        - dynamic-load.c 按 greet/double 调用实测通过；
                          66 个 examples 全过；cargo test 52 全绿；fmt 通过
 
+    2026-08-15 03:56  dll 配导入库+头文件、lib 头文件用户函数名直调：
+                       - dll 构建自动产出 dll + 导入库（.lib）+ 头文件
+                         （声明导出函数用户函数名），C include + -lswgreet
+                         链接调用实测 greet/twice 通过
+                       - lib 构建自动生成转发 stub（用户函数名 = stable
+                         符号转发）并入归档，头文件按用户函数名声明；
+                         C include + -lswmath 调 add/mul/square 实测通过
+                       - 导出名避开 C 关键字（演示 double → twice，
+                         文档注明）
+                       - 66 个 examples 全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

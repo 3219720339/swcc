@@ -299,6 +299,10 @@ fn main() {
                     std::process::exit(2);
                 }
             }
+            // dll 附带头文件（声明导出函数，配合导入库直接链接调用）。
+            if dll {
+                write_lib_header(&result.modules, &output);
+            }
         }
     }
 
@@ -554,12 +558,105 @@ fn build_lib(target: &str, objects: &[PathBuf], output: &Path, modules: &[MirMod
     for object in objects {
         args.push(object.as_os_str().to_os_string());
     }
+    // 用户函数名转发 stub（头文件按用户函数名直接调用）。
+    if let Some(stub) = build_lib_stub(target, modules) {
+        args.push(stub.as_os_str().to_os_string());
+    }
     let status = Command::new(&ar).args(&args).status();
     if !status.map(|status| status.success()).unwrap_or(false) {
         eprintln!("打包静态库失败（llvm-ar）");
         std::process::exit(1);
     }
     write_lib_header(modules, output);
+}
+
+/// 生成转发 stub：`用户函数名(params) { return stable名(params); }`，
+/// 编译成对象并入静态库，使 C 头文件按用户函数名直接链接调用。
+fn build_lib_stub(target: &str, modules: &[MirModule]) -> Option<PathBuf> {
+    let sdk = locate_sdk(target)?;
+    let clang = if target_family(target) == "macos" {
+        PathBuf::from("cc")
+    } else {
+        sdk.mingw_clang.clone()?
+    };
+    let mut c = String::new();
+    c.push_str(
+        "typedef struct sw_string { char* data; long long len; } sw_string;\n\
+         typedef struct sw_array { long long len; long long cap; void* data; } sw_array;\n",
+    );
+    let mut has_export = false;
+    for module in modules {
+        for function in &module.functions {
+            if function.extern_c
+                || function.user_name.is_empty()
+                || function.name == "sw_user_main"
+                || !function.exported
+            {
+                continue;
+            }
+            has_export = true;
+            let ret = c_type(&function.ret);
+            let params: Vec<(String, String)> = function
+                .params
+                .iter()
+                .enumerate()
+                .map(|(index, param)| (c_type(&param.ty), format!("p{index}")))
+                .collect();
+            let signature = params
+                .iter()
+                .map(|(ty, name)| format!("{ty} {name}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let call_args = params
+                .iter()
+                .map(|(_, name)| name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            c.push_str(&format!(
+                "{ret} {}({signature});\n\
+                 {ret} {}({signature}) {{\n    return {}({call_args});\n}}\n",
+                function.name, function.user_name, function.name
+            ));
+        }
+    }
+    if !has_export {
+        return None;
+    }
+    let cache_dir = PathBuf::from(".swcache").join("obj");
+    if let Err(error) = fs::create_dir_all(&cache_dir) {
+        eprintln!("无法创建缓存目录：{error}");
+        std::process::exit(2);
+    }
+    let stub_c = cache_dir.join("lib_stub.c");
+    if let Err(error) = fs::write(&stub_c, c) {
+        eprintln!("无法写出 stub：{error}");
+        std::process::exit(2);
+    }
+    let target_tag = target.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let suffix = if target_family(target) == "windows" {
+        "obj"
+    } else {
+        "o"
+    };
+    let stub_obj = cache_dir.join(format!("lib_stub_{target_tag}.{suffix}"));
+    let status = Command::new(&clang)
+        .args([
+            "-target",
+            target,
+            "-O2",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-c",
+        ])
+        .arg(&stub_c)
+        .arg("-o")
+        .arg(&stub_obj)
+        .status();
+    if !status.map(|status| status.success()).unwrap_or(false) {
+        eprintln!("编译转发 stub 失败（{}）", clang.display());
+        std::process::exit(1);
+    }
+    Some(stub_obj)
 }
 
 /// Sw 类型 → C 声明类型。
@@ -590,8 +687,7 @@ fn write_lib_header(modules: &[MirModule], output: &Path) {
     let mut text = String::new();
     text.push_str(&format!("#ifndef {guard}\n#define {guard}\n\n"));
     text.push_str(
-        "// 由 swc 生成：Sw 模块导出的 C 接口（符号名为 Sw stable 名，\n\
-         // 源码函数名见末尾注释）。\n\
+        "// 由 swc 生成：Sw 模块导出的 C 接口（按源码 `export function` 收集）。\n\
          typedef struct sw_string { char* data; long long len; } sw_string;\n\
          typedef struct sw_array { long long len; long long cap; void* data; } sw_array;\n\n",
     );
@@ -611,11 +707,10 @@ fn write_lib_header(modules: &[MirModule], output: &Path) {
                 .map(|param| format!("{} {}", c_type(&param.ty), param.name))
                 .collect();
             text.push_str(&format!(
-                "extern {} {}({});  // {}\n",
+                "extern {} {}({});\n",
                 ret,
-                function.name,
+                function.user_name,
                 params.join(", "),
-                function.user_name
             ));
         }
     }

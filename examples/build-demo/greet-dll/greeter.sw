@@ -11,6 +11,6 @@ export function repeat(text: string, times: int): string {
     return out;
 }
 
-export function double(x: int): int {
+export function twice(x: int): int {
     return x * 2;
 }

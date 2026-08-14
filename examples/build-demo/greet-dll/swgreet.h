@@ -1,12 +1,12 @@
-#ifndef SW_swmath_H
-#define SW_swmath_H
+#ifndef SW_swgreet_H
+#define SW_swgreet_H
 
 // 由 swc 生成：Sw 模块导出的 C 接口（按源码 `export function` 收集）。
 typedef struct sw_string { char* data; long long len; } sw_string;
 typedef struct sw_array { long long len; long long cap; void* data; } sw_array;
 
-extern long long add(long long a, long long b);
-extern long long mul(long long a, long long b);
-extern long long square(long long x);
+extern sw_string* greet(sw_string* name);
+extern sw_string* repeat(sw_string* text, long long times);
+extern long long twice(long long x);
 
-#endif // SW_swmath_H
+#endif // SW_swgreet_H

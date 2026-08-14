@@ -44,14 +44,31 @@ clang dynamic-load.c -o dynamic-load.exe   # Windows：不链接 -lswgreet
 ./dynamic-load.exe              # greet = Hello, Dynamic! / double(21) = 42
 ```
 
+## DLL 链接调用（导入库 + 头文件）
+
+`swc build`（kind = dll）自动产出 dll + 导入库（`swgreet.lib`）+ 头文件
+（`swgreet.h`），可以像普通库一样 include + 链接：
+
+```c
+#include "swgreet.h"
+sw_string name = { "Linked", 6 };
+printf("%s\n", greet(&name)->data);       // Hello, Linked!
+printf("%lld\n", twice(21));              // 42
+```
+
+```bash
+clang ctest.c -I. -L. -lswgreet            # Windows 链接导入库
+```
+
 ## 静态库配套头文件
 
-`swc build`（kind = lib）会自动生成同名 C 头文件（`swmath.lib` → `swmath.h`），
-声明全部导出函数的 C 签名（含 sw_string/sw_array 布局），可直接 include：
+`swc build`（kind = lib）会自动生成同名 C 头文件（`swmath.lib` → `swmath.h`）
+并内附转发 stub，头文件按**用户函数名**直接声明，include + 链接即用：
 
 ```c
 #include "swmath.h"
-printf("%lld\n", sw_fn_math_add_ii(5, 7));   // 12
+printf("%lld\n", add(5, 7));   // 12
 ```
 
-> 头文件用 Sw stable 符号名；源码函数名在声明行尾注释标注。
+> 头文件/导出集合以源码 `export function` 为准；导出函数名请避开 C 关键字
+> （如 `double`/`int`），否则生成的 C 头文件无法编译。
