@@ -3,3 +3,11 @@ kind = "dll"
 
 [lib]
 name = "swgreet"
+
+[project]
+name = "swgreet"
+version = "1.0.0"
+description = "Sw 动态库示例"
+author = "Sw Team"
+copyright = "Copyright 2026"
+icon = "../../../1.ico"

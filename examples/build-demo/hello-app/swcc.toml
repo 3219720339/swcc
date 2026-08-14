@@ -3,3 +3,8 @@ kind = "console"
 
 [project]
 name = "hello-app"
+version = "1.0.0"
+description = "Sw 控制台程序示例"
+author = "Sw Team"
+copyright = "Copyright 2026"
+icon = "../../../1.ico"
