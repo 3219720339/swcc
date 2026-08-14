@@ -51,6 +51,7 @@ EXPECTED = {
     "probe-template.sw": 0,
     "probe-template-escape.sw": 0,
     "probe-ternary.sw": 43,
+    "probe-trait.sw": 0,
     "probe-vars.sw": 0,
     "showcase.sw": 0,
 }

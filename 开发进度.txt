@@ -567,6 +567,25 @@ Sw 编译器（swcc）开发进度
                          继承接口虚表、showcase 综合示例入口
                        - 提交：本次（文档 + 进度复核记录）
 
+    2026-08-15 00:58  trait 约束（第一档特性 A，Rust 风格）：
+                       - 泛型参数 where 约束端到端：`function f<T>(x: T)
+                         where T: Shape`——约束内可调接口方法（vtable 派发），
+                         FunctionSig 增加 bounds 字段（参数名 → 接口类型列表），
+                         build_function_sig 解析 where_clause 存入签名，
+                         Checker 携带 bounds 上下文，check_call 的
+                         TypeParam 分支按约束接口解析 CallTarget::InterfaceMethod
+                       - 实例化校验：instantiate_generic 校验类型实参实现约束
+                         接口（class_interfaces 查表），不满足报错
+                       - 泛型类 implements 接口解锁（原 v0.1 显式报错）：
+                         泛型类模板正常注册 class_interfaces，实例化时复制到
+                         新实例 id；`const s: Shape = new Box<int>(7)`、
+                         `s.area()` vtable 派发正常
+                       - 限制：implements/where 约束目前只能是非泛型接口
+                         （含 T 的接口约束报"目标必须是接口"）
+                       - 新增 examples/probe-trait.sw（5 项断言：约束方法调用/
+                         泛型类接口/虚表/字段类型替换），44 个 examples 全过；
+                         cargo test 51 全绿；cargo fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 

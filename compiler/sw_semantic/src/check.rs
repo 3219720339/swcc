@@ -614,9 +614,6 @@ impl Analyzer {
                             info.fields = fields;
                             info.methods = methods;
                         }
-                        if !generics.is_empty() && !class.implements.is_empty() {
-                            self.error("v0.1 泛型类暂不支持实现接口", class.span);
-                        }
                         // 接口实现：解析 implements 并校验方法覆盖。
                         let mut resolver = TypeResolver::new(
                             &self.symbols,
@@ -887,6 +884,14 @@ impl Analyzer {
             &self.registry,
             &self.states[module_id.0 as usize].names,
         );
+        let mut bounds: HashMap<String, Vec<Type>> = HashMap::new();
+        for constraint in &function.where_clause {
+            let bound_ty = resolver.lower(&constraint.bound, generics);
+            bounds
+                .entry(constraint.name.name.clone())
+                .or_default()
+                .push(bound_ty);
+        }
         let params = function
             .params
             .iter()
@@ -906,6 +911,7 @@ impl Analyzer {
             module: module_id,
             name: function.name.name.clone(),
             generics: generics.to_vec(),
+            bounds,
             params,
             ret,
             extern_c: function.extern_c,
@@ -940,6 +946,7 @@ impl Analyzer {
             module: module_id,
             name: "constructor".to_owned(),
             generics: generics.to_vec(),
+            bounds: HashMap::new(),
             params,
             ret: Type::Void,
             extern_c: false,
@@ -1086,6 +1093,7 @@ impl Analyzer {
                             None,
                             &sig,
                             &generics,
+                            sig.bounds.clone(),
                             body,
                         );
                     }
@@ -1126,6 +1134,7 @@ impl Analyzer {
                                     module: module_id,
                                     name: method_name.clone(),
                                     generics: Vec::new(),
+                                    bounds: HashMap::new(),
                                     params: Vec::new(),
                                     ret: Type::Void,
                                     extern_c: false,
@@ -1137,6 +1146,7 @@ impl Analyzer {
                                 Some(class_id),
                                 &sig,
                                 &generics,
+                                sig.bounds.clone(),
                                 body,
                             );
                         }
@@ -1157,6 +1167,7 @@ impl Analyzer {
             module: module_id,
             name: String::new(),
             generics: Vec::new(),
+            bounds: HashMap::new(),
             params: Vec::new(),
             ret: Type::Unknown,
             extern_c: false,
@@ -1171,6 +1182,7 @@ impl Analyzer {
         this_class: Option<u32>,
         sig: &FunctionSig,
         generics: &[String],
+        bounds: HashMap<String, Vec<Type>>,
         body: &Block,
     ) {
         let symbols = &mut self.symbols;
@@ -1192,6 +1204,7 @@ impl Analyzer {
             loop_depth: 0,
             switch_depth: 0,
             generics: generics.to_vec(),
+            bounds,
             saw_return_value: false,
         };
         for param in &sig.params {
@@ -1258,6 +1271,7 @@ fn placeholder_sig() -> FunctionSig {
         module: ModuleId(0),
         name: String::new(),
         generics: Vec::new(),
+        bounds: HashMap::new(),
         params: Vec::new(),
         ret: Type::Error,
         extern_c: false,
@@ -1506,6 +1520,7 @@ impl<'a> TypeResolver<'a> {
                     module: method.sig.module,
                     name: method.sig.name.clone(),
                     generics: Vec::new(),
+                    bounds: HashMap::new(),
                     params: method
                         .sig
                         .params
@@ -1527,6 +1542,7 @@ impl<'a> TypeResolver<'a> {
             })
             .collect();
         let id = self.types.classes.len() as u32;
+        let template_interfaces = self.types.class_interfaces.get(&class_id).cloned();
         self.types.classes.push(ClassInfo {
             module: info.module,
             name: info.name,
@@ -1536,6 +1552,9 @@ impl<'a> TypeResolver<'a> {
             methods,
             final_: info.final_,
         });
+        if let Some(interfaces) = template_interfaces {
+            self.types.class_interfaces.insert(id, interfaces);
+        }
         self.types.generic_class_instances.insert(key, id);
         Type::Class(id)
     }
@@ -1558,6 +1577,8 @@ struct Checker<'s> {
     loop_depth: usize,
     switch_depth: usize,
     generics: Vec<String>,
+    /// 泛型参数名 → 约束接口（`where T: Shape`），用于约束内方法调用解析。
+    bounds: HashMap<String, Vec<Type>>,
     saw_return_value: bool,
 }
 
@@ -2793,6 +2814,50 @@ impl<'s> Checker<'s> {
                 let object_ty = self.check_expr(object);
                 let args_ty: Vec<Type> = args.iter().map(|arg| self.check_expr(arg)).collect();
                 let result = match object_ty.without_nullable() {
+                    Type::TypeParam(param_name) => {
+                        let mut resolved = None;
+                        if let Some(bounds) = self.bounds.get(param_name) {
+                            for bound_ty in bounds {
+                                if let Type::Interface(interface_id) = bound_ty {
+                                    if let Some(index) = self.types.interfaces
+                                        [*interface_id as usize]
+                                        .methods
+                                        .iter()
+                                        .position(|m| m.name == name.name)
+                                    {
+                                        resolved = Some((*interface_id, index));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        match resolved {
+                            Some((interface_id, index)) => {
+                                let sig = self.types.interfaces[interface_id as usize].methods
+                                    [index]
+                                    .clone();
+                                self.match_call_args(&sig, &args_ty, span, true);
+                                self.state.result.call_targets.insert(
+                                    (span.start, span.end),
+                                    CallTarget::InterfaceMethod {
+                                        interface: interface_id,
+                                        index,
+                                    },
+                                );
+                                sig.ret
+                            }
+                            None => {
+                                self.error(
+                                    format!(
+                                        "类型 {} 没有可用方法 `{}`（需要 `where {}: 接口` 约束）",
+                                        param_name, name.name, param_name
+                                    ),
+                                    name.span,
+                                );
+                                Type::Error
+                            }
+                        }
+                    }
                     Type::Class(id) => {
                         let Some((class_id, index)) = self.types.find_class_method(*id, &name.name)
                         else {
@@ -2893,6 +2958,7 @@ impl<'s> Checker<'s> {
                                 module: self.state.id,
                                 name: runtime_name.clone(),
                                 generics: Vec::new(),
+                                bounds: HashMap::new(),
                                 params,
                                 ret: ret.clone(),
                                 extern_c: true,
@@ -2918,6 +2984,7 @@ impl<'s> Checker<'s> {
                                 module: self.state.id,
                                 name: "join".to_owned(),
                                 generics: Vec::new(),
+                                bounds: HashMap::new(),
                                 params: vec![
                                     ParamSig {
                                         name: "self".to_owned(),
@@ -4024,6 +4091,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                     module: ModuleId(0),
                                     name: "sw_setjmp".to_owned(),
                                     generics: Vec::new(),
+                                    bounds: HashMap::new(),
                                     params: vec![ParamSig {
                                         name: "buf".to_owned(),
                                         ty: Type::Ptr(Box::new(Type::I8)),
@@ -4244,6 +4312,36 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 infer_type_arg(&param.ty, &self.expr_type(arg_ty), &mut type_args);
             }
         }
+        // 校验 where 约束：类型实参必须实现约束接口。
+        for (param_name, bound_tys) in &template.bounds {
+            let Some(actual) = type_args.get(param_name) else {
+                continue;
+            };
+            for bound_ty in bound_tys {
+                if let Type::Interface(interface_id) = bound_ty {
+                    let implements = match actual {
+                        Type::Class(class_id) => self
+                            .lowerer
+                            .types
+                            .class_interfaces
+                            .get(class_id)
+                            .map(|ids| ids.contains(interface_id))
+                            .unwrap_or(false),
+                        _ => false,
+                    };
+                    if !implements {
+                        self.lowerer.error(
+                            format!(
+                                "类型实参 {} 未实现约束接口 {}",
+                                actual.display(),
+                                self.lowerer.types.interfaces[*interface_id as usize].name
+                            ),
+                            span,
+                        );
+                    }
+                }
+            }
+        }
         let mut key_parts: Vec<String> = type_args
             .iter()
             .map(|(name, ty)| format!("{name}={}", ty.display()))
@@ -4275,6 +4373,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             module: template.module,
             name: instance_name.clone(),
             generics: Vec::new(),
+            bounds: HashMap::new(),
             params: template
                 .params
                 .iter()
@@ -4681,6 +4780,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         module: self.lowerer.state.id,
                         name: "$closure".to_owned(),
                         generics: Vec::new(),
+                        bounds: HashMap::new(),
                         params: vec![ParamSig {
                             name: "$env".to_owned(),
                             ty: Type::Ptr(Box::new(Type::I8)),
@@ -5186,6 +5286,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     module: self.lowerer.state.id,
                     name: hidden_name.clone(),
                     generics: Vec::new(),
+                    bounds: HashMap::new(),
                     params: Vec::new(),
                     ret: lambda_ret.clone(),
                     extern_c: false,

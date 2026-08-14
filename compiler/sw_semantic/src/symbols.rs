@@ -14,6 +14,8 @@ pub struct FunctionSig {
     pub module: ModuleId,
     pub name: String,
     pub generics: Vec<String>,
+    /// 泛型参数名 → 约束（接口类型列表），对应 `where T: Shape`。
+    pub bounds: HashMap<String, Vec<Type>>,
     pub params: Vec<ParamSig>,
     pub ret: Type,
     pub extern_c: bool,
