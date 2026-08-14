@@ -1413,6 +1413,20 @@ Sw 编译器（swcc）开发进度
                        - 验证：82 examples 全过；cargo test 52 全绿；
                          fmt 通过；runtime.c 三平台交叉编译通过
 
+    2026-08-15 09:40  接口能力验证（用户要求先验证现状）：
+                       - 新增 probe-iface-multi.sw 验证 9 项：
+                         多接口实现（会飞+会游泳，各自接口引用派发正确）、
+                         接口引用作函数参数派发、泛型接口多实现（容器<T>
+                         + 可计数，经接口读写泛型值）、继承基类+多接口
+                         混合（super 构造、基类方法、两接口方法全可用）
+                       - 发现缺口（均未实现，已确认语法层接受）：
+                         1) interface 继承 interface：子接口未合并父接口
+                            方法（会降落.fly() 报"接口没有方法 fly"）
+                         2) 实现子接口的类不能赋给父接口类型
+                         （class 飞机 implements 会降落 不能赋给 会飞）
+                       - 多继承 extends A, B 按用户要求不做
+                       - run-examples.py 登记；83 examples 全过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

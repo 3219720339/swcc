@@ -43,6 +43,7 @@ EXPECTED = {
     "probe-if.sw": 42,
     "probe-inherit.sw": 0,
     "probe-interface.sw": 0,
+    "probe-iface-multi.sw": 0,
     "probe-io.sw": 0,
     "probe-json.sw": 0,
     "probe-multifile.sw": 0,
