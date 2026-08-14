@@ -24,6 +24,8 @@ pub enum Type {
     Str,
     /// `null` 字面量的类型，只能赋给可空类型或引用类型。
     Null,
+    /// 运行时带类型标签的值（目前用于 `...args: any` 可变参数）。
+    Any,
     Array(Box<Type>),
     Nullable(Box<Type>),
     Ptr(Box<Type>),
@@ -66,6 +68,7 @@ impl Type {
             Type::Char => "char".to_owned(),
             Type::Str => "string".to_owned(),
             Type::Null => "null".to_owned(),
+            Type::Any => "any".to_owned(),
             Type::Array(inner) => format!("{}[]", inner.display()),
             Type::Nullable(inner) => format!("{}?", inner.display()),
             Type::Ptr(inner) => format!("ptr<{}>", inner.display()),

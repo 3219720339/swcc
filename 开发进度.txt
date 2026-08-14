@@ -131,8 +131,37 @@ Sw 编译器（swcc）开发进度
                        parse_date 用 TzSpecificLocalTimeToSystemTime 保证本地时区往返一致；
                        测试与示例 probe-format
 
-    待办（下一批）：格式化 varargs（printf 风格 format）、递归目录遍历、
-                    二进制文件读写（u8[]）、网络/进程交互等进阶标准库
+13. 本批（import 新形式 + 目录遍历 + u8[] 二进制 + format varargs）
+    2026-08-14 09:16  import 新形式两种：
+                       - `import * from "path"`：通配导入，把模块全部导出展开进当前作用域；
+                       - `import "path"`：副作用导入升级为文件名命名空间（如 calc.add()）；
+                       修存量 bug：Namespace 先占位 alloc_symbol 导致绑定到 Error 全局符号，
+                       改为先取 SymbolId 再 push
+    2026-08-14 09:16  递归目录遍历：std/fs 新增 walk_files/walk_dirs（完整路径、含子目录）；
+                       修复两个 C 侧 bug：
+                       - sw_find_data 缺 14 字节 cAlternateFileName，FindFirstFileA 写越界
+                         16 字节破坏调用方栈（list_dir 返回后 *slot 变垃圾值）；
+                       - sw_walk_impl 扩容后仅更新局部 array，上层仍指向旧数组；
+                         改为传 sw_array** 指针回写
+    2026-08-14 09:16  u8[] 紧凑布局 + 二进制 IO：sw_array_new 真正使用 elem_size（u8 步长 1、
+                       其余 8）；后端数组读写按元素类型选择 1/8 字节步长；
+                       std/fs 新增 read_file_bytes/write_file_bytes；
+                       修模板插值 bug：整数类型误走 float_to_string，改用 int_to_string
+    2026-08-14 09:16  printf 风格 format（varargs，语言特性级）：
+                       - 新增 `...args: any` 可变参数语法（parser 已解析 rest，语义层补齐
+                         ParamSig.rest 标记 + Type::Any + is_assignable 万能匹配）；
+                       - 调用点把可变实参打包成「类型标签 + 值」数组（MirExpr::VarArgs），
+                         标签：0=int / 1=float / 2=string / 3=bool / 4=char；
+                       - std/string 新增 format(fmt, ...args)，支持 %d/%i/%u/%x/%X/%o/
+                         %f/%e/%g/%s/%c/%% 与宽度精度（%5d、%.2f、%-10s、%08x）；
+                       - 少传参数用 0/空串补齐，多传忽略；缓冲区按需扩容（GC 安全）
+    2026-08-14 09:16  测试：48 项全过（词法 10 / 语法 12 / 语义 17 / 代码生成 9），
+                       新增 checks_varargs_format_and_new_import_forms（校验 VarArgs MIR 节点）；
+                       examples 全部回归通过（fib=0、probe-exc=42 等退出码不变）
+    2026-08-14 09:16  跨平台验证：runtime.c 交叉编译 Linux x86_64/aarch64、macOS aarch64 通过；
+                       aarch64-unknown-linux-musl 端到端链接（含 format 代码）成功
+
+    待办（下一批）：网络/进程交互等进阶标准库、泛型 struct/class、JSON/Unicode 字符串深化
 
 二、已知限制
 

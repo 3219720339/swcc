@@ -217,6 +217,118 @@ fn checks_format_and_math_extras() {
     );
 }
 
+#[test]
+fn checks_varargs_format_and_new_import_forms() {
+    let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crate 目录")
+        .parent()
+        .expect("工作区根")
+        .join("stdlib");
+    let result = analyze(&fixture("varargs-import.sw"), Some(&stdlib));
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let mut found_varargs = false;
+    for module in &result.modules {
+        for function in &module.functions {
+            use sw_semantic::mir::{MirExpr, MirStmtKind};
+            fn visit_expr(expr: &MirExpr, found: &mut bool) {
+                if matches!(expr, MirExpr::VarArgs(_)) {
+                    *found = true;
+                }
+                match expr {
+                    MirExpr::VarArgs(items) => {
+                        for (_, item) in items {
+                            visit_expr(item, found);
+                        }
+                    }
+                    MirExpr::Call { args, .. } => {
+                        for arg in args {
+                            visit_expr(arg, found);
+                        }
+                    }
+                    MirExpr::Array { items, .. } => {
+                        for item in items {
+                            visit_expr(item, found);
+                        }
+                    }
+                    MirExpr::Binary { left, right, .. } => {
+                        visit_expr(left, found);
+                        visit_expr(right, found);
+                    }
+                    MirExpr::Unary { expr: inner, .. } | MirExpr::Cast { expr: inner, .. } => {
+                        visit_expr(inner, found);
+                    }
+                    MirExpr::Assign { value, .. } => visit_expr(value, found),
+                    MirExpr::Select {
+                        cond, then, else_, ..
+                    } => {
+                        visit_expr(cond, found);
+                        visit_expr(then, found);
+                        visit_expr(else_, found);
+                    }
+                    MirExpr::Field { object, .. } => visit_expr(object, found),
+                    MirExpr::Index { object, index, .. } => {
+                        visit_expr(object, found);
+                        visit_expr(index, found);
+                    }
+                    MirExpr::Len { object, .. } => visit_expr(object, found),
+                    MirExpr::Struct { fields, .. } => {
+                        for (_, field) in fields {
+                            visit_expr(field, found);
+                        }
+                    }
+                    MirExpr::ClosureNew { captures, .. } => {
+                        for capture in captures {
+                            visit_expr(capture, found);
+                        }
+                    }
+                    MirExpr::New { args, .. } => {
+                        for arg in args {
+                            visit_expr(arg, found);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            fn visit_stmt(stmt: &sw_semantic::MirStmt, found: &mut bool) {
+                match &stmt.kind {
+                    MirStmtKind::VarDecl {
+                        init: Some(expr), ..
+                    }
+                    | MirStmtKind::Return(Some(expr))
+                    | MirStmtKind::Expr(expr) => visit_expr(expr, found),
+                    MirStmtKind::VarDecl { .. } | MirStmtKind::Return(None) => {}
+                    MirStmtKind::Assign { value, .. } => visit_expr(value, found),
+                    MirStmtKind::If { cond, then, else_ } => {
+                        visit_expr(cond, found);
+                        for stmt in then {
+                            visit_stmt(stmt, found);
+                        }
+                        for stmt in else_ {
+                            visit_stmt(stmt, found);
+                        }
+                    }
+                    MirStmtKind::While { cond, body } => {
+                        visit_expr(cond, found);
+                        for stmt in body {
+                            visit_stmt(stmt, found);
+                        }
+                    }
+                    MirStmtKind::Break | MirStmtKind::Continue => {}
+                }
+            }
+            for statement in &function.body {
+                visit_stmt(statement, &mut found_varargs);
+            }
+        }
+    }
+    assert!(found_varargs, "期望生成 VarArgs MIR 节点");
+}
+
 fn collect_expr_kinds(
     statement: &sw_semantic::MirStmt,
     found_assign: &mut bool,

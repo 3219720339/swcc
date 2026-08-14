@@ -25,6 +25,8 @@ pub struct ParamSig {
     pub name: String,
     pub ty: Type,
     pub has_default: bool,
+    /// `...rest` 可变参数标记（只允许出现在最后一个参数）。
+    pub rest: bool,
 }
 
 #[derive(Clone, Debug)]

@@ -78,3 +78,15 @@ export extern c function rename(old_path: string, new_path: string): int;
 
 /// 复制文件；返回复制的字节数，失败返回 -1。
 export extern c function copy_file(src: string, dst: string): int;
+
+/// 递归收集 path 下所有文件（完整路径，含子目录）。
+export extern c function walk_files(path: string): string[];
+
+/// 递归收集 path 下所有目录（完整路径，含子目录）。
+export extern c function walk_dirs(path: string): string[];
+
+/// 读取整个文件为 u8[]（紧凑字节布局）；文件不存在返回空数组。
+export extern c function read_file_bytes(path: string): u8[];
+
+/// 把 u8[] 原样写入文件（不存在则创建）；返回写入字节数，失败返回 -1。
+export extern c function write_file_bytes(path: string, bytes: u8[]): int;

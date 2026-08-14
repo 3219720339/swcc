@@ -132,6 +132,8 @@ pub enum MirExpr {
         elem: Box<Type>,
         items: Vec<MirExpr>,
     },
+    /// 可变参数打包：每个元素为 (类型标签, 元素)，用作可变参数函数的最后一个参数。
+    VarArgs(Vec<(i64, MirExpr)>),
     /// 数组/字符串长度。
     Len {
         object: Box<MirExpr>,

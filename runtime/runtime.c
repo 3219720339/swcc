@@ -728,6 +728,7 @@ sw_array* list_dir(sw_string* path) {
         unsigned int reserved0;
         unsigned int reserved1;
         char name[260];
+        char alt_name[14];
     } sw_find_data;
     extern void* FindFirstFileA(const char* pattern, sw_find_data* data);
     extern int FindNextFileA(void* handle, sw_find_data* data);
@@ -814,6 +815,62 @@ sw_array* list_dir(sw_string* path) {
     return array;
 }
 #endif
+
+static void sw_walk_impl(
+    sw_string* base,
+    int64_t want_dirs,
+    sw_array** array,
+    int64_t* slot,
+    int64_t* capacity
+) {
+    sw_array* entries = list_dir(base);
+    for (int64_t i = 0; i < entries->len; i++) {
+        sw_string* name = (sw_string*)((int64_t*)entries->data)[i];
+        sw_string* full = path_join(base, name);
+        if (is_dir(full)) {
+            if (want_dirs) {
+                if (*slot >= *capacity) {
+                    *capacity = *capacity * 2 + 1;
+                    sw_array* bigger = sw_array_new(8, *capacity);
+                    for (int64_t j = 0; j < *slot; j++) {
+                        ((int64_t*)bigger->data)[j] = ((int64_t*)(*array)->data)[j];
+                    }
+                    *array = bigger;
+                }
+                ((int64_t*)(*array)->data)[(*slot)++] = (int64_t)full;
+            }
+            sw_walk_impl(full, want_dirs, array, slot, capacity);
+        } else if (!want_dirs) {
+            if (*slot >= *capacity) {
+                *capacity = *capacity * 2 + 1;
+                sw_array* bigger = sw_array_new(8, *capacity);
+                for (int64_t j = 0; j < *slot; j++) {
+                    ((int64_t*)bigger->data)[j] = ((int64_t*)(*array)->data)[j];
+                }
+                *array = bigger;
+            }
+            ((int64_t*)(*array)->data)[(*slot)++] = (int64_t)full;
+        }
+    }
+}
+
+static sw_array* sw_walk(sw_string* path, int64_t want_dirs) {
+    sw_array* array = sw_array_new(8, 16);
+    int64_t slot = 0;
+    int64_t capacity = 16;
+    sw_walk_impl(path, want_dirs, &array, &slot, &capacity);
+    array->len = slot;
+    array->cap = slot;
+    return array;
+}
+
+sw_array* walk_files(sw_string* path) {
+    return sw_walk(path, 0);
+}
+
+sw_array* walk_dirs(sw_string* path) {
+    return sw_walk(path, 1);
+}
 
 sw_string* read_all(sw_string* path) {
     sw_file_handle* file = fopen(path->data, "rb");
@@ -1602,6 +1659,133 @@ sw_string* datetime_string(int64_t seconds) {
     return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
 }
 
+// 可变参数运行时类型标签（与编译器 SW_TAG_* 保持一致）。
+#define SW_TAG_INT 0
+#define SW_TAG_FLOAT 1
+#define SW_TAG_STR 2
+#define SW_TAG_BOOL 3
+#define SW_TAG_CHAR 4
+
+static int sw_format_conv(char c) {
+    return c == 'd' || c == 'i' || c == 'u' || c == 'x' || c == 'X' ||
+           c == 'o' || c == 'f' || c == 'e' || c == 'g' || c == 's' ||
+           c == 'c';
+}
+
+static char* sw_format_grow(char* buffer, int64_t* cap, int64_t used, int64_t needed) {
+    if (used + needed + 1 <= *cap) {
+        return buffer;
+    }
+    int64_t new_cap = *cap * 2 + needed + 64;
+    char* bigger = (char*)sw_gc_alloc((uint64_t)new_cap);
+    if (used > 0) {
+        memcpy(bigger, buffer, (uint64_t)used);
+    }
+    *cap = new_cap;
+    return bigger;
+}
+
+sw_string* format(sw_string* fmt, sw_array* args) {
+    if (fmt == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t arg_count = args != NULL ? args->len : 0;
+    int64_t next_arg = 0;
+    int64_t cap = fmt->len * 2 + 64;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    int64_t i = 0;
+    while (i < fmt->len) {
+        if (fmt->data[i] != '%') {
+            buffer = sw_format_grow(buffer, &cap, used, 1);
+            buffer[used++] = fmt->data[i++];
+            continue;
+        }
+        int64_t spec_start = i;
+        i++;
+        if (i < fmt->len && fmt->data[i] == '%') {
+            buffer = sw_format_grow(buffer, &cap, used, 1);
+            buffer[used++] = '%';
+            i++;
+            continue;
+        }
+        while (i < fmt->len && !sw_format_conv(fmt->data[i])) {
+            i++;
+        }
+        if (i >= fmt->len) {
+            buffer = sw_format_grow(buffer, &cap, used, 1);
+            buffer[used++] = '%';
+            break;
+        }
+        char conv = fmt->data[i];
+        int is_int = conv == 'd' || conv == 'i' || conv == 'u' ||
+                     conv == 'x' || conv == 'X' || conv == 'o' || conv == 'c';
+        char spec[64];
+        int64_t spec_len = 0;
+        spec[spec_len++] = '%';
+        for (int64_t k = spec_start + 1; k < i; k++) {
+            if (spec_len < (int64_t)sizeof(spec) - 4) {
+                spec[spec_len++] = fmt->data[k];
+            }
+        }
+        if (is_int && conv != 'c') {
+            spec[spec_len++] = 'l';
+            spec[spec_len++] = 'l';
+        }
+        spec[spec_len++] = conv;
+        spec[spec_len] = 0;
+
+        int64_t tag = SW_TAG_INT;
+        int64_t value = 0;
+        if (next_arg * 2 + 1 < arg_count * 2) {
+            tag = ((int64_t*)args->data)[next_arg * 2];
+            value = ((int64_t*)args->data)[next_arg * 2 + 1];
+        }
+        next_arg++;
+
+        int64_t needed = 0;
+        if (conv == 's') {
+            sw_string* text = (sw_string*)value;
+            const char* data = text != NULL ? text->data : "(null)";
+            (void)tag;
+            needed = snprintf(NULL, 0, spec, data);
+        } else if (conv == 'c') {
+            needed = snprintf(NULL, 0, spec, (int)(value & 0xFF));
+        } else if (is_int) {
+            needed = snprintf(NULL, 0, spec, (long long)value);
+        } else {
+            double d;
+            memcpy(&d, &value, 8);
+            needed = snprintf(NULL, 0, spec, d);
+        }
+        if (needed < 0) {
+            needed = 0;
+        }
+        buffer = sw_format_grow(buffer, &cap, used, needed);
+        if (conv == 's') {
+            sw_string* text = (sw_string*)value;
+            const char* data = text != NULL ? text->data : "(null)";
+            int64_t written = snprintf(buffer + used, (sw_size)(cap - used), spec, data);
+            used += written > 0 ? written : 0;
+        } else if (conv == 'c') {
+            int64_t written =
+                snprintf(buffer + used, (sw_size)(cap - used), spec, (int)(value & 0xFF));
+            used += written > 0 ? written : 0;
+        } else if (is_int) {
+            int64_t written =
+                snprintf(buffer + used, (sw_size)(cap - used), spec, (long long)value);
+            used += written > 0 ? written : 0;
+        } else {
+            double d;
+            memcpy(&d, &value, 8);
+            int64_t written = snprintf(buffer + used, (sw_size)(cap - used), spec, d);
+            used += written > 0 ? written : 0;
+        }
+        i++;
+    }
+    return sw_string_from_literal(buffer, used);
+}
+
 int64_t parse_date(sw_string* text) {
     int64_t index = 0;
     while (index < text->len &&
@@ -1993,21 +2177,56 @@ void* json_object_get(void* value, sw_string* key) {
 }
 
 sw_array* sw_array_new(int64_t elem_size, int64_t count) {
-    (void)elem_size;
     if (count < 0) {
         count = 0;
     }
+    if (elem_size < 1) {
+        elem_size = 1;
+    }
     sw_array* array =
-        (sw_array*)sw_gc_alloc(sizeof(sw_array) + (uint64_t)count * 8);
+        (sw_array*)sw_gc_alloc(sizeof(sw_array) + (uint64_t)count * (uint64_t)elem_size);
     array->len = count;
     array->cap = count;
     array->data = (void*)(array + 1);
-    memset(array->data, 0, (sw_size)((uint64_t)count * 8));
+    memset(array->data, 0, (sw_size)((uint64_t)count * (uint64_t)elem_size));
     return array;
 }
 
 void sw_array_set(sw_array* array, int64_t index, int64_t value) {
     ((int64_t*)array->data)[index] = value;
+}
+
+void sw_array_set_u8(sw_array* array, int64_t index, int64_t value) {
+    ((unsigned char*)array->data)[index] = (unsigned char)value;
+}
+
+sw_array* read_file_bytes(sw_string* path) {
+    sw_file_handle* file = fopen(path->data, "rb");
+    if (file == NULL) {
+        return sw_array_new(1, 0);
+    }
+    fseek(file, 0, 2);
+    long size = ftell(file);
+    rewind(file);
+    if (size < 0) {
+        size = 0;
+    }
+    sw_array* array = sw_array_new(1, size);
+    if (size > 0) {
+        fread(array->data, 1, (uint64_t)size, file);
+    }
+    fclose(file);
+    return array;
+}
+
+int64_t write_file_bytes(sw_string* path, sw_array* bytes) {
+    sw_file_handle* file = fopen(path->data, "wb");
+    if (file == NULL) {
+        return -1;
+    }
+    int64_t written = (int64_t)fwrite(bytes->data, 1, (uint64_t)bytes->len, file);
+    fclose(file);
+    return written;
 }
 
 void* sw_object_new(int64_t size) {

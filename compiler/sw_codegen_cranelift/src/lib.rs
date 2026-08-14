@@ -24,6 +24,9 @@ use sw_semantic::{
 };
 use target_lexicon::Triple;
 
+/// 可变参数运行时类型标签（与 runtime.c 中 SW_TAG_* 保持一致）。
+const SW_TAG_FLOAT: i64 = 1;
+
 #[derive(Debug)]
 pub struct CodegenError {
     pub message: String,
@@ -551,6 +554,37 @@ fn visit_expr(
                 .declare_import("sw_array_new", &array_new_signature(generator.module.isa()))?;
             let array_set = generator
                 .declare_import("sw_array_set", &array_set_signature(generator.module.isa()))?;
+            let array_set_u8 = generator.declare_import(
+                "sw_array_set_u8",
+                &array_set_signature(generator.module.isa()),
+            )?;
+            refs.func_refs.insert(
+                "sw_array_new".to_owned(),
+                generator
+                    .module
+                    .declare_func_in_func(array_new, &mut ctx.func),
+            );
+            refs.func_refs.insert(
+                "sw_array_set_u8".to_owned(),
+                generator
+                    .module
+                    .declare_func_in_func(array_set_u8, &mut ctx.func),
+            );
+            refs.func_refs.insert(
+                "sw_array_set".to_owned(),
+                generator
+                    .module
+                    .declare_func_in_func(array_set, &mut ctx.func),
+            );
+            for item in items {
+                visit_expr(item, generator, mir, exports, ctx, refs)?;
+            }
+        }
+        MirExpr::VarArgs(items) => {
+            let array_new = generator
+                .declare_import("sw_array_new", &array_new_signature(generator.module.isa()))?;
+            let array_set = generator
+                .declare_import("sw_array_set", &array_set_signature(generator.module.isa()))?;
             refs.func_refs.insert(
                 "sw_array_new".to_owned(),
                 generator
@@ -563,7 +597,7 @@ fn visit_expr(
                     .module
                     .declare_func_in_func(array_set, &mut ctx.func),
             );
-            for item in items {
+            for (_, item) in items {
                 visit_expr(item, generator, mir, exports, ctx, refs)?;
             }
         }
@@ -789,6 +823,7 @@ fn signature_of_sig(
 fn abi_type(ty: &Type) -> Result<cranelift_codegen::ir::Type, CodegenError> {
     Ok(match ty {
         Type::F32 | Type::F64 => types::F64,
+        Type::Any => types::I64,
         Type::Void => return Err("void 不能作为参数或返回值类型".into()),
         Type::Struct(_) | Type::Interface(_) => types::I64,
         Type::TypeParam(_) | Type::Unknown | Type::Error => {
@@ -1187,6 +1222,31 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
             .unwrap_or(false)
     }
 
+    /// 从数组表达式推断元素类型（u8 紧凑布局 1 字节，其余 8 字节）。
+    fn expr_array_elem(&self, expr: &MirExpr) -> Option<Type> {
+        match expr {
+            MirExpr::Local(local) => match self.local_types.get(*local) {
+                Some(Type::Array(inner)) => Some((**inner).clone()),
+                _ => None,
+            },
+            MirExpr::Field { object, index } => {
+                let owner = self.expr_owner_type(object)?;
+                match self.field_type(&owner, *index)? {
+                    Type::Array(inner) => Some(*inner),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn array_elem_size(&self, expr: &MirExpr) -> usize {
+        match self.expr_array_elem(expr) {
+            Some(Type::U8) => 1,
+            _ => 8,
+        }
+    }
+
     fn struct_size(&self, ty: &Type) -> usize {
         match ty {
             Type::Struct(id) => self.struct_sizes.get(id).copied().unwrap_or(8),
@@ -1222,6 +1282,20 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 .store(MemFlagsData::new(), word, dst, offset);
         }
         Ok(())
+    }
+
+    /// 数组元素地址 = data 指针 + index * 步长（u8 为 1，其余 8）。
+    fn index_address(&mut self, object: Value, index: Value, compact: bool) -> Value {
+        let data = self
+            .builder
+            .ins()
+            .load(types::I64, MemFlagsData::new(), object, 16);
+        let stride = self
+            .builder
+            .ins()
+            .iconst(types::I64, if compact { 1 } else { 8 });
+        let scaled = self.builder.ins().imul(index, stride);
+        self.builder.ins().iadd(data, scaled)
     }
 
     fn zero_struct(&mut self, ty: &Type, dst: Value) -> Result<(), CodegenError> {
@@ -1277,19 +1351,22 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .load(ty, MemFlagsData::new(), object, offset))
             }
             MirTarget::Index { object, index } => {
+                let compact = self.array_elem_size(object) == 1;
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
-                let data = self
-                    .builder
-                    .ins()
-                    .load(types::I64, MemFlagsData::new(), object, 16);
-                let eight = self.builder.ins().iconst(types::I64, 8);
-                let scaled = self.builder.ins().imul(index, eight);
-                let address = self.builder.ins().iadd(data, scaled);
-                Ok(self
-                    .builder
-                    .ins()
-                    .load(types::I64, MemFlagsData::new(), address, 0))
+                let address = self.index_address(object, index, compact);
+                if compact {
+                    let byte = self
+                        .builder
+                        .ins()
+                        .load(types::I8, MemFlagsData::new(), address, 0);
+                    Ok(self.builder.ins().uextend(types::I64, byte))
+                } else {
+                    Ok(self
+                        .builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), address, 0))
+                }
             }
         }
     }
@@ -1338,18 +1415,20 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 }
             }
             MirTarget::Index { object, index } => {
+                let compact = self.array_elem_size(object) == 1;
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
-                let data = self
-                    .builder
-                    .ins()
-                    .load(types::I64, MemFlagsData::new(), object, 16);
-                let eight = self.builder.ins().iconst(types::I64, 8);
-                let scaled = self.builder.ins().imul(index, eight);
-                let address = self.builder.ins().iadd(data, scaled);
-                self.builder
-                    .ins()
-                    .store(MemFlagsData::new(), value, address, 0);
+                let address = self.index_address(object, index, compact);
+                if compact {
+                    let byte = self.builder.ins().ireduce(types::I8, value);
+                    self.builder
+                        .ins()
+                        .store(MemFlagsData::new(), byte, address, 0);
+                } else {
+                    self.builder
+                        .ins()
+                        .store(MemFlagsData::new(), value, address, 0);
+                }
                 Ok(())
             }
         }
@@ -1637,18 +1716,21 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .load(ty, MemFlagsData::new(), object, offset)
             }
             MirExpr::Index { object, index } => {
+                let compact = self.array_elem_size(object) == 1;
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
-                let data = self
-                    .builder
-                    .ins()
-                    .load(types::I64, MemFlagsData::new(), object, 16);
-                let eight = self.builder.ins().iconst(types::I64, 8);
-                let scaled = self.builder.ins().imul(index, eight);
-                let address = self.builder.ins().iadd(data, scaled);
-                self.builder
-                    .ins()
-                    .load(types::I64, MemFlagsData::new(), address, 0)
+                let address = self.index_address(object, index, compact);
+                if compact {
+                    let byte = self
+                        .builder
+                        .ins()
+                        .load(types::I8, MemFlagsData::new(), address, 0);
+                    self.builder.ins().uextend(types::I64, byte)
+                } else {
+                    self.builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), address, 0)
+                }
             }
             MirExpr::Len { object, string } => {
                 let object = self.expr(object)?;
@@ -1658,11 +1740,8 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .load(types::I64, MemFlagsData::new(), object, offset)
             }
             MirExpr::Array { elem, items } => {
-                let elem_size = if matches!(**elem, Type::F32 | Type::F64) {
-                    8
-                } else {
-                    8
-                };
+                let compact = matches!(**elem, Type::U8);
+                let elem_size = if compact { 1 } else { 8 };
                 let count = self.builder.ins().iconst(types::I64, items.len() as i64);
                 let elem_size_value = self.builder.ins().iconst(types::I64, elem_size);
                 let array = self.call_import(
@@ -1679,10 +1758,66 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                         .builder
                         .ins()
                         .stack_load(types::I64, types::I64, slot, 0);
+                    if compact {
+                        self.call_import(
+                            "sw_array_set_u8",
+                            array_set_signature(self.module.isa()),
+                            &[array, index_value, item],
+                        )?;
+                    } else {
+                        self.call_import(
+                            "sw_array_set",
+                            array_set_signature(self.module.isa()),
+                            &[array, index_value, item],
+                        )?;
+                    }
+                }
+                self.builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, slot, 0)
+            }
+            MirExpr::VarArgs(items) => {
+                let count = self.builder.ins().iconst(types::I64, items.len() as i64);
+                let elem_size = self.builder.ins().iconst(types::I64, 16);
+                let array = self.call_import(
+                    "sw_array_new",
+                    array_new_signature(self.module.isa()),
+                    &[elem_size, count],
+                )?;
+                let slot = self.new_slot();
+                self.builder.ins().stack_store(types::I64, array, slot, 0);
+                for (index, (tag, item)) in items.iter().enumerate() {
+                    let value = self.expr(item)?;
+                    let value = if *tag == SW_TAG_FLOAT {
+                        self.builder
+                            .ins()
+                            .bitcast(types::I64, MemFlagsData::new(), value)
+                    } else {
+                        value
+                    };
+                    let array = self
+                        .builder
+                        .ins()
+                        .stack_load(types::I64, types::I64, slot, 0);
+                    let tag_index = self.builder.ins().iconst(types::I64, (index * 2) as i64);
+                    let tag_value = self.builder.ins().iconst(types::I64, *tag);
                     self.call_import(
                         "sw_array_set",
                         array_set_signature(self.module.isa()),
-                        &[array, index_value, item],
+                        &[array, tag_index, tag_value],
+                    )?;
+                    let array = self
+                        .builder
+                        .ins()
+                        .stack_load(types::I64, types::I64, slot, 0);
+                    let value_index = self
+                        .builder
+                        .ins()
+                        .iconst(types::I64, (index * 2 + 1) as i64);
+                    self.call_import(
+                        "sw_array_set",
+                        array_set_signature(self.module.isa()),
+                        &[array, value_index, value],
                     )?;
                 }
                 self.builder

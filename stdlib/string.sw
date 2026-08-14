@@ -17,6 +17,12 @@
 /// 返回 needle 在 text 中首次出现的字节偏移；未找到返回 -1。
 export extern c function index_of(text: string, needle: string): int;
 
+/// printf 风格格式化：%d/%i/%u/%x/%X/%o/%f/%e/%g/%s/%c/%%。
+/// 支持宽度与精度（如 %5d、%.2f、%-10s、%08x）；参数按顺序消费，
+/// 少传用 0/空字符串补齐，多传忽略。示例：
+///   format("%s: %d (%.2f)", "score", 42, 3.14159)  // "score: 42 (3.14)"
+export extern c function format(fmt: string, ...args: any): string;
+
 /// text 是否包含 needle（true/false）。
 export extern c function contains(text: string, needle: string): bool;
 

@@ -62,6 +62,8 @@ pub enum ImportKind {
     SideEffect,
     Named(Vec<ImportSpecifier>),
     Namespace(Ident),
+    /// `import * from "path"`：把模块全部导出展开进当前作用域。
+    Wildcard,
 }
 
 #[derive(Clone, Debug)]

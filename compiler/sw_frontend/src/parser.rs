@@ -317,20 +317,25 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Star => {
                 self.advance();
-                if !self.at_ident("as") {
-                    let span = self.peek().span;
-                    self.error("命名空间导入缺少 `as`", span);
-                    return None;
+                if self.at_ident("from") {
+                    self.advance();
+                    ImportKind::Wildcard
+                } else {
+                    if !self.at_ident("as") {
+                        let span = self.peek().span;
+                        self.error("命名空间导入缺少 `as` 或 `from`", span);
+                        return None;
+                    }
+                    self.advance();
+                    let alias = self.expect_ident("命名空间别名").ok()?;
+                    if !self.at_ident("from") {
+                        let span = self.peek().span;
+                        self.error("命名空间导入缺少 `from`", span);
+                        return None;
+                    }
+                    self.advance();
+                    ImportKind::Namespace(alias)
                 }
-                self.advance();
-                let alias = self.expect_ident("命名空间别名").ok()?;
-                if !self.at_ident("from") {
-                    let span = self.peek().span;
-                    self.error("命名空间导入缺少 `from`", span);
-                    return None;
-                }
-                self.advance();
-                ImportKind::Namespace(alias)
             }
             _ => {
                 let token = self.peek();

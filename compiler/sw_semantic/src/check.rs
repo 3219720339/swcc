@@ -406,7 +406,22 @@ impl Analyzer {
                 Err(()) => continue,
             };
             match &import.kind {
-                ImportKind::SideEffect => {}
+                ImportKind::SideEffect => {
+                    // 升级语义：`import "path"` 以文件名作为命名空间导入。
+                    let stem = import
+                        .path
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or(&import.path);
+                    let stem = stem.strip_suffix(".sw").unwrap_or(stem).to_string();
+                    let id = SymbolId(self.symbols.len() as u32);
+                    self.symbols.push(Symbol {
+                        kind: SymbolKind::Namespace(target_id),
+                        exported: false,
+                        span: import.span,
+                    });
+                    self.bind_import(module_id, stem, vec![id], import.span)?;
+                }
                 ImportKind::Named(specifiers) => {
                     for specifier in specifiers {
                         let target_names = self.state(target_id).names.clone();
@@ -436,13 +451,22 @@ impl Analyzer {
                     }
                 }
                 ImportKind::Namespace(alias) => {
-                    let id = self.alloc_symbol();
+                    let id = SymbolId(self.symbols.len() as u32);
                     self.symbols.push(Symbol {
                         kind: SymbolKind::Namespace(target_id),
                         exported: false,
                         span: alias.span,
                     });
                     self.bind_import(module_id, alias.name.clone(), vec![id], alias.span)?;
+                }
+                ImportKind::Wildcard => {
+                    let target_names = self.state(target_id).names.clone();
+                    for (name, symbol_ids) in target_names {
+                        let symbol_ids = symbol_ids.clone();
+                        if symbol_ids.iter().all(|id| self.symbol(*id).exported) {
+                            self.bind_import(module_id, name, symbol_ids, import.span)?;
+                        }
+                    }
                 }
             }
         }
@@ -865,6 +889,7 @@ impl Analyzer {
                 name: param.name.name.clone(),
                 ty: resolver.lower(&param.ty, generics),
                 has_default: param.default.is_some(),
+                rest: param.rest,
             })
             .collect();
         let ret = match &function.return_type {
@@ -903,6 +928,7 @@ impl Analyzer {
                 name: param.name.name.clone(),
                 ty: resolver.lower(&param.ty, generics),
                 has_default: param.default.is_some(),
+                rest: param.rest,
             })
             .collect();
         FunctionSig {
@@ -1294,6 +1320,7 @@ impl<'a> TypeResolver<'a> {
                 "float" => Type::F64,
                 "char" => Type::Char,
                 "string" => Type::Str,
+                "any" => Type::Any,
                 _ => return None,
             })
         };
@@ -1472,6 +1499,7 @@ impl<'a> TypeResolver<'a> {
                             name: param.name.clone(),
                             ty: substitute_type(&param.ty, &type_args),
                             has_default: param.has_default,
+                            rest: param.rest,
                         })
                         .collect(),
                     ret: substitute_type(&method.sig.ret, &type_args),
@@ -1582,6 +1610,9 @@ impl<'s> Checker<'s> {
             return true;
         }
         if from == to {
+            return true;
+        }
+        if matches!(to, Type::Any) {
             return true;
         }
         match (from, to) {
@@ -2828,12 +2859,14 @@ impl<'s> Checker<'s> {
                                 name: "self".to_owned(),
                                 ty: Type::Str,
                                 has_default: false,
+                                rest: false,
                             }];
                             for (index, ty) in param_tys.iter().enumerate() {
                                 params.push(ParamSig {
                                     name: format!("arg{index}"),
                                     ty: ty.clone(),
                                     has_default: false,
+                                    rest: false,
                                 });
                             }
                             let sig = FunctionSig {
@@ -2870,11 +2903,13 @@ impl<'s> Checker<'s> {
                                         name: "self".to_owned(),
                                         ty: Type::Array(Box::new(Type::Str)),
                                         has_default: false,
+                                        rest: false,
                                     },
                                     ParamSig {
                                         name: "sep".to_owned(),
                                         ty: Type::Str,
                                         has_default: false,
+                                        rest: false,
                                     },
                                 ],
                                 ret: Type::Str,
@@ -2933,14 +2968,24 @@ impl<'s> Checker<'s> {
     ) -> Option<(SymbolId, FunctionSig)> {
         let mut best: Option<(SymbolId, FunctionSig, usize, usize)> = None;
         for (id, sig) in candidates {
-            let required = sig.params.iter().filter(|param| !param.has_default).count();
+            let variadic = sig.params.last().map(|param| param.rest).unwrap_or(false);
+            let fixed_count = if variadic {
+                sig.params.len().saturating_sub(1)
+            } else {
+                sig.params.len()
+            };
+            let required = sig
+                .params
+                .iter()
+                .filter(|param| !param.has_default && !param.rest)
+                .count();
             if args.len() < required {
                 continue;
             }
-            if !allow_defaults && args.len() != sig.params.len() {
+            if !allow_defaults && !variadic && args.len() != fixed_count {
                 continue;
             }
-            if args.len() > sig.params.len() {
+            if !variadic && args.len() > fixed_count {
                 continue;
             }
             let mut mismatches = 0usize;
@@ -2948,12 +2993,15 @@ impl<'s> Checker<'s> {
             let mut ok = true;
             let mut type_args = HashMap::new();
             for (index, arg) in args.iter().enumerate() {
-                let param_ty = self.substitute(&sig.params[index].ty, &type_args);
+                let param = if variadic && index >= fixed_count {
+                    &sig.params[sig.params.len() - 1]
+                } else {
+                    &sig.params[index]
+                };
+                let param_ty = self.substitute(&param.ty, &type_args);
                 if self.is_assignable(arg, &param_ty) {
                     exact += usize::from(arg == &param_ty);
-                } else if let Some(inferred) =
-                    self.infer_type_arg(&sig.params[index].ty, arg, &type_args)
-                {
+                } else if let Some(inferred) = self.infer_type_arg(&param.ty, arg, &type_args) {
                     type_args.extend(inferred);
                 } else {
                     mismatches += 1;
@@ -3190,6 +3238,17 @@ fn string_method(method: &str) -> Option<(String, Vec<Type>, Type)> {
         ),
         _ => return None,
     })
+}
+
+/// 可变参数运行时类型标签（与 runtime.c 中 SW_TAG_* 保持一致）。
+fn vararg_tag(ty: &Type) -> i64 {
+    match ty.without_nullable() {
+        Type::F32 | Type::F64 => 1,
+        Type::Str => 2,
+        Type::Bool => 3,
+        Type::Char => 4,
+        _ => 0,
+    }
 }
 
 impl<'m, 's> MirLowerer<'m, 's> {
@@ -3908,6 +3967,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                         name: "buf".to_owned(),
                                         ty: Type::Ptr(Box::new(Type::I8)),
                                         has_default: false,
+                                        rest: false,
                                     }],
                                     ret: Type::Int,
                                     extern_c: true,
@@ -4126,6 +4186,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     name: param.name.clone(),
                     ty: substitute_type(&param.ty, &type_args),
                     has_default: param.has_default,
+                    rest: param.rest,
                 })
                 .collect(),
             ret: instance_ret.clone(),
@@ -4432,6 +4493,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             name: "$env".to_owned(),
                             ty: Type::Ptr(Box::new(Type::I8)),
                             has_default: false,
+                            rest: false,
                         }],
                         ret: (**fn_ret).clone(),
                         extern_c: false,
@@ -4442,6 +4504,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             name: format!("arg{index}"),
                             ty: param_ty.clone(),
                             has_default: false,
+                            rest: false,
                         });
                     }
                     return MirExpr::Call {
@@ -4457,8 +4520,40 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .get(&(expr.span.start, expr.span.end))
                     .cloned();
                 let ast_args = args;
-                let mut args: Vec<MirExpr> =
-                    ast_args.iter().map(|arg| self.lower_expr(arg)).collect();
+                let variadic_fixed = match &target {
+                    Some(CallTarget::Function(symbol)) => {
+                        let sig = match &self.lowerer.symbol(*symbol).kind {
+                            SymbolKind::Function(sig) => sig.clone(),
+                            _ => placeholder_sig(),
+                        };
+                        if sig.params.last().map(|param| param.rest).unwrap_or(false) {
+                            Some(sig.params.len().saturating_sub(1))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                let mut args: Vec<MirExpr> = Vec::new();
+                for (index, arg) in ast_args.iter().enumerate() {
+                    if let Some(fixed) = variadic_fixed {
+                        if index >= fixed {
+                            break;
+                        }
+                    }
+                    args.push(self.lower_expr(arg));
+                }
+                if let Some(fixed) = variadic_fixed {
+                    let packed: Vec<(i64, MirExpr)> = ast_args
+                        .iter()
+                        .skip(fixed)
+                        .map(|arg| {
+                            let ty = self.expr_type(arg);
+                            (vararg_tag(&ty), self.lower_expr(arg))
+                        })
+                        .collect();
+                    args.push(MirExpr::VarArgs(packed));
+                }
                 let callee = match target {
                     Some(CallTarget::Function(symbol)) => {
                         let sig = match &self.lowerer.symbol(symbol).kind {
@@ -4803,6 +4898,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                     Type::UInt | Type::Usize => "uint_to_string",
                                     Type::Char => "char_to_string",
                                     Type::Bool => "bool_to_string",
+                                    _ if ty.is_integer() => "int_to_string",
                                     _ => "float_to_string",
                                 };
                                 MirExpr::Call {
@@ -4887,12 +4983,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     name: "$env".to_owned(),
                     ty: env_ty,
                     has_default: false,
+                    rest: false,
                 });
                 for (index, param) in params.iter().enumerate() {
                     hidden_sig.params.push(ParamSig {
                         name: param.name.name.clone(),
                         ty: lambda_params[index].clone(),
                         has_default: false,
+                        rest: false,
                     });
                 }
 
@@ -5143,7 +5241,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         }
     }
 
-    fn expr_type(&self, expr: &Expr) -> Type {
+    fn expr_type(&mut self, expr: &Expr) -> Type {
         // 成员访问表达式与对象标识符共用起始偏移，expr_types 会被覆盖；
         // Ident 直接从符号表取类型，避免碰撞。
         match &expr.kind {
@@ -5228,6 +5326,60 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     _ => {}
                 }
             }
+            ExprKind::Index { object, .. } => {
+                let object_ty = self.expr_type(object);
+                match object_ty.without_nullable() {
+                    Type::Array(inner) => return (**inner).clone(),
+                    Type::Str => return Type::Char,
+                    _ => {}
+                }
+            }
+            ExprKind::Call { .. } => {
+                if let Some(target) = self
+                    .lowerer
+                    .state
+                    .result
+                    .call_targets
+                    .get(&(expr.span.start, expr.span.end))
+                {
+                    let ret = match target {
+                        CallTarget::Function(symbol) => match &self.lowerer.symbol(*symbol).kind {
+                            SymbolKind::Function(sig) => Some(sig.ret.clone()),
+                            _ => None,
+                        },
+                        CallTarget::StrMethod { sig, .. } => Some(sig.ret.clone()),
+                        CallTarget::Method { class, index } => self
+                            .lowerer
+                            .types
+                            .classes
+                            .get(*class as usize)
+                            .and_then(|info| info.methods.get(*index))
+                            .map(|method| method.sig.ret.clone()),
+                        CallTarget::InterfaceMethod { interface, index } => self
+                            .lowerer
+                            .types
+                            .interfaces
+                            .get(*interface as usize)
+                            .and_then(|info| info.methods.get(*index))
+                            .map(|method| method.ret.clone()),
+                    };
+                    if let Some(ret) = ret {
+                        return substitute_type(&ret, &self.type_args);
+                    }
+                }
+            }
+            ExprKind::Cast { ty, .. } => {
+                let to = self.lowerer.lower_type_for_mir(ty);
+                return substitute_type(&to, &self.type_args);
+            }
+            ExprKind::Template(_) => return Type::Str,
+            ExprKind::Unary { expr: inner, .. } => return self.expr_type(inner),
+            ExprKind::Binary { left, .. } => return self.expr_type(left),
+            ExprKind::Array(items) => {
+                if let Some(first) = items.first() {
+                    return Type::Array(Box::new(self.expr_type(first)));
+                }
+            }
             _ => {}
         }
         self.lowerer
@@ -5240,7 +5392,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
     }
 
     /// 按对象类型 + 字段名解析字段目标（不依赖 span 表，避免嵌套成员链的起始偏移碰撞）。
-    fn resolve_field_target(&self, object: &Expr, name: &str) -> Option<FieldTarget> {
+    fn resolve_field_target(&mut self, object: &Expr, name: &str) -> Option<FieldTarget> {
         match self.expr_type(object).without_nullable() {
             Type::Struct(id) => self
                 .lowerer
