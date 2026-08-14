@@ -139,6 +139,15 @@ function main(): int {
     total += point_sum(point);
     passed = passed & check(total == 12 && index == 3 && pair.first + pair.second == 9, "struct, array and control flow");
     passed = passed & check(sum_int(numbers) == 6 && numbers[1] == 2, "typed array standard library");
+    let selected = 0;
+    switch (pair.first) {
+        case 4:
+            selected = add(4);
+            break;
+        default:
+            selected = -1;
+    }
+    passed = passed & check(selected == 5, "switch, break and default argument");
 
     // Classes, inheritance, interface dispatch and nullable chaining.
     const shape: Shape = new Circle(2.0);

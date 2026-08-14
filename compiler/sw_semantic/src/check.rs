@@ -1190,6 +1190,7 @@ impl Analyzer {
             ret: sig.ret.clone(),
             this_class,
             loop_depth: 0,
+            switch_depth: 0,
             generics: generics.to_vec(),
             saw_return_value: false,
         };
@@ -1555,6 +1556,7 @@ struct Checker<'s> {
     ret: Type,
     this_class: Option<u32>,
     loop_depth: usize,
+    switch_depth: usize,
     generics: Vec<String>,
     saw_return_value: bool,
 }
@@ -1773,6 +1775,7 @@ impl<'s> Checker<'s> {
                 default,
             } => {
                 let value_ty = self.check_expr(value);
+                self.switch_depth += 1;
                 for case in cases {
                     let case_ty = self.check_expr(&case.value);
                     if !self.is_assignable(&case_ty, &value_ty)
@@ -1796,6 +1799,7 @@ impl<'s> Checker<'s> {
                         self.check_stmt(statement);
                     }
                 }
+                self.switch_depth -= 1;
             }
             StmtKind::Try {
                 body,
@@ -1841,9 +1845,14 @@ impl<'s> Checker<'s> {
             StmtKind::Defer(expr) => {
                 self.check_expr(expr);
             }
-            StmtKind::Break | StmtKind::Continue => {
+            StmtKind::Break => {
+                if self.loop_depth == 0 && self.switch_depth == 0 {
+                    self.error("break 只能在循环或 switch 内使用", statement.span);
+                }
+            }
+            StmtKind::Continue => {
                 if self.loop_depth == 0 {
-                    self.error("break/continue 只能在循环内使用", statement.span);
+                    self.error("continue 只能在循环内使用", statement.span);
                 }
             }
             StmtKind::Return(expr) => match expr {
@@ -3855,30 +3864,23 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 default,
             } => {
                 let value = self.lower_expr(value);
-                let mut chain: Vec<MirStmt> = Vec::new();
-                for case in cases {
+                let mut chain = default
+                    .as_ref()
+                    .map(|body| self.lower_switch_case_body(body))
+                    .unwrap_or_default();
+                for case in cases.iter().rev() {
                     let case_value = self.lower_expr(&case.value);
-                    let body = self.lower_stmts(&case.body);
+                    let body = self.lower_switch_case_body(&case.body);
                     let cond = MirExpr::Binary {
                         op: MirBinary::Eq,
                         left: Box::new(value.clone()),
                         right: Box::new(case_value),
                     };
-                    chain.push(MirStmt::new(MirStmtKind::If {
+                    chain = vec![MirStmt::new(MirStmtKind::If {
                         cond,
                         then: body,
-                        else_: Vec::new(),
-                    }));
-                }
-                if let Some(default) = default {
-                    let body = self.lower_stmts(default);
-                    if let Some(last) = chain.last_mut() {
-                        if let MirStmtKind::If { else_, .. } = &mut last.kind {
-                            *else_ = body;
-                        }
-                    } else {
-                        chain.extend(body);
-                    }
+                        else_: chain,
+                    })];
                 }
                 output.extend(chain);
             }
@@ -4074,6 +4076,41 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             StmtKind::Expr(expr) => {
                 self.lower_expr_stmt(expr, output);
             }
+        }
+    }
+
+    fn lower_switch_case_body(&mut self, statements: &[Stmt]) -> Vec<MirStmt> {
+        let mut output = Vec::new();
+        for statement in statements {
+            if matches!(statement.kind, StmtKind::Break) {
+                break;
+            }
+            self.lower_stmt(statement, &mut output);
+        }
+        output
+    }
+
+    fn append_default_args(&mut self, symbol: SymbolId, args: &mut Vec<MirExpr>) {
+        let symbol_span = self.lowerer.symbols[symbol.0 as usize].span;
+        let defaults: Vec<Expr> = self
+            .lowerer
+            .module
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                ItemKind::Function(function) if item.span == symbol_span => Some(
+                    function
+                        .params
+                        .iter()
+                        .skip(args.len())
+                        .filter_map(|param| param.default.clone())
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default();
+        for default in defaults {
+            args.push(self.lower_expr(&default));
         }
     }
 
@@ -4708,6 +4745,11 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         })
                         .collect();
                     args.push(MirExpr::VarArgs(packed));
+                }
+                if variadic_fixed.is_none() {
+                    if let Some(CallTarget::Function(symbol)) = &target {
+                        self.append_default_args(*symbol, &mut args);
+                    }
                 }
                 let callee = match target {
                     Some(CallTarget::Function(symbol)) => {
