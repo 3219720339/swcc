@@ -30,9 +30,15 @@ enum BuildKind {
 struct SwConfig {
     kind: BuildKind,
     lib_name: String,
+    version: String,
+    description: String,
+    author: String,
+    copyright: String,
+    icon: String,
+    config_dir: Option<PathBuf>,
 }
 
-/// 极简 swcc.toml 解析：只读 [build] kind 与 [lib] name。
+/// 极简 swcc.toml 解析：[build] kind / [lib] name / [project] 元数据。
 fn load_config(entry: &Path) -> SwConfig {
     let mut config = SwConfig::default();
     let mut dir = entry.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -40,6 +46,7 @@ fn load_config(entry: &Path) -> SwConfig {
         let candidate = dir.join("swcc.toml");
         if candidate.is_file() {
             if let Ok(text) = fs::read_to_string(&candidate) {
+                config.config_dir = Some(dir.clone());
                 let mut section = String::new();
                 for line in text.lines() {
                     let line = line.trim();
@@ -60,6 +67,21 @@ fn load_config(entry: &Path) -> SwConfig {
                             }
                             ("lib", "name") | ("project", "name") if config.lib_name.is_empty() => {
                                 config.lib_name = value.to_string();
+                            }
+                            ("project", "version") => {
+                                config.version = value.to_string();
+                            }
+                            ("project", "description") => {
+                                config.description = value.to_string();
+                            }
+                            ("project", "author") => {
+                                config.author = value.to_string();
+                            }
+                            ("project", "copyright") => {
+                                config.copyright = value.to_string();
+                            }
+                            ("project", "icon") => {
+                                config.icon = value.to_string();
                             }
                             _ => {}
                         }
@@ -89,6 +111,10 @@ fn main() {
     let command = args.get(1).map(String::as_str).unwrap_or("check");
     if command == "help" || command == "--help" || command == "-h" {
         print_help();
+        return;
+    }
+    if command == "init" {
+        cmd_init(&args);
         return;
     }
     if !matches!(command, "check" | "build" | "run" | "test") {
@@ -291,9 +317,16 @@ fn main() {
         _ => {
             let dll = config.kind == BuildKind::Dll;
             match target_family(&options.target) {
-                "windows" => link_windows(&options.target, &objects, &output, dll, &result.modules),
+                "windows" => link_windows(
+                    &options.target,
+                    &objects,
+                    &output,
+                    dll,
+                    &result.modules,
+                    &config,
+                ),
                 "linux" => link_linux(&options.target, &objects, &output, dll),
-                "macos" => link_macos(&options.target, &objects, &output, dll),
+                "macos" => link_macos(&options.target, &objects, &output, dll, &config),
                 other => {
                     eprintln!("暂不支持链接目标 `{other}`；可用 --emit-object 生成对象文件");
                     std::process::exit(2);
@@ -337,6 +370,7 @@ fn print_help() {
     println!("  build              编译并链接生成可执行文件");
     println!("  run                编译、链接并运行");
     println!("  test               编译并运行 @test 测试（退出码=失败数）");
+    println!("  init [-y]          在当前目录生成默认 swcc.toml（-y 覆盖已存在文件）");
     println!("  help               显示本帮助");
     println!();
     println!("选项:");
@@ -345,9 +379,236 @@ fn print_help() {
     println!("                          x86_64-unknown-linux-musl、aarch64-unknown-linux-musl）");
     println!("  --emit-object <文件>    只生成目标文件，不链接");
     println!();
+    println!("swcc.toml 配置:");
+    println!("  [project] name/version/description/author/copyright/icon");
+    println!("    版本信息：Windows 嵌入资源（图标+属性），macOS 嵌入 Info.plist；");
+    println!("    icon 指向 .ico 文件（Windows，相对 swcc.toml 目录）");
+    println!();
     println!("环境变量:");
     println!("  SW_TOOLCHAIN  指向 llvm-mingw 工具链目录");
     println!("  SW_STDLIB     指向标准库目录（默认查找可执行文件旁或当前目录的 stdlib/）");
+}
+
+/// `swc init [-y]`：在当前目录生成默认 swcc.toml（已存在时不覆盖，除非 -y）。
+fn cmd_init(args: &[String]) {
+    let target = PathBuf::from("swcc.toml");
+    let force = args.iter().any(|a| a == "-y" || a == "--yes");
+    if target.exists() && !force {
+        eprintln!("swcc.toml 已存在（用 `swc init -y` 覆盖生成）");
+        std::process::exit(2);
+    }
+    let template = r#"[project]
+name = "myapp"
+version = "0.1.0"
+description = "Sw 语言应用程序"
+author = ""
+copyright = ""
+icon = ""
+
+[build]
+kind = "console"   # console | dll | lib
+
+[lib]
+# name = "mylib"    # dll/lib 产物名（默认取源文件主名）
+"#;
+    if let Err(error) = fs::write(&target, template) {
+        eprintln!("无法写出 swcc.toml：{error}");
+        std::process::exit(2);
+    }
+    println!("已生成 swcc.toml");
+}
+
+/// 把 "1.2.3" 拆成最多 4 个非负整数（不足补 0）。
+fn parse_version_parts(version: &str) -> (u16, u16, u16, u16) {
+    let mut parts = [0u16; 4];
+    for (index, part) in version.split('.').take(4).enumerate() {
+        parts[index] = part
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u16>()
+            .unwrap_or(0);
+    }
+    (parts[0], parts[1], parts[2], parts[3])
+}
+
+/// 生成 Windows 资源对象（.res）：版本信息 + 可选图标；无内容时返回 None。
+/// 通过 windres 编译，输出到 .swcache/obj/。
+fn windows_resource_object(target: &str, config: &SwConfig, output: &Path) -> Option<PathBuf> {
+    let sdk = locate_sdk(target)?;
+    let windres = sdk.windres.as_ref()?;
+    let has_meta = !config.version.is_empty()
+        || !config.description.is_empty()
+        || !config.author.is_empty()
+        || !config.copyright.is_empty();
+    let icon_path = if config.icon.is_empty() {
+        None
+    } else {
+        let icon = PathBuf::from(&config.icon);
+        let resolved = if icon.is_absolute() {
+            icon
+        } else if let Some(dir) = &config.config_dir {
+            dir.join(&icon)
+        } else {
+            icon
+        };
+        resolved.is_file().then_some(resolved)
+    };
+    if !has_meta && icon_path.is_none() {
+        return None;
+    }
+    let cache_dir = PathBuf::from(".swcache").join("obj");
+    let _ = fs::create_dir_all(&cache_dir);
+    let base = output
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "sw".to_owned());
+    let rc_path = cache_dir.join(format!("{base}.rc"));
+    let res_path = cache_dir.join(format!("{base}.res"));
+    let mut rc = String::new();
+    let (v1, v2, v3, v4) = parse_version_parts(&config.version);
+    let version_disp = if config.version.is_empty() {
+        "0.1.0"
+    } else {
+        &config.version
+    };
+    let name = if config.lib_name.is_empty() {
+        &base
+    } else {
+        &config.lib_name
+    };
+    let description = if config.description.is_empty() {
+        format!("{name} - Sw 语言应用程序")
+    } else {
+        config.description.clone()
+    };
+    rc.push_str("#pragma code_page(65001)\n");
+    rc.push_str("1 VERSIONINFO\n");
+    rc.push_str(&format!(" FILEVERSION {v1},{v2},{v3},{v4}\n"));
+    rc.push_str(&format!(" PRODUCTVERSION {v1},{v2},{v3},{v4}\n"));
+    rc.push_str(" FILEFLAGSMASK 0x3fL\n");
+    rc.push_str(" FILEFLAGS 0x0L\n");
+    rc.push_str(" FILEOS 0x40004L\n"); // VOS_NT_WINDOWS32
+    rc.push_str(" FILETYPE 0x1L\n"); // VFT_APP
+    rc.push_str(" FILESUBTYPE 0x0L\n");
+    rc.push_str("BEGIN\n");
+    rc.push_str(" BLOCK \"StringFileInfo\"\n");
+    rc.push_str(" BEGIN\n");
+    rc.push_str("  BLOCK \"040904b0\"\n");
+    rc.push_str("  BEGIN\n");
+    rc.push_str(&format!(
+        "   VALUE \"CompanyName\", \"{}\"\n",
+        escape_rc(&config.author)
+    ));
+    rc.push_str(&format!(
+        "   VALUE \"FileDescription\", \"{}\"\n",
+        escape_rc(&description)
+    ));
+    rc.push_str(&format!(
+        "   VALUE \"FileVersion\", \"{}\"\n",
+        escape_rc(version_disp)
+    ));
+    rc.push_str(&format!(
+        "   VALUE \"InternalName\", \"{}\"\n",
+        escape_rc(name)
+    ));
+    rc.push_str(&format!(
+        "   VALUE \"LegalCopyright\", \"{}\"\n",
+        escape_rc(&config.copyright)
+    ));
+    rc.push_str(&format!(
+        "   VALUE \"OriginalFilename\", \"{}\"\n",
+        escape_rc(
+            &output
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("{name}.exe"))
+        )
+    ));
+    rc.push_str(&format!(
+        "   VALUE \"ProductName\", \"{}\"\n",
+        escape_rc(name)
+    ));
+    rc.push_str(&format!(
+        "   VALUE \"ProductVersion\", \"{}\"\n",
+        escape_rc(version_disp)
+    ));
+    rc.push_str("  END\n");
+    rc.push_str(" END\n");
+    rc.push_str(" BLOCK \"VarFileInfo\"\n");
+    rc.push_str(" BEGIN\n");
+    rc.push_str("  VALUE \"Translation\", 0x0409, 1200\n");
+    rc.push_str(" END\n");
+    rc.push_str("END\n");
+    if let Some(icon) = &icon_path {
+        let icon_str = icon.to_string_lossy().replace('\\', "\\\\");
+        rc.push_str(&format!("1 ICON \"{icon_str}\"\n"));
+    }
+    if fs::write(&rc_path, rc).is_err() {
+        return None;
+    }
+    let status = Command::new(windres)
+        .args([
+            "-i".into(),
+            rc_path.as_os_str().to_os_string(),
+            "-o".into(),
+            res_path.as_os_str().to_os_string(),
+            "-O".into(),
+            "coff".into(),
+            "--codepage=65001".into(),
+        ])
+        .status()
+        .ok();
+    if !status.map(|s| s.success()).unwrap_or(false) {
+        return None;
+    }
+    Some(res_path)
+}
+
+/// 生成 macOS Info.plist（嵌入 __TEXT,__info_plist 段）；无元数据时返回 None。
+fn macos_info_plist(config: &SwConfig, output: &Path) -> Option<PathBuf> {
+    if config.version.is_empty() && config.description.is_empty() && config.author.is_empty() {
+        return None;
+    }
+    let cache_dir = PathBuf::from(".swcache").join("obj");
+    let _ = fs::create_dir_all(&cache_dir);
+    let base = output
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "sw".to_owned());
+    let plist_path = cache_dir.join(format!("{base}.plist"));
+    let name = if config.lib_name.is_empty() {
+        &base
+    } else {
+        &config.lib_name
+    };
+    let version_disp = if config.version.is_empty() {
+        "0.1.0"
+    } else {
+        &config.version
+    };
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n<dict>\n\
+         <key>CFBundleName</key><string>{name}</string>\n\
+         <key>CFBundleIdentifier</key><string>com.sw.{name}</string>\n\
+         <key>CFBundleVersion</key><string>{version_disp}</string>\n\
+         <key>CFBundleShortVersionString</key><string>{version_disp}</string>\n\
+         <key>CFBundleExecutable</key><string>{name}</string>\n\
+         <key>NSHumanReadableCopyright</key><string>{}</string>\n\
+         <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n\
+         </dict>\n</plist>\n",
+        config.copyright,
+    );
+    if fs::write(&plist_path, plist).is_err() {
+        return None;
+    }
+    Some(plist_path)
+}
+
+fn escape_rc(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn link_windows(
@@ -356,6 +617,7 @@ fn link_windows(
     output: &Path,
     dll: bool,
     modules: &[MirModule],
+    config: &SwConfig,
 ) {
     let sdk = locate_sdk(target).unwrap_or_else(|| {
         eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
@@ -417,6 +679,10 @@ fn link_windows(
         args.push(def_path.as_os_str().to_os_string());
     } else {
         args.push("--gc-sections".into());
+    }
+    // 版本信息/图标对 exe 与 dll 都生效（VERSIONINFO 资源）。
+    if let Some(resource) = windows_resource_object(target, config, output) {
+        args.push(resource.as_os_str().to_os_string());
     }
     for object in objects {
         args.push(object.as_os_str().to_os_string());
@@ -506,7 +772,7 @@ fn link_linux(target: &str, objects: &[PathBuf], output: &Path, dll: bool) {
 }
 
 /// macOS 原生链接：用系统 clang（cc）编译运行时并链接，目标机直接出可执行文件。
-fn link_macos(target: &str, objects: &[PathBuf], output: &Path, dll: bool) {
+fn link_macos(target: &str, objects: &[PathBuf], output: &Path, dll: bool, config: &SwConfig) {
     let cc = Path::new("cc");
     let runtime_objects = compile_runtime_objects(cc, target, "macos", dll);
     let mut args: Vec<std::ffi::OsString> = vec!["-target".into(), target.into()];
@@ -520,6 +786,12 @@ fn link_macos(target: &str, objects: &[PathBuf], output: &Path, dll: bool) {
     }
     for object in &runtime_objects {
         args.push(object.as_os_str().to_os_string());
+    }
+    if let Some(plist) = macos_info_plist(config, output) {
+        // ld 的 -sectcreate segname sectname file，经 clang 用 -Wl, 传参。
+        let path = plist.to_string_lossy().into_owned();
+        let flag = format!("-Wl,-sectcreate,__TEXT,__info_plist,{path}");
+        args.push(flag.into());
     }
     args.push("-o".into());
     args.push(output.as_os_str().to_os_string());
@@ -867,6 +1139,7 @@ struct Sdk {
     mingw_lib: PathBuf,
     builtins: Option<PathBuf>,
     mingw_clang: Option<PathBuf>,
+    windres: Option<PathBuf>,
     prebuilt_runtime: bool,
 }
 
@@ -905,11 +1178,13 @@ fn sdk_candidate_for_layout(root: PathBuf, target: &str) -> Option<Sdk> {
     }
     let builtins = mingw_lib.join(builtins_stem(arch));
     let clang = root.join("bin").join(host_exe_name("clang"));
+    let windres = root.join("bin").join(host_exe_name("windres"));
     Some(Sdk {
         lld,
         mingw_lib,
         builtins: builtins.is_file().then_some(builtins),
         mingw_clang: clang.is_file().then_some(clang),
+        windres: windres.is_file().then_some(windres),
         prebuilt_runtime: runtime_objects_for_root(&root, target).is_some(),
     })
 }
@@ -929,11 +1204,13 @@ fn sdk_candidate_for_mingw(root: PathBuf, target: &str) -> Option<Sdk> {
         .join("windows")
         .join(builtins_stem(arch));
     let clang = root.join("bin").join(host_exe_name("clang"));
+    let windres = root.join("bin").join(host_exe_name("windres"));
     Some(Sdk {
         lld,
         mingw_lib,
         builtins: builtins.is_file().then_some(builtins),
         mingw_clang: clang.is_file().then_some(clang),
+        windres: windres.is_file().then_some(windres),
         prebuilt_runtime: false,
     })
 }

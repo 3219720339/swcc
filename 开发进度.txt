@@ -1289,6 +1289,25 @@ Sw 编译器（swcc）开发进度
                          的 13 项断言并列，最终 28 断言全过
                        - 78 examples 全过；cargo test 52 全绿；fmt 通过
 
+    2026-08-15 07:30  构建元数据：版本信息 + 图标 + swc init：
+                       - swcc.toml [project] 新增 name/version/description/
+                         author/copyright/icon（向上查找目录，icon 相对
+                         swcc.toml 所在目录解析）
+                       - Windows：生成 VERSIONINFO 资源（公司/说明/版本/
+                         版权/产品名/原始文件名），windres --codepage=65001
+                         编译为 .res 链接进 exe 与 dll；icon 指向 .ico 一并
+                         嵌入（RT_ICON 资源）；中文元数据经 #pragma
+                         code_page(65001) + codepage 参数保证不乱码
+                       - macOS：版本信息生成 Info.plist，经
+                         -sectcreate __TEXT __info_plist 嵌入
+                       - Linux：ELF 无标准版本资源机制，说明留待包元数据
+                       - 新增 `swc init [-y]`：生成默认 swcc.toml
+                         （[project]+[build]+[lib] 模板），-y 覆盖已存在
+                       - 验证：exe 属性页显示 1.2.3/测试应用程序/Sw Team/
+                         Copyright 2026 中文正常；dll 同样生效；图标
+                         （用户放入的 1.ico）成功嵌入；78 examples 全过；
+                         cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
