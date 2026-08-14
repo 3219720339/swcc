@@ -353,6 +353,7 @@ impl Analyzer {
                                 name: class.name.name.clone(),
                                 generics: Vec::new(),
                                 base: None,
+                                base_args: None,
                                 fields: Vec::new(),
                                 methods: Vec::new(),
                                 static_fields: Vec::new(),
@@ -662,6 +663,7 @@ impl Analyzer {
                         .map(|g| g.name.clone())
                         .collect::<Vec<_>>();
                     let mut base = None;
+                    let mut base_args = None;
                     if let Some(extends) = &class.extends {
                         let mut resolver = TypeResolver::new(
                             &self.symbols,
@@ -669,13 +671,60 @@ impl Analyzer {
                             &self.registry,
                             &self.states[module_id.0 as usize].names,
                         );
-                        match resolver.lower(extends, &generics) {
-                            Type::Class(id) => base = Some(id),
-                            other => {
-                                self.error(
-                                    format!("`extends` 只能继承 class，实际为 {}", other.display()),
-                                    extends.span,
-                                );
+                        if generics.is_empty() {
+                            match resolver.lower(extends, &generics) {
+                                Type::Class(id) => base = Some(id),
+                                other => {
+                                    self.error(
+                                        format!(
+                                            "`extends` 只能继承 class，实际为 {}",
+                                            other.display()
+                                        ),
+                                        extends.span,
+                                    );
+                                }
+                            }
+                        } else {
+                            // 泛型类：基类暂存模板 id + 实参（可含自身类型参数），
+                            // 实例化时按实例实参替换解析（SubBox<int> → Box<int>）。
+                            // 不能在此急切实例化，否则产生带 TypeParam 的伪实例，
+                            // 降级阶段会为其生成方法体导致 codegen 残留类型参数。
+                            let segment = extends.segments.first();
+                            let template_id = segment.and_then(|segment| {
+                                resolver
+                                    .names
+                                    .get(&segment.name.name)
+                                    .and_then(|ids| ids.first())
+                                    .and_then(|id| match &resolver.symbols[id.0 as usize].kind {
+                                        SymbolKind::Type(SymbolType::Class(id)) => Some(*id),
+                                        _ => None,
+                                    })
+                            });
+                            match template_id {
+                                Some(template_id) => {
+                                    let args: Vec<Type> = segment
+                                        .map(|segment| {
+                                            segment
+                                                .generics
+                                                .iter()
+                                                .map(|arg| resolver.lower(arg, &generics))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    base = Some(template_id);
+                                    base_args = Some(args);
+                                }
+                                None => {
+                                    self.error(
+                                        format!(
+                                            "`extends` 只能继承 class，实际为 {}",
+                                            segment
+                                                .map(|s| s.name.name.clone())
+                                                .unwrap_or_else(|| "未知类型".to_owned())
+                                        ),
+                                        extends.span,
+                                    );
+                                }
                             }
                         }
                     }
@@ -684,6 +733,7 @@ impl Analyzer {
                         let info = &mut self.types.classes[id as usize];
                         info.generics = generics.clone();
                         info.base = base;
+                        info.base_args = base_args;
                     }
                     let class_id = match &id {
                         Some(SymbolKind::Type(SymbolType::Class(id))) => Some(*id),
@@ -699,9 +749,20 @@ impl Analyzer {
                             info.static_fields = static_fields;
                             info.static_methods = static_methods;
                         }
-                        // 接口实现：解析 implements 并校验方法覆盖。
+                        // 接口实现：解析 implements 并校验方法覆盖与签名兼容。
+                        // 泛型类也在模板层校验：接口类型实参（可含类类型参数）替换后
+                        // 比对类方法签名；泛型类仅暂存模板+实参，实例化时再注册 vtable。
                         let mut template_implements: Vec<(u32, Vec<Type>)> = Vec::new();
-                        let resolved: Vec<(u32, &TypeRef)> = {
+                        let mut implemented = Vec::new();
+                        // 校验数据先收集（resolver 借用 self.types，错误待块结束后上报）。
+                        let checks: Vec<(
+                            u32,
+                            Vec<Type>,
+                            &TypeRef,
+                            Vec<(String, Vec<Type>, Type)>,
+                            String,
+                            bool,
+                        )> = {
                             let mut resolver = TypeResolver::new(
                                 &self.symbols,
                                 &mut self.types,
@@ -737,47 +798,104 @@ impl Analyzer {
                                             })
                                     });
                                     let Some(template_id) = template_id else {
-                                        return (u32::MAX, iface_ref);
-                                    };
-                                    if !generics.is_empty() {
-                                        // 泛型类：暂存接口模板 + 实参（可含 T）。
-                                        template_implements.push((template_id, args));
-                                        return (u32::MAX, iface_ref);
-                                    }
-                                    let iface_is_generic = !resolver.types.interfaces
-                                        [template_id as usize]
-                                        .generics
-                                        .is_empty();
-                                    if iface_is_generic {
-                                        (
-                                            resolver.instantiate_interface(template_id, &args),
+                                        return (
+                                            u32::MAX,
+                                            Vec::new(),
                                             iface_ref,
-                                        )
+                                            Vec::new(),
+                                            String::new(),
+                                            false,
+                                        );
+                                    };
+                                    let iface_info =
+                                        resolver.types.interfaces[template_id as usize].clone();
+                                    let iface_generic = !iface_info.generics.is_empty();
+                                    let sub: HashMap<String, Type> = iface_info
+                                        .generics
+                                        .iter()
+                                        .cloned()
+                                        .zip(args.iter().cloned())
+                                        .collect();
+                                    let expected: Vec<(String, Vec<Type>, Type)> = iface_info
+                                        .methods
+                                        .iter()
+                                        .map(|method| {
+                                            (
+                                                method.name.clone(),
+                                                method
+                                                    .params
+                                                    .iter()
+                                                    .map(|param| substitute_type(&param.ty, &sub))
+                                                    .collect(),
+                                                substitute_type(&method.ret, &sub),
+                                            )
+                                        })
+                                        .collect();
+                                    if generics.is_empty() {
+                                        let iface_id = if iface_generic {
+                                            resolver.instantiate_interface(template_id, &args)
+                                        } else {
+                                            template_id
+                                        };
+                                        // 注册接口及其父接口链（interface extends A, B 的
+                                        // 父接口也进入 class_interfaces，vtable 才能填父接口
+                                        // 槽位，子接口实现即可赋给父接口类型）。
+                                        let mut stack = vec![iface_id];
+                                        while let Some(current) = stack.pop() {
+                                            if implemented.contains(&current) {
+                                                continue;
+                                            }
+                                            implemented.push(current);
+                                            for parent in
+                                                &resolver.types.interfaces[current as usize].extends
+                                            {
+                                                stack.push(*parent);
+                                            }
+                                        }
                                     } else {
-                                        (template_id, iface_ref)
+                                        template_implements.push((template_id, args.clone()));
                                     }
+                                    (
+                                        template_id,
+                                        args,
+                                        iface_ref,
+                                        expected,
+                                        iface_info.name.clone(),
+                                        iface_generic,
+                                    )
                                 })
                                 .collect()
                         };
-                        let mut implemented = Vec::new();
-                        for (iface_id, iface_ref) in resolved {
-                            if iface_id == u32::MAX {
-                                if !generics.is_empty() {
-                                    continue;
+                        let class_name = self.types.class_name(id).to_string();
+                        for (template_id, args, iface_ref, expected, iface_name, iface_generic) in
+                            checks
+                        {
+                            if template_id == u32::MAX {
+                                if generics.is_empty() {
+                                    self.error("`implements` 目标必须是接口", iface_ref.span);
                                 }
-                                self.error("`implements` 目标必须是接口", iface_ref.span);
                                 continue;
                             }
-                            let iface_methods: Vec<String> = self.types.interfaces
-                                [iface_id as usize]
-                                .methods
-                                .iter()
-                                .map(|method| method.name.clone())
-                                .collect();
-                            let class_name = self.types.class_name(id).to_string();
-                            let iface_name = self.types.interfaces[iface_id as usize].name.clone();
-                            for method_name in &iface_methods {
-                                if self.types.find_class_method(id, method_name).is_none() {
+                            // 泛型接口缺实参：implements Container 而非 Container<int>。
+                            if iface_generic
+                                && args.len()
+                                    != self.types.interfaces[template_id as usize].generics.len()
+                            {
+                                self.error(
+                                    format!(
+                                        "泛型接口 implements 必须带类型实参（如 implements {}<{}>）",
+                                        iface_name,
+                                        self.types.interfaces[template_id as usize]
+                                            .generics
+                                            .join(", ")
+                                    ),
+                                    iface_ref.span,
+                                );
+                                continue;
+                            }
+                            for (method_name, expected_params, expected_ret) in expected {
+                                let candidates = self.types.class_methods_named(id, &method_name);
+                                if candidates.is_empty() {
                                     self.error(
                                         format!(
                                             "类 {} 未实现接口 {} 的方法 `{}`",
@@ -785,19 +903,31 @@ impl Analyzer {
                                         ),
                                         class.span,
                                     );
-                                }
-                            }
-                            // 注册接口及其父接口链（interface extends A, B 的父接口
-                            // 也进入 class_interfaces，vtable 才能填父接口槽位，
-                            // 子接口实现即可赋给父接口类型）。
-                            let mut stack = vec![iface_id];
-                            while let Some(current) = stack.pop() {
-                                if implemented.contains(&current) {
                                     continue;
                                 }
-                                implemented.push(current);
-                                for parent in &self.types.interfaces[current as usize].extends {
-                                    stack.push(*parent);
+                                let compatible = candidates.iter().any(|(cid, index)| {
+                                    let actual =
+                                        &self.types.classes[*cid as usize].methods[*index].sig;
+                                    actual.params.len() == expected_params.len()
+                                        && actual
+                                            .params
+                                            .iter()
+                                            .zip(expected_params.iter())
+                                            .all(|(a, e)| types_compatible(&a.ty, e))
+                                        && types_compatible(&actual.ret, &expected_ret)
+                                });
+                                if !compatible {
+                                    self.error(
+                                        format!(
+                                            "类 {} 的方法 `{}` 签名与接口 {} 不兼容（接口要求参数 {}，返回 {}）",
+                                            class_name,
+                                            method_name,
+                                            iface_name,
+                                            expected_params.len(),
+                                            expected_ret.display()
+                                        ),
+                                        class.span,
+                                    );
                                 }
                             }
                         }
@@ -1893,15 +2023,22 @@ impl<'a> TypeResolver<'a> {
         arg_refs: &[TypeRef],
         generics: &[String],
     ) -> Type {
-        let info = self.types.classes[class_id as usize].clone();
-        if info.generics.len() != arg_refs.len() {
-            return Type::Error;
-        }
         let args: Vec<Type> = arg_refs
             .iter()
             .map(|arg| self.lower(arg, generics))
             .collect();
-        let key = (class_id, args.clone());
+        self.instantiate_class_with_types(class_id, &args)
+    }
+
+    /// 泛型 class 实例化（类型实参已是 Type）：替换字段/方法签名/基类/接口，
+    /// 注册新 class id。基类若为泛型（如 `extends Box<T>`），按实例实参替换
+    /// base_args 后解析出具体基类实例（SubBox<int> → Box<int>）。
+    fn instantiate_class_with_types(&mut self, class_id: u32, args: &[Type]) -> Type {
+        let info = self.types.classes[class_id as usize].clone();
+        if info.generics.len() != args.len() {
+            return Type::Error;
+        }
+        let key = (class_id, args.to_vec());
         if let Some(&id) = self.types.generic_class_instances.get(&key) {
             return Type::Class(id);
         }
@@ -1951,13 +2088,36 @@ impl<'a> TypeResolver<'a> {
                 span: method.span,
             })
             .collect();
+        // 基类：泛型基类（base_args 含类类型参数）按实例实参替换后实例化；
+        // 非泛型基类直接用模板 id。必须在取实例 id 之前解析（基类实例先入表）。
+        let base = match (&info.base, &info.base_args) {
+            (Some(base_template), Some(base_args)) => {
+                let base_is_generic = !self.types.classes[*base_template as usize]
+                    .generics
+                    .is_empty();
+                if base_is_generic {
+                    let resolved: Vec<Type> = base_args
+                        .iter()
+                        .map(|ty| substitute_type(ty, &type_args))
+                        .collect();
+                    match self.instantiate_class_with_types(*base_template, &resolved) {
+                        Type::Class(bid) => Some(bid),
+                        _ => None,
+                    }
+                } else {
+                    Some(*base_template)
+                }
+            }
+            (base, _) => *base,
+        };
         let id = self.types.classes.len() as u32;
         let template_interfaces = self.types.class_interfaces.get(&class_id).cloned();
         self.types.classes.push(ClassInfo {
             module: info.module,
             name: info.name,
             generics: Vec::new(),
-            base: info.base,
+            base,
+            base_args: None,
             fields,
             methods,
             static_fields: info.static_fields.clone(),
@@ -4529,6 +4689,14 @@ fn substitute_type(ty: &Type, type_args: &HashMap<String, Type>) -> Type {
     }
 }
 
+/// 接口签名兼容比较：`expected` 为 Unknown（接口方法未声明返回类型）时视为任意。
+fn types_compatible(actual: &Type, expected: &Type) -> bool {
+    if matches!(expected, Type::Unknown) {
+        return true;
+    }
+    actual == expected
+}
+
 fn infer_type_arg(param: &Type, arg: &Type, known: &mut HashMap<String, Type>) {
     match (param, arg) {
         (Type::TypeParam(name), actual) => {
@@ -4950,6 +5118,11 @@ impl<'m, 's> MirLowerer<'m, 's> {
             .map(|((orig, args), id)| (*orig, *id, args.clone()))
             .collect();
         for (orig_id, instance_id, args) in instances {
+            // 跳过伪实例（类型实参未具体化，如泛型函数签名里的 Box<T>）：
+            // 生成方法体会把类型参数残留进 MIR，codegen 报"后端暂不支持类型 T"。
+            if args.iter().any(|t| matches!(t, Type::TypeParam(_))) {
+                continue;
+            }
             let orig_info = self.types.classes[orig_id as usize].clone();
             let Some(class) = items.iter().find_map(|item| match &item.kind {
                 ItemKind::Class(class) if class.name.name == orig_info.name => Some(class),
@@ -5361,6 +5534,45 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
 
     fn error(&mut self, message: impl Into<String>, span: Span) {
         self.lowerer.error(message, span);
+    }
+
+    /// 把检查期登记的模板层类 id 映射到当前实例上下文对应的实例类 id。
+    /// 检查期在模板上运行（this_class = 模板），CallTarget::Method 里存的 class
+    /// 是模板或其基类（签名含类型参数）；降级实例方法时（this_class = 实例）需
+    /// 换成实例基类链上对应位置的实例类，否则 super()/this.method() 会用带
+    /// TypeParam 的模板签名，codegen 报"后端暂不支持类型 T"。
+    fn remap_class_to_instance(&self, class: u32) -> u32 {
+        let Some(instance_id) = self.this_class else {
+            return class;
+        };
+        let types = &self.lowerer.types;
+        let Some((template_id, _)) = types
+            .generic_class_instances
+            .iter()
+            .find(|((_, _), id)| **id == instance_id)
+            .map(|((t, a), _)| (*t, a.clone()))
+        else {
+            // 非泛型上下文：this_class 就是类本身，无需映射。
+            return class;
+        };
+        // 模板基类链（含自身）与实例基类链一一对应（实例化保持继承结构）。
+        let mut template_chain = Vec::new();
+        let mut current = Some(template_id);
+        while let Some(id) = current {
+            template_chain.push(id);
+            current = types.classes[id as usize].base;
+        }
+        let mut instance_chain = Vec::new();
+        let mut current = Some(instance_id);
+        while let Some(id) = current {
+            instance_chain.push(id);
+            current = types.classes[id as usize].base;
+        }
+        template_chain
+            .iter()
+            .position(|&c| c == class)
+            .and_then(|offset| instance_chain.get(offset).copied())
+            .unwrap_or(class)
     }
 
     fn declare_local(&mut self, name: &str, ty: Type, mutable: bool) -> usize {
@@ -6975,6 +7187,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             }
                             _ => {}
                         }
+                        // 泛型实例方法：检查期登记的是模板层类 id（签名含类型参数），
+                        // 映射到当前实例上下文对应的实例类（super 基类 / this 方法）。
+                        let class = self.remap_class_to_instance(class);
                         let class_info = self.lowerer.types.classes.get(class as usize);
                         let method_name = class_info
                             .and_then(|info| info.methods.get(index))

@@ -78,6 +78,9 @@ pub struct ClassInfo {
     pub name: String,
     pub generics: Vec<String>,
     pub base: Option<u32>,
+    /// 泛型类 extends 的基类实参（可含自身类型参数，如 `extends Box<T>` 的 [T]）；
+    /// 实例化时按实例实参替换并解析出具体基类实例。非泛型类为 None。
+    pub base_args: Option<Vec<Type>>,
     pub fields: Vec<FieldInfo>,
     pub methods: Vec<MethodInfo>,
     /// static 字段：不占实例内存，按类级全局变量存储。

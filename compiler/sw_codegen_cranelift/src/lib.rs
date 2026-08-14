@@ -146,56 +146,69 @@ impl Generator {
         }
 
         // 接口 vtable：按全局接口槽位布局生成每个类的派发表。
+        // 类的方法（sw_m_*/sw_ctor_*）只存在于「定义类」所在模块的 object 里，
+        // 所以 vtable 数据必须在定义模块生成（Export 供跨模块引用），其他模块
+        // 按 Import 声明。此前每个模块都生成 Local 副本：使用模块的副本因本模块
+        // exports 里没有该类的方法而槽位全空，`new` 又把对象头指向这份空表，
+        // 接口方法调用读到 0 地址直接崩溃（跨模块类 + 接口必崩）。
         let (interface_slot_bases, interface_slot_total) = interface_slot_bases(types);
         if interface_slot_total > 0 {
             for (class_id, class) in types.classes.iter().enumerate() {
+                let home = class.module.0 == mir.module_id;
                 let data_id = self
                     .module
                     .declare_data(
                         format!("sw_vt_{class_id}").as_str(),
-                        Linkage::Local,
+                        if home {
+                            Linkage::Export
+                        } else {
+                            Linkage::Import
+                        },
                         false,
                         false,
                     )
                     .map_err(|error| error.to_string())?;
-                let mut desc = DataDescription::new();
-                desc.define(vec![0u8; interface_slot_total * 8].into_boxed_slice());
-                let mut inherited_interfaces = Vec::new();
-                let mut current = Some(class_id as u32);
-                while let Some(id) = current {
-                    if let Some(interfaces) = types.class_interfaces.get(&id) {
-                        for interface_id in interfaces {
-                            if !inherited_interfaces.contains(interface_id) {
-                                inherited_interfaces.push(*interface_id);
+                if home {
+                    let mut desc = DataDescription::new();
+                    desc.define(vec![0u8; interface_slot_total * 8].into_boxed_slice());
+                    let mut inherited_interfaces = Vec::new();
+                    let mut current = Some(class_id as u32);
+                    while let Some(id) = current {
+                        if let Some(interfaces) = types.class_interfaces.get(&id) {
+                            for interface_id in interfaces {
+                                if !inherited_interfaces.contains(interface_id) {
+                                    inherited_interfaces.push(*interface_id);
+                                }
+                            }
+                        }
+                        current = types.classes[id as usize].base;
+                    }
+                    for interface_id in inherited_interfaces {
+                        let Some(&base) = interface_slot_bases.get(&interface_id) else {
+                            continue;
+                        };
+                        let interface = &types.interfaces[interface_id as usize];
+                        for (method_index, method) in interface.methods.iter().enumerate() {
+                            if let Some((impl_class, impl_index)) =
+                                types.find_class_method(class_id as u32, &method.name)
+                            {
+                                let fn_name =
+                                    format!("sw_m_{impl_class}_{impl_index}_{}", method.name);
+                                if let Some(func_id) = exports.get(&fn_name) {
+                                    let func_ref =
+                                        self.module.declare_func_in_data(*func_id, &mut desc);
+                                    desc.write_function_addr(
+                                        ((base + method_index) * 8) as u32,
+                                        func_ref,
+                                    );
+                                }
                             }
                         }
                     }
-                    current = types.classes[id as usize].base;
+                    self.module
+                        .define_data(data_id, &desc)
+                        .map_err(|error| error.to_string())?;
                 }
-                for interface_id in inherited_interfaces {
-                    let Some(&base) = interface_slot_bases.get(&interface_id) else {
-                        continue;
-                    };
-                    let interface = &types.interfaces[interface_id as usize];
-                    for (method_index, method) in interface.methods.iter().enumerate() {
-                        if let Some((impl_class, impl_index)) =
-                            types.find_class_method(class_id as u32, &method.name)
-                        {
-                            let fn_name = format!("sw_m_{impl_class}_{impl_index}_{}", method.name);
-                            if let Some(func_id) = exports.get(&fn_name) {
-                                let func_ref =
-                                    self.module.declare_func_in_data(*func_id, &mut desc);
-                                desc.write_function_addr(
-                                    ((base + method_index) * 8) as u32,
-                                    func_ref,
-                                );
-                            }
-                        }
-                    }
-                }
-                self.module
-                    .define_data(data_id, &desc)
-                    .map_err(|error| error.to_string())?;
                 self.vtable_data.insert(class_id as u32, data_id);
             }
         }

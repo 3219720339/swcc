@@ -93,6 +93,8 @@ EXPECTED = {
     "probe-unicode.sw": 0,
     "probe-vars.sw": 0,
     "showcase.sw": 0,
+    "probe-generic-implements.sw": 0,
+    "probe-cross-module-iface.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]

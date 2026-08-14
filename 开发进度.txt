@@ -1464,8 +1464,53 @@ Sw 编译器（swcc）开发进度
                          let 一条语句单名、defer（解析保留降级不支持）、
                          do...while、typeof/instanceof
 
+    2026-08-15 10:40  泛型 implements 五连修（分析与修复，全部实测验证）：
+                        - 分析产出 5 个真实问题（探针实测复现）：
+                          a) 跨模块类 + 接口 vtable 必崩（0xC0000005，非泛型也中招）
+                          b) 泛型类 extends 泛型类（基类实参用自身类型参数）
+                             定义即 codegen 崩溃（"后端暂不支持类型 T"）
+                          c) 泛型类方法覆盖校验缺失（缺接口方法编译通过）
+                          d) 接口方法签名兼容不校验（get(): string 冒充 get(): T，
+                             编译通过、运行时输出垃圾值）
+                          e) 嵌套泛型解析失败（Box<Box<int>> 报"泛型类型缺少 >"）
+                        - 修复 e：parser 新增 expect_type_gt——`>>`/`>>=`
+                          拆出一个 `>` 闭合当前泛型层、剩余部分放回 token 流
+                          （lookahead push_front），声明侧/使用侧统一
+                        - 修复 c+d：implements 校验重写——泛型类也在模板层校验：
+                          接口类型实参（可含类类型参数）替换后比对类方法签名，
+                          缺方法报"未实现接口的方法"、类型不符报"签名与接口不兼容"；
+                          顺带补"泛型接口 implements 必须带类型实参"
+                          （implements Container 显式报错）；保留接口父链注册
+                        - 修复 b：ClassInfo 新增 base_args（基类模板实参，
+                          可含类类型参数），泛型类 extends 不再急切实例化；
+                          instantiate_class 拆出 instantiate_class_with_types，
+                          实例化时按实例实参替换解析基类（SubBox<int>→Box<int>）；
+                          降级循环跳过实参含 TypeParam 的伪实例（安全网）；
+                          新增 FnLower::remap_class_to_instance——super()/this.
+                          method() 在泛型实例方法里把检查期登记的模板层类 id
+                          映射到实例基类链对应实例（模板签名含 T 不再泄漏）
+                        - 修复 a：vtable 数据改按"定义类所在模块"生成
+                          （Linkage::Export），其他模块 Linkage::Import 引用；
+                          此前每模块 Local 副本在无该类方法的模块里槽位全空，
+                          new 又把对象头指向空表导致接口调用读 0 地址
+                        - 新增探针 probe-generic-implements.sw（15 断言：
+                          A 具体实参/B 多参数/C 双接口/D 泛型继承/D2 二级继承/
+                          D3 具体基类+自身实现/E 反向推导用泛型类实例/
+                          F 嵌套泛型+虚表）、probe-cross-module-iface.sw
+                          + lib-cross-iface.sw（6 断言：跨模块泛型/非泛型
+                          接口 vtable、泛型继承跨模块），登记 run-examples.py
+                        - 新增语义单测 3 项（缺方法报错/签名不兼容报错/
+                          嵌套泛型通过），语义 18→21
+                        - 验证：cargo test 55 全绿（词法 13/语法 12/
+                          语义 21/代码生成 9）；85 examples 全过；fmt 通过
+                        - 遗留限制（已确认、非本批范围）：泛型类出现在
+                          泛型函数签名/返回类型（如 function make<T>(x: T):
+                          Box<T>）仍不支持——签名把 Box<T> 急切实例化成伪
+                          实例，返回类型无法按实参代换（fngen 探针复现）
+
     待办（下一批，按推荐优先级）：
-       1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
+       1. 泛型类用于泛型函数签名/返回类型（new Box<T> 的伪实例代换）；
+          Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
           或 regex 模块
 
@@ -1474,11 +1519,11 @@ Sw 编译器（swcc）开发进度
 - Windows aarch64（COFF）暂不支持：Cranelift 对象写入器未实现 AArch64 COFF 重定位
 - 单线程：异常帧栈为全局变量，多线程留待后续版本
 - 调试信息与错误诊断体验待完善（v0.2）
-- struct 嵌套/struct 数组/类字段存 struct 暂不支持（v0.1 显式报错）
+- 泛型类用于泛型函数签名/返回类型（如 `function make<T>(x: T): Box<T>`）
+  暂不支持：签名把 Box<T> 急切实例化成带类型参数的伪实例，返回类型无法
+  按调用实参代换（tmp-analyze-fngen.sw 复现）
 - 浮点全局变量未验证（全局按 64 位常量槽存储）
 - GC 为保守式：异常帧/抛出对象暂不参与回收，高频抛异常可能累积少量内存
-- 泛型仅支持本模块函数实例化；泛型 struct/class 暂未支持
-- Windows aarch64（COFF）仍受 Cranelift 对象写入器限制
 
 三、下一批候选（待排期）
 

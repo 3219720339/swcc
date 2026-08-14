@@ -496,3 +496,96 @@ fn reports_generic_interface_bound_without_type_args() {
         "{messages:?}"
     );
 }
+
+#[test]
+fn reports_missing_interface_method_on_generic_class() {
+    let source = r#"
+        interface Container<T> { get(): T; set(value: T): void; }
+        class BadBox<T> implements Container<T> {
+            value: T;
+            constructor(value: T) { this.value = value; }
+            get(): T { return this.value; }
+        }
+        function main(): int { return 0; }
+    "#;
+    let dir = std::env::temp_dir().join("swcc-semantic-test-missing");
+    let _ = std::fs::create_dir_all(&dir);
+    let entry = dir.join("main.sw");
+    std::fs::write(&entry, source).expect("写入测试源码");
+    let result = analyze(&entry, None);
+    assert!(
+        result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let messages: Vec<&str> = result
+        .diagnostics
+        .items
+        .iter()
+        .map(|item| item.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("未实现接口") && m.contains("set")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn reports_incompatible_interface_method_signature() {
+    let source = r#"
+        interface Container<T> { get(): T; }
+        class Wrong<T> implements Container<T> {
+            value: T;
+            constructor(value: T) { this.value = value; }
+            get(): string { return "x"; }
+        }
+        function main(): int { return 0; }
+    "#;
+    let dir = std::env::temp_dir().join("swcc-semantic-test-wrongsig");
+    let _ = std::fs::create_dir_all(&dir);
+    let entry = dir.join("main.sw");
+    std::fs::write(&entry, source).expect("写入测试源码");
+    let result = analyze(&entry, None);
+    assert!(
+        result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let messages: Vec<&str> = result
+        .diagnostics
+        .items
+        .iter()
+        .map(|item| item.message.as_str())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("签名与接口")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn accepts_nested_generic_class_instantiation() {
+    let source = r#"
+        class Box<T> {
+            value: T;
+            constructor(value: T) { this.value = value; }
+            get(): T { return this.value; }
+        }
+        function main(): int {
+            const nb = new Box<Box<int>>(new Box<int>(5));
+            return nb.get().get();
+        }
+    "#;
+    let dir = std::env::temp_dir().join("swcc-semantic-test-nested");
+    let _ = std::fs::create_dir_all(&dir);
+    let entry = dir.join("main.sw");
+    std::fs::write(&entry, source).expect("写入测试源码");
+    let result = analyze(&entry, None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+}

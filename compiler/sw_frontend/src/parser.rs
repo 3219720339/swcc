@@ -417,6 +417,31 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// 泛型闭合：`>` 直接消费；`>>`/`>>=` 拆出一个 `>` 闭合当前泛型层，
+    /// 剩余部分（`>` 或 `>=`）放回 token 流供外层泛型使用（如 `Box<Box<int>>`）。
+    fn expect_type_gt(&mut self, message: &str) -> Result<Token, ()> {
+        if self.at(&TokenKind::Gt) {
+            return Ok(self.advance());
+        }
+        if self.at(&TokenKind::Shr) {
+            let token = self.advance();
+            self.lookahead.push_front(Token {
+                kind: TokenKind::Gt,
+                span: token.span,
+            });
+            return Ok(token);
+        }
+        if self.at(&TokenKind::ShrAssign) {
+            let token = self.advance();
+            self.lookahead.push_front(Token {
+                kind: TokenKind::Ge,
+                span: token.span,
+            });
+            return Ok(token);
+        }
+        self.expect(&TokenKind::Gt, message)
+    }
+
     fn parse_generic_parameters(&mut self) -> Result<Vec<Ident>, ()> {
         let mut generics = Vec::new();
         if !self.at(&TokenKind::Lt) {
@@ -432,7 +457,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(&TokenKind::Gt, "泛型参数缺少 `>`").ok();
+        self.expect_type_gt("泛型参数缺少 `>`").ok();
         Ok(generics)
     }
 
@@ -540,7 +565,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(&TokenKind::Gt, "泛型类型缺少 `>`")?;
+        self.expect_type_gt("泛型类型缺少 `>`")?;
         Ok(types)
     }
 
