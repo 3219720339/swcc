@@ -19,8 +19,8 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use sw_semantic::symbols::FunctionSig;
 use sw_semantic::types::Type;
 use sw_semantic::{
-    MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule, MirStmt, MirStmtKind,
-    MirTarget, MirUnary, TypeTable,
+    MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule, MirParam, MirStmt,
+    MirStmtKind, MirTarget, MirUnary, TypeTable,
 };
 use target_lexicon::Triple;
 
@@ -610,7 +610,7 @@ fn visit_expr(
                 visit_expr(value, generator, mir, exports, ctx, refs)?;
             }
         }
-        MirExpr::New { class, args } => {
+        MirExpr::New { class, sig, args } => {
             let object_new = generator.declare_import(
                 "sw_object_new",
                 &object_new_signature(generator.module.isa()),
@@ -628,6 +628,28 @@ fn visit_expr(
                     generator
                         .module
                         .declare_func_in_func(*func_id, &mut ctx.func),
+                );
+            } else {
+                // 跨模块：构造函数在其它模块中定义，按签名声明为导入（链接时解析）。
+                // 构造函数 MIR 参数 = [self, ...用户参数]。
+                let mut ctor_params = vec![sw_semantic::symbols::ParamSig {
+                    name: "self".to_owned(),
+                    ty: Type::Class(*class),
+                    has_default: false,
+                    rest: false,
+                }];
+                ctor_params.extend(sig.params.iter().cloned());
+                let full_sig = FunctionSig {
+                    params: ctor_params,
+                    ..sig.clone()
+                };
+                let cranelift_sig = signature_of_sig(&full_sig, generator.module.isa())?;
+                let func_id = generator.declare_import(&ctor_name, &cranelift_sig)?;
+                refs.func_refs.insert(
+                    ctor_name,
+                    generator
+                        .module
+                        .declare_func_in_func(func_id, &mut ctx.func),
                 );
             }
             for arg in args {
@@ -652,7 +674,23 @@ fn callee_signature_for(
 ) -> Result<(String, Signature), CodegenError> {
     Ok(match callee {
         MirCallee::Function { name, sig, .. } => (name.clone(), signature_of_sig(sig, isa)?),
-        MirCallee::Method { name, sig, .. } => (name.clone(), signature_of_sig(sig, isa)?),
+        MirCallee::Method {
+            class, name, sig, ..
+        } => {
+            // 跨模块方法：导入签名需手动补 self 接收者（MIR 方法签名不含 self）。
+            let mut full_params = vec![sw_semantic::symbols::ParamSig {
+                name: "self".to_owned(),
+                ty: Type::Class(*class),
+                has_default: false,
+                rest: false,
+            }];
+            full_params.extend(sig.params.iter().cloned());
+            let full_sig = FunctionSig {
+                params: full_params,
+                ..sig.clone()
+            };
+            (name.clone(), signature_of_sig(&full_sig, isa)?)
+        }
         MirCallee::Extern { name, sig } => (
             extern_c_symbol(name).to_owned(),
             signature_of_sig(sig, isa)?,
@@ -1384,6 +1422,20 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
             }
             MirExpr::New { class, .. } => Some(Type::Class(*class)),
             MirExpr::Struct { ty, .. } => Some(ty.clone()),
+            MirExpr::Call { callee, .. } => {
+                let sig = match callee {
+                    MirCallee::Function { sig, .. }
+                    | MirCallee::Method { sig, .. }
+                    | MirCallee::Extern { sig, .. }
+                    | MirCallee::InterfaceMethod { sig, .. }
+                    | MirCallee::Closure { sig, .. } => Some(sig),
+                    _ => None,
+                };
+                match sig {
+                    Some(sig) if matches!(sig.ret, Type::Struct(_)) => Some(sig.ret.clone()),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -2100,7 +2152,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 }
                 address
             }
-            MirExpr::New { class, args } => {
+            MirExpr::New { class, args, .. } => {
                 // 对象头部第 0 个字是 vtable 指针，字段内联（可能含 struct 值字段）。
                 let object_size = self.class_sizes.get(class).copied().unwrap_or(8);
                 let size = self.builder.ins().iconst(types::I64, object_size as i64);

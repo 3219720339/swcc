@@ -434,6 +434,35 @@ Sw 编译器（swcc）开发进度
                        - 39 个 examples 全过；51 测试全绿；runtime.c 六目标交叉
                          编译通过；probe-gc musl x86_64/aarch64 链接通过
 
+    2026-08-14 22:54  类继承 + 多文件引用（本批）：
+                       - 类继承端到端：super() 调基类构造、基类字段/方法访问、
+                         子类字段、方法覆盖全部通过（examples/probe-inherit.sw，
+                         已注册进回归，退出码 0）
+                       - 修复三个继承 bug：
+                         a) super(...) 调基类构造漏传 this（MIR 降级 ExprKind::Super
+                            分支补 MirExpr::Local(0)）；
+                         b) check_member 字段目标错存「接收者类」而非「定义类」，
+                            改为 FieldTarget::Class(class, index)（子类访问基类
+                            字段偏移算错）；
+                         c) ancestor_field_count 用 take_while 判定基类链恒返回 0，
+                            改 skip(1) 统计基类字段数
+                       - 多文件引用端到端（examples/probe-multifile.sw，退出码 0）：
+                         import { Point, Vector, make_point } from "./lib-geo"；
+                         跨文件 struct 字面量/字段、跨文件函数、跨文件类 new、
+                         类字段/方法调用、struct 相等比较
+                       - 修复三个跨模块 bug：
+                         a) 跨模块 new 类构造：MirExpr::New 增加 sig 字段，
+                            构造不在 exports 时按签名 declare_import 回退并补
+                            self 参数；
+                         b) expr_owner_type 补 MirExpr::Call 分支，识别函数返回
+                            struct（p == make_point(...) 取字段被当 i64 的根因）；
+                         c) 跨模块方法导入签名漏 self 接收者（call 实参 1、
+                            导入签名 0 参数报错），callee_signature_for 的
+                            MirCallee::Method 分支按 class 补前置 self 参数
+                       - 回归：41 个 examples 全过；cargo test 51 全绿；
+                         tools/run-examples.py 补 UTF-8 解码（Windows 控制台
+                         GBK 读乱码报错）；cargo fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 

@@ -183,6 +183,8 @@ pub enum MirExpr {
     /// 创建类对象并调用构造函数。
     New {
         class: u32,
+        /// 构造函数签名（跨模块 new 时用于导入基类/他模块构造函数）。
+        sig: FunctionSig,
         args: Vec<MirExpr>,
     },
 }

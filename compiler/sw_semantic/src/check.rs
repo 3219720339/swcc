@@ -2497,12 +2497,11 @@ impl<'s> Checker<'s> {
         let base = object_ty.without_nullable().clone();
         let result = match &base {
             Type::Class(id) => {
-                if let Some((_, index)) = self.types.find_class_field(*id, &name.name) {
+                if let Some((class, index)) = self.types.find_class_field(*id, &name.name) {
                     self.state
                         .result
                         .field_targets
-                        .insert(span.start, FieldTarget::Class(*id, index));
-                    let (class, _) = self.types.find_class_field(*id, &name.name).unwrap();
+                        .insert(span.start, FieldTarget::Class(class, index));
                     self.types.classes[class as usize].fields[index].ty.clone()
                 } else if name.name == "length" {
                     Type::Int
@@ -4698,8 +4697,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                     args.insert(0, self.lower_expr(object));
                                 }
                             }
-                            // super(...) 基类构造函数调用：无接收者
-                            ExprKind::Super => {}
+                            // super(...) 基类构造函数调用：接收者是当前对象（this = 局部 0）。
+                            ExprKind::Super => {
+                                args.insert(0, MirExpr::Local(0));
+                            }
                             _ => {}
                         }
                         let class_info = self.lowerer.types.classes.get(class as usize);
@@ -4987,8 +4988,21 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         0
                     }
                 };
+                let ctor_sig = self
+                    .lowerer
+                    .types
+                    .classes
+                    .get(class as usize)
+                    .and_then(|info| {
+                        info.methods
+                            .iter()
+                            .find(|method| method.name == "constructor")
+                            .map(|method| method.sig.clone())
+                    })
+                    .unwrap_or_else(placeholder_sig);
                 MirExpr::New {
                     class,
+                    sig: ctor_sig,
                     args: args.iter().map(|arg| self.lower_expr(arg)).collect(),
                 }
             }
@@ -5470,7 +5484,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
         let chain = self.types.class_base_chain(class_id);
         chain
             .iter()
-            .take_while(|id| **id != class_id)
+            .skip(1) // 展平顺序基类在前：跳过自身，统计全部基类字段
             .map(|id| self.types.classes[*id as usize].fields.len())
             .sum()
     }

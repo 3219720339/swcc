@@ -30,9 +30,11 @@ EXPECTED = {
     "probe-gc.sw": 0,
     "probe-generic.sw": 0,
     "probe-if.sw": 42,
+    "probe-inherit.sw": 0,
     "probe-interface.sw": 0,
     "probe-io.sw": 0,
     "probe-json.sw": 0,
+    "probe-multifile.sw": 0,
     "probe-net.sw": 0,
     "probe-param-if.sw": 3,
     "probe-param.sw": 42,
@@ -64,6 +66,8 @@ def main() -> int:
                 [swc, "run", path],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
         except subprocess.TimeoutExpired:
