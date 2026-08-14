@@ -1,0 +1,15 @@
+﻿构建成功：probe-process.exe（用时 44 ms）
+os=windows
+run=[hello
+
+]
+input=[piped-input
+
+
+
+]
+status=7
+wait=5
+kill=0
+poll=0
+ok=1

@@ -1,0 +1,2 @@
+﻿构建成功：probe-json.exe（用时 45 ms）
+lang=sw year=2026 first=gc chars=5

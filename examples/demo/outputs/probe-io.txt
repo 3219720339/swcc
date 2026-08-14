@@ -1,0 +1,4 @@
+﻿构建成功：probe-io.exe（用时 50 ms）
+--------
+lines=4 first=one last=four
+n=42 bad=-1 number=true today=2026-08-15

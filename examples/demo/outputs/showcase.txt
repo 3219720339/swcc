@@ -1,0 +1,20 @@
+﻿构建成功：showcase.exe（用时 47 ms）
+showcase: start
+[ok] primitive types and operators
+[ok] float and power
+[ok] struct, array and control flow
+[ok] typed array standard library
+[ok] switch, break and default argument
+[ok] class and interface
+[ok] class inheritance
+[ok] nullable and optional chain
+[ok] closure and generic function
+[ok] strings, templates and encoding
+[ok] string conversion and JSON
+[ok] JSON type inspection
+[ok] time and platform
+[ok] OS and paths
+[ok] path extension
+finally: scope completed
+[ok] exceptions and global state
+showcase=PASS

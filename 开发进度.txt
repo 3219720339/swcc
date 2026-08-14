@@ -1104,6 +1104,16 @@ Sw 编译器（swcc）开发进度
                          + aarch64 macOS 通过；Windows 本机 70 examples 全过；
                          cargo test 52 全绿；fmt 通过
 
+    2026-08-15 04:30  演示副本 examples/demo：
+                       - 复制 75 个正式 .sw（不含 tmp-* 诊断文件）到
+                         examples/demo/，挑 12 个有真实输出的示例编译运行
+                         （hello/fib/showcase/format/io/json/string/
+                         template/dir/process/argv/unicode）
+                       - 运行输出保存到 examples/demo/outputs/<名称>.txt
+                         （含编译耗时与程序真实输出，非纯 [ok] 断言）
+                       - 新增 examples/demo/README.md 汇总运行方式、
+                         演示清单与输出速览
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

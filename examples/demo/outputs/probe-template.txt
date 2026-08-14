@@ -1,0 +1,2 @@
+﻿构建成功：probe-template.exe（用时 39 ms）
+fib(10) = 42

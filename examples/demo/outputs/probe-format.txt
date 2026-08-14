@@ -1,0 +1,3 @@
+﻿构建成功：probe-format.exe（用时 45 ms）
+rev=wS好你 p1=00042 p2=42--- f1=042 f2=3.14
+clamp=10 gcd=6 lcm=12 rand=24 dt=2026-01-02 00:00:00

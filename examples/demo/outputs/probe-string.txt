@@ -1,0 +1,2 @@
+﻿构建成功：probe-string.exe（用时 40 ms）
+cleaned=HELLO, SW joined=Hello,|Sw n=42 same=true first=你 len=4 replaced=a+b+c

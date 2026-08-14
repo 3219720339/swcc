@@ -1,0 +1,3 @@
+﻿构建成功：hello.exe（用时 779 ms）
+hello Sw
+sum = 10

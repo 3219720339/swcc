@@ -1,0 +1,6 @@
+﻿构建成功：probe-dir.exe（用时 43 ms）
+entries=2 [a.txt b.txt ]
+is-dir=1 is-file=0
+base=renamed.txt dir=dir-demo ext=.txt
+copy-exists=1
+removed=true

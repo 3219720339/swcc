@@ -1,0 +1,15 @@
+﻿构建成功：probe-unicode.exe（用时 40 ms）
+[ok] utf8_len chars
+[ok] utf8_byte_len bytes
+[ok] utf8_char_at 你
+[ok] index_to_byte 0 -> 0
+[ok] index_to_byte 1 -> 3
+[ok] index_to_byte 2 -> 6
+[ok] index_to_byte end -> len
+[ok] index_to_byte out of range
+[ok] byte_to_index 3 -> 1
+[ok] byte_to_index 6 -> 2
+[ok] byte_to_index mid-char -> -1
+[ok] is_printable printable
+[ok] is_printable control char
+final=PASS

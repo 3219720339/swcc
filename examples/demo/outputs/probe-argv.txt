@@ -1,0 +1,3 @@
+﻿构建成功：probe-argv.exe（用时 36 ms）
+hello Sw
+home=C:\Users\Administrator
