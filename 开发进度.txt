@@ -1132,6 +1132,11 @@ Sw 编译器（swcc）开发进度
                        （demo-net 的 println(`closed`) → println("closed")），
                        仅多值拼接/数字转文本时保留 ${} 插值，重新跑通
 
+    2026-08-15 04:50  demo-time 全面改为直接输出：全部"标签=值"输出
+                       从模板字符串改成 + 拼接（println("date=" +
+                       date_string(now))），输出结果不变，不再使用反引号；
+                       其余 demo 保持模板字符串仅用于多值插值场景
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

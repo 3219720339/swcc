@@ -1,13 +1,13 @@
-﻿构建成功：demo-time.exe（用时 40 ms）
-now_sec=1786739554 now_ms=1786739554755
+﻿构建成功：demo-time.exe（用时 39 ms）
+now_sec=1786739745 now_ms=1786739745079
 date=2026-08-15
-datetime=2026-08-15 04:32:34
-format=2026-08-15 04:32:34 Saturday
+datetime=2026-08-15 04:35:45
+format=2026-08-15 04:35:45 Saturday
 year=2026 month=8 day=15
-hour=4 minute=32 second=34
+hour=4 minute=35 second=45
 weekday=6 weekday_cn=六
-time_string=04:32:34
-iso_string=2026-08-15T04:32:34
+time_string=04:35:45
+iso_string=2026-08-15T04:35:45
 tz_offset_sec=0
 parse_date=2026-01-02 -> 1767283200
 parse_datetime=2026-01-02 03:04:05 -> 1767294245
@@ -18,6 +18,6 @@ duration 90061 含天 -> 1天 01:01:01
 days_in_month(2024,2)=29 days_in_year(2023)=365
 shift +1 day -> 2024-12-25
 time_diff 0秒=60 1分=1 2时=1 3天=3
-uptime_ms=14613564
-取现行时间戳=1786739554 取年份=2024 取星期文本=二
+uptime_ms=14803887
+取现行时间戳=1786739745 取年份=2024 取星期文本=二
 秒数转时间格式=00时01分30秒 时间戳增减=2024-12-26
