@@ -114,7 +114,15 @@ Sw 编译器（swcc）开发进度
                        时间补充 now_sec/date_string（YYYY-MM-DD）；链式方法表同步扩展；
                        测试与示例 probe-io
 
-    待办（下一批）：标准库补强（见分析）
+    2026-08-14 08:28  文件/目录系统：list_dir（Windows FindFirstFileA / POSIX readdir）、
+                       is_dir、mkdir（Windows CreateDirectoryA / POSIX asm 别名 libc）、
+                       copy_file、path_basename/path_dirname/path_ext
+    2026-08-14 08:31  修复 MinGW ucrt 的 rename/remove 不可用问题：改用 Win32
+                       MoveFileA/DeleteFileA（POSIX 用 asm 标签别名调 libc）；
+                       测试与示例 probe-dir
+
+    待办（下一批）：字符级字符串操作（按字符 split/substring/reverse）、
+                    format 格式化输出、随机数与数学小工具、时间完整化（datetime_string）
 
 二、已知限制
 

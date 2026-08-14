@@ -51,3 +51,30 @@ export extern c function exists(path: string): int;
 
 /// 拼接两个路径段，自动补平台分隔符（Windows 用 \，其余用 /）。
 export extern c function path_join(a: string, b: string): string;
+
+/// 取路径最后一段（文件名）。
+export extern c function path_basename(path: string): string;
+
+/// 取路径的目录部分；无分隔符时返回 "."。
+export extern c function path_dirname(path: string): string;
+
+/// 取扩展名（含点，如 ".txt"）；无扩展名返回空字符串。
+export extern c function path_ext(path: string): string;
+
+/// 列出目录内容（文件名/子目录名，不含 "." 与 ".."）；目录不存在返回空数组。
+export extern c function list_dir(path: string): string[];
+
+/// 判断路径是否为目录：1 是 / 0 否（不存在也返回 0）。
+export extern c function is_dir(path: string): int;
+
+/// 创建目录（不递归，父目录必须存在）；成功返回 0，失败返回 -1。
+export extern c function mkdir(path: string): int;
+
+/// 删除文件（或空目录）；成功返回 0，失败返回 -1。
+export extern c function remove(path: string): int;
+
+/// 重命名/移动文件；成功返回 0，失败返回 -1。
+export extern c function rename(old_path: string, new_path: string): int;
+
+/// 复制文件；返回复制的字节数，失败返回 -1。
+export extern c function copy_file(src: string, dst: string): int;

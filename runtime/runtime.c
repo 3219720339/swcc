@@ -596,6 +596,225 @@ sw_string* path_join(sw_string* a, sw_string* b) {
     return sw_string_from_literal(buffer, out);
 }
 
+sw_string* path_basename(sw_string* path) {
+    int64_t last = -1;
+    for (int64_t i = 0; i < path->len; i++) {
+        if (path->data[i] == '/' || path->data[i] == '\\') {
+            last = i;
+        }
+    }
+    return sw_string_from_literal(path->data + last + 1, path->len - last - 1);
+}
+
+sw_string* path_dirname(sw_string* path) {
+    int64_t last = -1;
+    for (int64_t i = 0; i < path->len; i++) {
+        if (path->data[i] == '/' || path->data[i] == '\\') {
+            last = i;
+        }
+    }
+    if (last < 0) {
+        return sw_string_from_literal(".", 1);
+    }
+    return sw_string_from_literal(path->data, last);
+}
+
+sw_string* path_ext(sw_string* path) {
+    int64_t last_sep = -1;
+    int64_t last_dot = -1;
+    for (int64_t i = 0; i < path->len; i++) {
+        if (path->data[i] == '/' || path->data[i] == '\\') {
+            last_sep = i;
+            last_dot = -1;
+        } else if (path->data[i] == '.') {
+            last_dot = i;
+        }
+    }
+    if (last_dot < 0 || last_dot <= last_sep) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(path->data + last_dot, path->len - last_dot);
+}
+
+int64_t is_dir(sw_string* path) {
+#if defined(_WIN32)
+    extern unsigned int GetFileAttributesA(const char* path);
+    unsigned int attrs = GetFileAttributesA(path->data);
+    return attrs != 0xFFFFFFFFu && (attrs & 0x10) ? 1 : 0;
+#else
+    extern void* opendir(const char* path);
+    extern int closedir(void* dir);
+    void* dir = opendir(path->data);
+    if (dir == NULL) {
+        return 0;
+    }
+    closedir(dir);
+    return 1;
+#endif
+}
+
+#if defined(_WIN32)
+int64_t mkdir(sw_string* path) {
+    extern int CreateDirectoryA(const char* path, void* security);
+    return CreateDirectoryA(path->data, NULL) ? 0 : -1;
+}
+#else
+extern int sw_libc_mkdir(const char* path, unsigned int mode) __asm__("mkdir");
+
+int64_t mkdir(sw_string* path) {
+    return sw_libc_mkdir(path->data, 0755) == 0 ? 0 : -1;
+}
+#endif
+
+#if defined(_WIN32)
+int64_t rename(sw_string* old_path, sw_string* new_path) {
+    extern int MoveFileA(const char* old_path, const char* new_path);
+    return MoveFileA(old_path->data, new_path->data) ? 0 : -1;
+}
+
+int64_t remove(sw_string* path) {
+    extern int DeleteFileA(const char* path);
+    return DeleteFileA(path->data) ? 0 : -1;
+}
+#else
+extern int sw_libc_rename(const char* old_path, const char* new_path) __asm__("rename");
+extern int sw_libc_remove(const char* path) __asm__("remove");
+
+int64_t rename(sw_string* old_path, sw_string* new_path) {
+    return sw_libc_rename(old_path->data, new_path->data) == 0 ? 0 : -1;
+}
+
+int64_t remove(sw_string* path) {
+    return sw_libc_remove(path->data) == 0 ? 0 : -1;
+}
+#endif
+
+int64_t copy_file(sw_string* src, sw_string* dst) {
+    sw_file_handle* in = fopen(src->data, "rb");
+    if (in == NULL) {
+        return -1;
+    }
+    sw_file_handle* out = fopen(dst->data, "wb");
+    if (out == NULL) {
+        fclose(in);
+        return -1;
+    }
+    char buffer[8192];
+    int64_t total = 0;
+    while (1) {
+        uint64_t read = fread(buffer, 1, sizeof(buffer), in);
+        if (read == 0) {
+            break;
+        }
+        fwrite(buffer, 1, read, out);
+        total += (int64_t)read;
+    }
+    fclose(in);
+    fclose(out);
+    return total;
+}
+
+sw_array* sw_array_new(int64_t elem_size, int64_t count);
+
+#if defined(_WIN32)
+sw_array* list_dir(sw_string* path) {
+    typedef struct {
+        unsigned int attrs;
+        unsigned char ctime[8];
+        unsigned char atime[8];
+        unsigned char wtime[8];
+        unsigned int size_hi;
+        unsigned int size_lo;
+        unsigned int reserved0;
+        unsigned int reserved1;
+        char name[260];
+    } sw_find_data;
+    extern void* FindFirstFileA(const char* pattern, sw_find_data* data);
+    extern int FindNextFileA(void* handle, sw_find_data* data);
+    extern int FindClose(void* handle);
+
+    char* pattern = (char*)sw_gc_alloc((uint64_t)path->len + 3);
+    for (int64_t i = 0; i < path->len; i++) {
+        pattern[i] = path->data[i];
+    }
+    pattern[path->len] = '\\';
+    pattern[path->len + 1] = '*';
+    pattern[path->len + 2] = 0;
+
+    sw_find_data data;
+    void* handle = FindFirstFileA(pattern, &data);
+    if (handle == NULL || handle == (void*)-1) {
+        return sw_array_new(8, 0);
+    }
+    sw_array* array = sw_array_new(8, 16);
+    int64_t slot = 0;
+    do {
+        const char* name = data.name;
+        if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) {
+            continue;
+        }
+        if (slot >= array->len) {
+            sw_array* bigger = sw_array_new(8, array->len * 2 + 1);
+            for (int64_t i = 0; i < slot; i++) {
+                ((int64_t*)bigger->data)[i] = ((int64_t*)array->data)[i];
+            }
+            array = bigger;
+        }
+        ((int64_t*)array->data)[slot++] =
+            (int64_t)sw_string_from_literal(name, (int64_t)strlen(name));
+    } while (FindNextFileA(handle, &data));
+    FindClose(handle);
+    array->len = slot;
+    array->cap = slot;
+    return array;
+}
+#else
+#if defined(__APPLE__)
+#define SW_DIRENT_NAME_OFFSET 21
+#else
+#define SW_DIRENT_NAME_OFFSET 19
+#endif
+
+sw_array* list_dir(sw_string* path) {
+    typedef struct {
+        unsigned char raw[512];
+    } sw_dirent;
+    extern void* opendir(const char* path);
+    extern sw_dirent* readdir(void* dir);
+    extern int closedir(void* dir);
+
+    void* dir = opendir(path->data);
+    if (dir == NULL) {
+        return sw_array_new(8, 0);
+    }
+    sw_array* array = sw_array_new(8, 16);
+    int64_t slot = 0;
+    while (1) {
+        sw_dirent* entry = readdir(dir);
+        if (entry == NULL) {
+            break;
+        }
+        const char* name = (const char*)entry + SW_DIRENT_NAME_OFFSET;
+        if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) {
+            continue;
+        }
+        if (slot >= array->len) {
+            sw_array* bigger = sw_array_new(8, array->len * 2 + 1);
+            for (int64_t i = 0; i < slot; i++) {
+                ((int64_t*)bigger->data)[i] = ((int64_t*)array->data)[i];
+            }
+            array = bigger;
+        }
+        ((int64_t*)array->data)[slot++] =
+            (int64_t)sw_string_from_literal(name, (int64_t)strlen(name));
+    }
+    closedir(dir);
+    array->len = slot;
+    array->cap = slot;
+    return array;
+}
+#endif
+
 sw_string* read_all(sw_string* path) {
     sw_file_handle* file = fopen(path->data, "rb");
     if (file == NULL) {

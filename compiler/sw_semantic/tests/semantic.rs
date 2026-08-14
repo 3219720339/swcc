@@ -185,6 +185,22 @@ fn checks_io_and_error_handling_extras() {
     );
 }
 
+#[test]
+fn checks_dir_and_file_management() {
+    let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crate 目录")
+        .parent()
+        .expect("工作区根")
+        .join("stdlib");
+    let result = analyze(&fixture("dir-more.sw"), Some(&stdlib));
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+}
+
 fn collect_expr_kinds(
     statement: &sw_semantic::MirStmt,
     found_assign: &mut bool,
