@@ -1,0 +1,18 @@
+﻿构建成功：demo-url.exe（用时 922 ms）
+http
+example.com
+8080
+/a/b
+x=1&y=2
+https
+api.test.com
+443
+/data
+1
+hello
+
+(无)
+name=sw&year=2026
+name=sw&year=2026
+1
+2

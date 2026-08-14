@@ -20,3 +20,35 @@ export extern c function fnv1a_64_seed(text: string, seed: int): int;
 
 /// DJB2 字符串哈希（初始 5381）。
 export extern c function djb2(text: string): int;
+
+/// MD5 哈希（32 位十六进制小写）。示例：md5("hello") == "5d41402abc4b2a76b9719d911017c592"。
+export extern c function md5(text: string): string;
+
+/// 文件 MD5（按字节流计算，适合校验文件）；文件不存在/读取失败返回空串。
+export extern c function md5_file(path: string): string;
+
+/// SHA-256 哈希（64 位十六进制小写）。示例：sha256("hello") 为标准 64 位摘要。
+export extern c function sha256(text: string): string;
+
+/// 文件 SHA-256（按字节流计算）；文件不存在/读取失败返回空串。
+export extern c function sha256_file(path: string): string;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 取MD5(text: string): string {
+    return md5(text);
+}
+
+export function 取MD5文件(path: string): string {
+    return md5_file(path);
+}
+
+export function 取SHA256(text: string): string {
+    return sha256(text);
+}
+
+export function 取SHA256文件(path: string): string {
+    return sha256_file(path);
+}

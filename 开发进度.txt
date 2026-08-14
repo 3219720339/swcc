@@ -1195,6 +1195,33 @@ Sw 编译器（swcc）开发进度
                        - 验证：73 examples 全过；cargo test 52 全绿；
                          fmt 通过；demo 输出正确
 
+    2026-08-15 06:00  标准库第一批：HTTP + MD5/SHA-256 + URL：
+                       - 新增 std/http（阻塞式客户端，复用 std/net TCP）：
+                         http_get/http_post 返回 map（status/body/headers），
+                         http_status/http_body/http_headers 便捷包装 +
+                         中文（取网页/网页POST/取状态码/取响应内容）；
+                         v0.1 仅 http:// 明文
+                       - std/hash 扩展：md5/md5_file/sha256/sha256_file
+                         （标准算法纯 C 实现，含文件流式计算）+ 中文
+                         （取MD5/取MD5文件/取SHA256/取SHA256文件）；
+                         已知向量（空串/abc/hello/中文）全部验证正确
+                       - 新增 std/url：url_parse（返回 map：scheme/host/
+                         port/path/query）、url_query（解析 a=1&b=2）、
+                         url_build_query（序列化+URL 编码）+ 便捷包装与中文
+                         （解析网址/取网址协议/取网址主机/取网址端口/
+                         取网址路径/取网址查询/解析查询参数/生成查询参数）
+                       - 修复 http 读取 bug：sw_http_read_all 原来收到
+                         不足 65536 字节就提前返回导致 body 为空，改为
+                         一直读到对端关闭
+                       - 新增探针 probe-url.sw（26 断言）/probe-hash2.sw
+                         （14 断言）/probe-http.sw（GET/POST 200 验证）；
+                         run-examples.py 登记 3 项
+                       - demo 新增 demo-url/demo-hash2/demo-http，输出存
+                         outputs/demo-*.txt
+                       - 验证：76 examples 全过（含真实 HTTP 请求）；
+                         cargo test 52 全绿；fmt 通过；runtime.c 交叉编译
+                         x86_64/aarch64 Linux + aarch64 macOS 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

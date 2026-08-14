@@ -7808,3 +7808,684 @@ sw_string* regex_replace(sw_string* text, sw_string* pattern, sw_string* replace
     buffer[used] = 0;
     return sw_string_from_literal(buffer, used);
 }
+
+// ---------------------------------------------------------------------------
+// MD5 / SHA-256（标准实现，纯自包含，用于文件/文本校验）
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    unsigned int state[4];
+    unsigned int count[2];
+    unsigned char buffer[64];
+} sw_md5_ctx;
+
+static const unsigned int sw_md5_k[64] = {
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
+    0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+    0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+    0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+    0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+    0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
+    0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
+    0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+    0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
+};
+
+static const unsigned char sw_md5_shift[64] = {
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+};
+
+static unsigned int sw_md5_rotl(unsigned int value, int shift) {
+    return (value << shift) | (value >> (32 - shift));
+}
+
+static void sw_md5_init(sw_md5_ctx* ctx) {
+    ctx->state[0] = 0x67452301;
+    ctx->state[1] = 0xefcdab89;
+    ctx->state[2] = 0x98badcfe;
+    ctx->state[3] = 0x10325476;
+    ctx->count[0] = 0;
+    ctx->count[1] = 0;
+}
+
+static void sw_md5_transform(sw_md5_ctx* ctx, const unsigned char block[64]) {
+    unsigned int a = ctx->state[0];
+    unsigned int b = ctx->state[1];
+    unsigned int c = ctx->state[2];
+    unsigned int d = ctx->state[3];
+    unsigned int x[16];
+    for (int i = 0; i < 16; i++) {
+        x[i] = (unsigned int)block[i * 4] |
+               ((unsigned int)block[i * 4 + 1] << 8) |
+               ((unsigned int)block[i * 4 + 2] << 16) |
+               ((unsigned int)block[i * 4 + 3] << 24);
+    }
+    for (int i = 0; i < 64; i++) {
+        unsigned int f;
+        int g;
+        if (i < 16) {
+            f = (b & c) | ((~b) & d);
+            g = i;
+        } else if (i < 32) {
+            f = (d & b) | ((~d) & c);
+            g = (5 * i + 1) % 16;
+        } else if (i < 48) {
+            f = b ^ c ^ d;
+            g = (3 * i + 5) % 16;
+        } else {
+            f = c ^ (b | (~d));
+            g = (7 * i) % 16;
+        }
+        unsigned int temp = d;
+        d = c;
+        c = b;
+        b = b + sw_md5_rotl(a + f + sw_md5_k[i] + x[g], sw_md5_shift[i]);
+        a = temp;
+    }
+    ctx->state[0] += a;
+    ctx->state[1] += b;
+    ctx->state[2] += c;
+    ctx->state[3] += d;
+}
+
+static void sw_md5_update(sw_md5_ctx* ctx, const unsigned char* data, uint64_t len) {
+    uint64_t index = (ctx->count[0] >> 3) & 0x3F;
+    uint64_t add = 64 - index;
+    ctx->count[0] += (unsigned int)(len << 3);
+    if (ctx->count[0] < (unsigned int)(len << 3)) {
+        ctx->count[1]++;
+    }
+    ctx->count[1] += (unsigned int)(len >> 29);
+    if (len >= add) {
+        memcpy(ctx->buffer + index, data, add);
+        sw_md5_transform(ctx, ctx->buffer);
+        for (uint64_t i = add; i + 63 < len; i += 64) {
+            sw_md5_transform(ctx, data + i);
+        }
+        index = 0;
+    } else {
+        add = len;
+    }
+    memcpy(ctx->buffer + index, data, add);
+}
+
+static void sw_md5_final(sw_md5_ctx* ctx, unsigned char digest[16]) {
+    unsigned char bits[8];
+    for (int i = 0; i < 8; i++) {
+        bits[i] = (unsigned char)((ctx->count[i >> 2] >> ((i & 3) * 8)) & 0xFF);
+    }
+    unsigned char pad[72];
+    uint64_t index = (ctx->count[0] >> 3) & 0x3F;
+    uint64_t pad_len = index < 56 ? 56 - index : 120 - index;
+    memset(pad, 0, sizeof(pad));
+    pad[0] = 0x80;
+    sw_md5_update(ctx, pad, pad_len);
+    sw_md5_update(ctx, bits, 8);
+    for (int i = 0; i < 4; i++) {
+        digest[i * 4] = (unsigned char)(ctx->state[i] & 0xFF);
+        digest[i * 4 + 1] = (unsigned char)((ctx->state[i] >> 8) & 0xFF);
+        digest[i * 4 + 2] = (unsigned char)((ctx->state[i] >> 16) & 0xFF);
+        digest[i * 4 + 3] = (unsigned char)((ctx->state[i] >> 24) & 0xFF);
+    }
+}
+
+static sw_string* sw_md5_bytes(const unsigned char* data, uint64_t len) {
+    sw_md5_ctx ctx;
+    sw_md5_init(&ctx);
+    sw_md5_update(&ctx, data, len);
+    unsigned char digest[16];
+    sw_md5_final(&ctx, digest);
+    char* out = (char*)sw_gc_alloc(33);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 16; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0F];
+    }
+    out[32] = 0;
+    return sw_string_from_literal(out, 32);
+}
+
+sw_string* md5(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_md5_bytes((const unsigned char*)text->data, (uint64_t)text->len);
+}
+
+sw_string* md5_file(sw_string* path) {
+    if (path == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_file_handle* file = fopen(path->data, "rb");
+    if (file == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_md5_ctx ctx;
+    sw_md5_init(&ctx);
+    unsigned char buffer[4096];
+    uint64_t got;
+    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        sw_md5_update(&ctx, buffer, got);
+    }
+    fclose(file);
+    unsigned char digest[16];
+    sw_md5_final(&ctx, digest);
+    char* out = (char*)sw_gc_alloc(33);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 16; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0F];
+    }
+    out[32] = 0;
+    return sw_string_from_literal(out, 32);
+}
+
+// SHA-256
+static const unsigned int sw_sha256_k[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
+typedef struct {
+    unsigned int state[8];
+    uint64_t count;
+    unsigned char buffer[64];
+} sw_sha256_ctx;
+
+static unsigned int sw_sha256_rotr(unsigned int value, int shift) {
+    return (value >> shift) | (value << (32 - shift));
+}
+
+static void sw_sha256_transform(sw_sha256_ctx* ctx, const unsigned char block[64]) {
+    unsigned int w[64];
+    for (int i = 0; i < 16; i++) {
+        w[i] = ((unsigned int)block[i * 4] << 24) |
+               ((unsigned int)block[i * 4 + 1] << 16) |
+               ((unsigned int)block[i * 4 + 2] << 8) |
+               (unsigned int)block[i * 4 + 3];
+    }
+    for (int i = 16; i < 64; i++) {
+        unsigned int s0 = sw_sha256_rotr(w[i - 15], 7) ^ sw_sha256_rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        unsigned int s1 = sw_sha256_rotr(w[i - 2], 17) ^ sw_sha256_rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    unsigned int a = ctx->state[0];
+    unsigned int b = ctx->state[1];
+    unsigned int c = ctx->state[2];
+    unsigned int d = ctx->state[3];
+    unsigned int e = ctx->state[4];
+    unsigned int f = ctx->state[5];
+    unsigned int g = ctx->state[6];
+    unsigned int h = ctx->state[7];
+    for (int i = 0; i < 64; i++) {
+        unsigned int s1 = sw_sha256_rotr(e, 6) ^ sw_sha256_rotr(e, 11) ^ sw_sha256_rotr(e, 25);
+        unsigned int ch = (e & f) ^ ((~e) & g);
+        unsigned int temp1 = h + s1 + ch + sw_sha256_k[i] + w[i];
+        unsigned int s0 = sw_sha256_rotr(a, 2) ^ sw_sha256_rotr(a, 13) ^ sw_sha256_rotr(a, 22);
+        unsigned int maj = (a & b) ^ (a & c) ^ (b & c);
+        unsigned int temp2 = s0 + maj;
+        h = g;
+        g = f;
+        f = e;
+        e = d + temp1;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2;
+    }
+    ctx->state[0] += a;
+    ctx->state[1] += b;
+    ctx->state[2] += c;
+    ctx->state[3] += d;
+    ctx->state[4] += e;
+    ctx->state[5] += f;
+    ctx->state[6] += g;
+    ctx->state[7] += h;
+}
+
+static void sw_sha256_init(sw_sha256_ctx* ctx) {
+    ctx->state[0] = 0x6a09e667;
+    ctx->state[1] = 0xbb67ae85;
+    ctx->state[2] = 0x3c6ef372;
+    ctx->state[3] = 0xa54ff53a;
+    ctx->state[4] = 0x510e527f;
+    ctx->state[5] = 0x9b05688c;
+    ctx->state[6] = 0x1f83d9ab;
+    ctx->state[7] = 0x5be0cd19;
+    ctx->count = 0;
+}
+
+static void sw_sha256_update(sw_sha256_ctx* ctx, const unsigned char* data, uint64_t len) {
+    uint64_t index = ctx->count & 0x3F;
+    ctx->count += len;
+    uint64_t add = 64 - index;
+    if (len >= add) {
+        memcpy(ctx->buffer + index, data, add);
+        sw_sha256_transform(ctx, ctx->buffer);
+        uint64_t i;
+        for (i = add; i + 63 < len; i += 64) {
+            sw_sha256_transform(ctx, data + i);
+        }
+        index = 0;
+        data += i;
+        len -= i;
+    }
+    if (len > 0) {
+        memcpy(ctx->buffer + index, data, len);
+    }
+}
+
+static void sw_sha256_final(sw_sha256_ctx* ctx, unsigned char digest[32]) {
+    uint64_t bits = ctx->count << 3;
+    unsigned char pad[72];
+    uint64_t index = ctx->count & 0x3F;
+    uint64_t pad_len = index < 56 ? 56 - index : 120 - index;
+    memset(pad, 0, sizeof(pad));
+    pad[0] = 0x80;
+    sw_sha256_update(ctx, pad, pad_len);
+    unsigned char len_bytes[8];
+    for (int i = 0; i < 8; i++) {
+        len_bytes[i] = (unsigned char)((bits >> (56 - i * 8)) & 0xFF);
+    }
+    sw_sha256_update(ctx, len_bytes, 8);
+    for (int i = 0; i < 8; i++) {
+        digest[i * 4] = (unsigned char)((ctx->state[i] >> 24) & 0xFF);
+        digest[i * 4 + 1] = (unsigned char)((ctx->state[i] >> 16) & 0xFF);
+        digest[i * 4 + 2] = (unsigned char)((ctx->state[i] >> 8) & 0xFF);
+        digest[i * 4 + 3] = (unsigned char)(ctx->state[i] & 0xFF);
+    }
+}
+
+static sw_string* sw_sha256_bytes(const unsigned char* data, uint64_t len) {
+    sw_sha256_ctx ctx;
+    sw_sha256_init(&ctx);
+    sw_sha256_update(&ctx, data, len);
+    unsigned char digest[32];
+    sw_sha256_final(&ctx, digest);
+    char* out = (char*)sw_gc_alloc(65);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0F];
+    }
+    out[64] = 0;
+    return sw_string_from_literal(out, 64);
+}
+
+sw_string* sha256(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_sha256_bytes((const unsigned char*)text->data, (uint64_t)text->len);
+}
+
+sw_string* sha256_file(sw_string* path) {
+    if (path == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_file_handle* file = fopen(path->data, "rb");
+    if (file == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_sha256_ctx ctx;
+    sw_sha256_init(&ctx);
+    unsigned char buffer[4096];
+    uint64_t got;
+    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        sw_sha256_update(&ctx, buffer, got);
+    }
+    fclose(file);
+    unsigned char digest[32];
+    sw_sha256_final(&ctx, digest);
+    char* out = (char*)sw_gc_alloc(65);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0F];
+    }
+    out[64] = 0;
+    return sw_string_from_literal(out, 64);
+}
+
+// ---------------------------------------------------------------------------
+// URL 解析与查询参数
+// ---------------------------------------------------------------------------
+
+// 解析 URL 为 map：scheme / host / port(int) / path / query。
+void* url_parse(sw_string* url) {
+    void* map = sw_map_new();
+    if (url == NULL) {
+        return map;
+    }
+    // scheme://
+    int64_t scheme_end = -1;
+    for (int64_t i = 0; i + 2 < url->len; i++) {
+        if (url->data[i] == ':' && url->data[i + 1] == '/' && url->data[i + 2] == '/') {
+            scheme_end = i;
+            break;
+        }
+    }
+    int64_t host_start = 0;
+    sw_string* scheme = sw_string_from_literal("", 0);
+    if (scheme_end >= 0) {
+        scheme = sw_string_from_literal(url->data, scheme_end);
+        host_start = scheme_end + 3;
+    }
+    // host 部分：到 / ? # 或结尾
+    int64_t host_end = host_start;
+    while (host_end < url->len) {
+        char c = url->data[host_end];
+        if (c == '/' || c == '?' || c == '#') {
+            break;
+        }
+        host_end++;
+    }
+    sw_string* host = sw_string_from_literal(url->data + host_start, host_end - host_start);
+    // 端口
+    int64_t port = 0;
+    for (int64_t i = host_start; i < host_end; i++) {
+        if (url->data[i] == ':') {
+            int64_t p = 0;
+            for (int64_t k = i + 1; k < host_end; k++) {
+                if (url->data[k] < '0' || url->data[k] > '9') {
+                    break;
+                }
+                p = p * 10 + (url->data[k] - '0');
+            }
+            host = sw_string_from_literal(url->data + host_start, i - host_start);
+            port = p;
+            break;
+        }
+    }
+    if (port == 0) {
+        if (scheme->len == 5 && scheme->data[0] == 'h' && scheme->data[1] == 't' &&
+            scheme->data[2] == 't' && scheme->data[3] == 'p' && scheme->data[4] == 's') {
+            port = 443;
+        } else {
+            port = 80;
+        }
+    }
+    // path 与 query
+    int64_t path_start = host_end;
+    int64_t query_start = -1;
+    for (int64_t i = path_start; i < url->len; i++) {
+        if (url->data[i] == '?') {
+            query_start = i;
+            break;
+        }
+        if (url->data[i] == '#') {
+            query_start = i;
+            break;
+        }
+    }
+    int64_t path_end = query_start >= 0 ? query_start : url->len;
+    sw_string* path = path_start < path_end
+        ? sw_string_from_literal(url->data + path_start, path_end - path_start)
+        : sw_string_from_literal("/", 1);
+    sw_string* query = query_start >= 0 && query_start + 1 < url->len
+        ? sw_string_from_literal(url->data + query_start + 1, url->len - query_start - 1)
+        : sw_string_from_literal("", 0);
+    sw_map_set(map, sw_string_from_literal("scheme", 6), scheme);
+    sw_map_set(map, sw_string_from_literal("host", 4), host);
+    sw_map_set_int(map, sw_string_from_literal("port", 4), port);
+    sw_map_set(map, sw_string_from_literal("path", 4), path);
+    sw_map_set(map, sw_string_from_literal("query", 5), query);
+    return map;
+}
+
+// 解析查询字符串 "a=1&b=2" 为 map（string 值，自动 URL 解码）。
+void* url_query(sw_string* query) {
+    void* map = sw_map_new();
+    if (query == NULL) {
+        return map;
+    }
+    int64_t i = 0;
+    while (i <= query->len) {
+        int64_t seg_end = i;
+        while (seg_end < query->len && query->data[seg_end] != '&') {
+            seg_end++;
+        }
+        if (seg_end > i) {
+            int64_t eq = i;
+            while (eq < seg_end && query->data[eq] != '=') {
+                eq++;
+            }
+            sw_string* key = eq < seg_end
+                ? sw_string_from_literal(query->data + i, eq - i)
+                : sw_string_from_literal(query->data + i, seg_end - i);
+            sw_string* value = eq < seg_end && eq + 1 < seg_end
+                ? sw_string_from_literal(query->data + eq + 1, seg_end - eq - 1)
+                : sw_string_from_literal("", 0);
+            sw_map_set(map, key, value);
+        }
+        i = seg_end + 1;
+    }
+    return map;
+}
+
+// 把 map 序列化为查询字符串 "a=1&b=2"（URL 编码）。
+sw_string* url_build_query(void* map) {
+    sw_array* keys = sw_map_keys(map);
+    sw_array* values = sw_map_values(map);
+    int64_t* kdata = (int64_t*)keys->data;
+    int64_t* vdata = (int64_t*)values->data;
+    int64_t cap = 64;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    for (int64_t i = 0; i < keys->len; i++) {
+        sw_string* key = (sw_string*)kdata[i];
+        sw_string* value = (sw_string*)vdata[i];
+        if (i > 0 && used + 1 < cap) {
+            buffer[used++] = '&';
+        }
+        for (int64_t k = 0; k < key->len && used + 16 < cap; k++) {
+            unsigned char c = (unsigned char)key->data[k];
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+                buffer[used++] = (char)c;
+            } else {
+                used += snprintf(buffer + used, (sw_size)(cap - used), "%%%02X", c);
+            }
+        }
+        if (used + 1 < cap) {
+            buffer[used++] = '=';
+        }
+        for (int64_t k = 0; k < value->len && used + 16 < cap; k++) {
+            unsigned char c = (unsigned char)value->data[k];
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+                buffer[used++] = (char)c;
+            } else {
+                used += snprintf(buffer + used, (sw_size)(cap - used), "%%%02X", c);
+            }
+        }
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
+}
+
+// ---------------------------------------------------------------------------
+// HTTP 客户端（阻塞式，基于 sw_net_*）
+// 返回 map：status(int) / body(string) / headers(string)。
+// ---------------------------------------------------------------------------
+
+static int64_t sw_http_parse_status(sw_string* text) {
+    // 期望 "HTTP/1.1 200 OK" 或 "HTTP/1.0 404 ..."
+    int64_t space = -1;
+    for (int64_t i = 0; i < text->len; i++) {
+        if (text->data[i] == ' ') {
+            space = i;
+            break;
+        }
+    }
+    if (space < 0 || space + 1 >= text->len) {
+        return 0;
+    }
+    int64_t code = 0;
+    int64_t i = space + 1;
+    while (i < text->len && text->data[i] >= '0' && text->data[i] <= '9') {
+        code = code * 10 + (text->data[i] - '0');
+        i++;
+    }
+    return code;
+}
+
+// 读取直到对端关闭，返回拼接后的全部响应文本。
+static sw_string* sw_http_read_all(int64_t fd) {
+    int64_t cap = 4096;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    while (1) {
+        sw_string* chunk = sw_net_recv(fd, 65536);
+        if (chunk == NULL || chunk->len == 0) {
+            break;
+        }
+        if (used + chunk->len + 1 > cap) {
+            cap = (used + chunk->len) * 2 + 64;
+            char* bigger = (char*)sw_gc_alloc((uint64_t)cap);
+            memcpy(bigger, buffer, (uint64_t)used);
+            buffer = bigger;
+        }
+        memcpy(buffer + used, chunk->data, (uint64_t)chunk->len);
+        used += chunk->len;
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
+}
+
+// 发 HTTP 请求（method/url/body），返回 map：status/body/headers。
+void* http_request(sw_string* method, sw_string* url, sw_string* body) {
+    void* result = sw_map_new();
+    sw_map_set_int(result, sw_string_from_literal("status", 6), 0);
+    sw_map_set(result, sw_string_from_literal("body", 4), sw_string_from_literal("", 0));
+    sw_map_set(result, sw_string_from_literal("headers", 7), sw_string_from_literal("", 0));
+    if (url == NULL) {
+        return result;
+    }
+    void* parts = url_parse(url);
+    sw_string* host = sw_map_get(parts, sw_string_from_literal("host", 4));
+    int64_t port = sw_map_get_int(parts, sw_string_from_literal("port", 4), 80);
+    sw_string* path = sw_map_get(parts, sw_string_from_literal("path", 4));
+    sw_string* query = sw_map_get(parts, sw_string_from_literal("query", 5));
+    if (host == NULL || host->len == 0) {
+        return result;
+    }
+    int64_t fd = sw_net_connect(host, port);
+    if (fd < 0) {
+        return result;
+    }
+    // 请求行与请求头
+    char* request = (char*)sw_gc_alloc(4096);
+    int64_t used = 0;
+    for (int64_t i = 0; i < method->len && used < 1024; i++) {
+        request[used++] = method->data[i];
+    }
+    request[used++] = ' ';
+    for (int64_t i = 0; i < path->len && used < 2048; i++) {
+        request[used++] = path->data[i];
+    }
+    if (query->len > 0) {
+        request[used++] = '?';
+        for (int64_t i = 0; i < query->len && used < 2048; i++) {
+            request[used++] = query->data[i];
+        }
+    }
+    request[used++] = ' ';
+    request[used++] = 'H';
+    request[used++] = 'T';
+    request[used++] = 'T';
+    request[used++] = 'P';
+    request[used++] = '/';
+    request[used++] = '1';
+    request[used++] = '.';
+    request[used++] = '1';
+    request[used++] = '\r';
+    request[used++] = '\n';
+    const char* host_hdr = "Host: ";
+    const char* conn_hdr = "Connection: close\r\n";
+    const char* len_hdr = "Content-Length: ";
+    for (int64_t i = 0; host_hdr[i]; i++) {
+        request[used++] = host_hdr[i];
+    }
+    for (int64_t i = 0; i < host->len && used < 3072; i++) {
+        request[used++] = host->data[i];
+    }
+    request[used++] = '\r';
+    request[used++] = '\n';
+    for (int64_t i = 0; conn_hdr[i]; i++) {
+        request[used++] = conn_hdr[i];
+    }
+    int64_t body_len = body != NULL ? body->len : 0;
+    if (body_len > 0) {
+        for (int64_t i = 0; len_hdr[i]; i++) {
+            request[used++] = len_hdr[i];
+        }
+        used += snprintf(request + used, (sw_size)(4096 - used), "%lld\r\n", (long long)body_len);
+        const char* ctype = "Content-Type: application/x-www-form-urlencoded\r\n";
+        for (int64_t i = 0; ctype[i] && used < 4090; i++) {
+            request[used++] = ctype[i];
+        }
+    }
+    request[used++] = '\r';
+    request[used++] = '\n';
+    sw_string* head = sw_string_from_literal(request, used);
+    sw_net_send(fd, head);
+    if (body_len > 0) {
+        sw_net_send(fd, body);
+    }
+    sw_string* response = sw_http_read_all(fd);
+    sw_net_close(fd);
+    // 解析：状态行 \r\n 头 \r\n\r\n 体
+    int64_t status = sw_http_parse_status(response);
+    sw_map_set_int(result, sw_string_from_literal("status", 6), status);
+    int64_t header_end = 0;
+    for (int64_t i = 0; i + 3 < response->len; i++) {
+        if (response->data[i] == '\r' && response->data[i + 1] == '\n' &&
+            response->data[i + 2] == '\r' && response->data[i + 3] == '\n') {
+            header_end = i;
+            break;
+        }
+    }
+    if (header_end > 0) {
+        sw_string* headers = sw_string_from_literal(response->data, header_end);
+        sw_map_set(result, sw_string_from_literal("headers", 7), headers);
+    }
+    int64_t body_start = header_end > 0 ? header_end + 4 : 0;
+    if (body_start < response->len) {
+        sw_string* body_text = sw_string_from_literal(response->data + body_start, response->len - body_start);
+        sw_map_set(result, sw_string_from_literal("body", 4), body_text);
+    }
+    return result;
+}
+
+void* http_get(sw_string* url) {
+    return http_request(sw_string_from_literal("GET", 3), url, NULL);
+}
+
+void* http_post(sw_string* url, sw_string* body) {
+    return http_request(sw_string_from_literal("POST", 4), url, body);
+}
