@@ -1280,6 +1280,15 @@ Sw 编译器（swcc）开发进度
                        - run-examples.py 登记；78 examples 全过；
                          cargo test 52 全绿；fmt 通过
 
+    2026-08-15 07:10  跨文件 + 基础库组合测试（强化：两个文件都用基础库）：
+                       - 按用户要求，主文件 probe-cross-stdlib.sw 自己也
+                         使用全部基础库（string/math/time/array/map/json/
+                         hash/regex/fs/encoding），再调用 lib-std.sw
+                       - 主文件新增 15 项"main *"断言（字符串/数学/时间/
+                         数组/map/JSON/哈希/正则/文件/编码），与被调用模块
+                         的 13 项断言并列，最终 28 断言全过
+                       - 78 examples 全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
