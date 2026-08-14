@@ -42,7 +42,7 @@ extern void* stdin;
 extern void* stdout;
 #endif
 
-// 汇编实现的 setjmp/longjmp（runtime.s）
+// 汇编实现的 setjmp/longjmp（runtime_x64.S / runtime_aarch64.s）
 extern int sw_setjmp(void* buf);
 extern void sw_longjmp(void* buf, int value);
 
@@ -659,10 +659,32 @@ int64_t mkdir(sw_string* path) {
     return CreateDirectoryA(path->data, NULL) ? 0 : -1;
 }
 #else
-extern int sw_libc_mkdir(const char* path, unsigned int mode) __asm__("mkdir");
+// 注意：不能把 libc 符号直接改名成 mkdir/rename/remove —— 那会与本文件导出的
+// 同名包装函数冲突（ELF 上可执行文件定义会遮蔽 libc 同名函数，造成无限递归；
+// Mach-O 上符号还带下划线前缀）。这里统一改用 mkdirat/renameat/unlink/rmdir，
+// 三平台均有且与包装函数名不冲突。
+#if defined(__APPLE__)
+// Mach-O 的 C 符号带下划线前缀。
+#define SW_LIBC_SYM(name) "_" name
+#define SW_AT_FDCWD (-2)
+#else
+#define SW_LIBC_SYM(name) name
+#define SW_AT_FDCWD (-100)
+#endif
+
+extern int sw_libc_mkdirat(int dirfd, const char* path, unsigned int mode)
+    __asm__(SW_LIBC_SYM("mkdirat"));
+extern int sw_libc_renameat(
+    int old_dirfd,
+    const char* old_path,
+    int new_dirfd,
+    const char* new_path
+) __asm__(SW_LIBC_SYM("renameat"));
+extern int sw_libc_unlink(const char* path) __asm__(SW_LIBC_SYM("unlink"));
+extern int sw_libc_rmdir(const char* path) __asm__(SW_LIBC_SYM("rmdir"));
 
 int64_t mkdir(sw_string* path) {
-    return sw_libc_mkdir(path->data, 0755) == 0 ? 0 : -1;
+    return sw_libc_mkdirat(SW_AT_FDCWD, path->data, 0755) == 0 ? 0 : -1;
 }
 #endif
 
@@ -677,15 +699,25 @@ int64_t remove(sw_string* path) {
     return DeleteFileA(path->data) ? 0 : -1;
 }
 #else
-extern int sw_libc_rename(const char* old_path, const char* new_path) __asm__("rename");
-extern int sw_libc_remove(const char* path) __asm__("remove");
-
 int64_t rename(sw_string* old_path, sw_string* new_path) {
-    return sw_libc_rename(old_path->data, new_path->data) == 0 ? 0 : -1;
+    return sw_libc_renameat(
+               SW_AT_FDCWD,
+               old_path->data,
+               SW_AT_FDCWD,
+               new_path->data
+           ) == 0
+        ? 0
+        : -1;
 }
 
 int64_t remove(sw_string* path) {
-    return sw_libc_remove(path->data) == 0 ? 0 : -1;
+    if (sw_libc_unlink(path->data) == 0) {
+        return 0;
+    }
+    if (sw_libc_rmdir(path->data) == 0) {
+        return 0;
+    }
+    return -1;
 }
 #endif
 
@@ -1593,7 +1625,7 @@ sw_string* date_string(int64_t seconds) {
     int day = *(unsigned short*)(st + 6);
     snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", year, month, day);
 #else
-    extern int localtime_r(const void* time, void* tm);
+    extern void* localtime_r(const void* time, void* tm);
     unsigned char tm[64];
     unsigned char t[8];
     *(int64_t*)t = seconds;
@@ -1631,7 +1663,7 @@ sw_string* datetime_string(int64_t seconds) {
         second
     );
 #else
-    extern int localtime_r(const void* time, void* tm);
+    extern void* localtime_r(const void* time, void* tm);
     unsigned char tm[64];
     unsigned char t[8];
     *(int64_t*)t = seconds;

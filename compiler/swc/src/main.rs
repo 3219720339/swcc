@@ -788,7 +788,7 @@ fn host_exe_name(basename: &str) -> String {
 fn runtime_asm_file(arch: &str) -> &'static str {
     match arch {
         "aarch64" => "runtime_aarch64.s",
-        _ => "runtime.s",
+        _ => "runtime_x64.S",
     }
 }
 

@@ -58,7 +58,7 @@ def main():
     shutil.copy2(lld, os.path.join(sdk, "bin", "ld.lld"))
 
     # 预编译运行时（x86_64 + aarch64）
-    for arch, asm in (("x86_64", "runtime.s"), ("aarch64", "runtime_aarch64.s")):
+    for arch, asm in (("x86_64", "runtime_x64.S"), ("aarch64", "runtime_aarch64.s")):
         target = f"{arch}-unknown-linux-musl"
         run([clang, "-target", target, "-O2", "-c", os.path.join(ROOT, "runtime", "runtime.c"),
              "-o", os.path.join(sdk, "lib", f"runtime_{arch}.o")])

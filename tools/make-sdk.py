@@ -59,7 +59,7 @@ def main():
     target = "x86_64-w64-windows-gnu"
     for source, output in (
         ("runtime.c", "runtime.obj"),
-        ("runtime.s", "runtime_asm.obj"),
+        ("runtime_x64.S", "runtime_asm.obj"),
         ("startup.s", "startup.obj"),
     ):
         src = os.path.join(ROOT, "runtime", source)

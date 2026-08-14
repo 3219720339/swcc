@@ -171,6 +171,25 @@ Sw 编译器（swcc）开发进度
     2026-08-14 09:40  CI 增强：新增 tools/run-examples.py（三平台逐个编译运行全部 examples，
                        断言预期退出码，超时 120s），接入 ci.yml 的 Windows/Linux/macOS smoke
                        （保留原有 aarch64/musl 交叉编译与 Mach-O/ELF 校验）
+    2026-08-14 09:44  三平台 CI 失败定位与修复（Linux 4 探针退出码异常 + macOS 链接失败）：
+                       - Linux probe-exc-*：x64 runtime.s 按 Windows 调用约定取参（rcx/rdx），
+                         SysV ABI 下第一个参数在 rdi → sw_setjmp 把寄存器写进野地址，
+                         进 try 即崩溃（swc run 对信号退出按 1 上报，掩盖成"退出码 1"）。
+                         改 runtime.s → runtime_x64.S，用预处理宏按 _WIN32 选寄存器：
+                         Windows 用 rcx/rdx，ELF/Mach-O 用 rdi/rsi；反汇编验证两边正确
+                       - Linux/macOS probe-dir：非 Windows 分支用 __asm__ 把 libc 符号
+                         mkdir/rename/remove 改名，与本文件同名导出包装函数撞符号：
+                         ELF 上可执行文件定义遮蔽 libc，包装函数无限递归栈溢出；
+                         Mach-O 上 C 符号带下划线前缀，引用 mkdir（无下划线）直接链接失败。
+                         统一改用 mkdirat/renameat/unlink/rmdir（POSIX，三平台都有、
+                         与包装函数名不冲突）；Apple 下 asm 符号补下划线前缀
+                       - localtime_r 声明为返回 int 与实际指针返回不符（Linux 编译警告）：
+                         改为 void*，两处 date/datetime 的 NULL 判断恢复正确
+                       - 验证：runtime 交叉编译 6 目标（Windows/Linux/macOS × x86_64/aarch64）
+                         通过；Windows 本机 29 个 examples 全部回归通过；cargo test 48 全绿；
+                         Linux x86_64 musl 端到端链接 probe-exceptions/probe-dir/fib 成功，
+                         nm 确认最终可执行文件内 mkdir/rename/remove 仅包装函数一个定义、
+                         mkdirat/renameat/unlink/rmdir 已解析进 libc.a，无递归
 
     待办（下一批）：网络/进程交互等进阶标准库、泛型 struct/class、JSON/Unicode 字符串深化
 
