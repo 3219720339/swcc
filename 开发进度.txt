@@ -1619,10 +1619,64 @@ Sw 编译器（swcc）开发进度
                           （is_upper 等需 string），swap_case 用 chars() 转
                           单字符数组实现
 
+    2026-08-15 12:00  标准库批 8（net 增强 / hash 补齐 / time 人性化 + 附加，
+                        共 45 个新函数，全中英文）：
+                        - std/net +10（runtime C，Windows/POSIX 双分支）：
+                          net_connect_timeout（非阻塞 connect + select 等待，
+                          fd_set 按平台排布局：Windows fd_count+array、
+                          macOS int32 位、Linux long 位；EINPROGRESS 按平台
+                          4/115；SO_ERROR 检查）、net_set_recv_timeout/
+                          net_set_send_timeout（SO_RCVTIMEO/SNDTIMEO 按平台
+                          20/0x1006、19/0x1005）、net_available（FIONREAD
+                          0x541B/0x4004667F）、net_resolve（域名→IPv4）、
+                          net_peer_ip/net_peer_port（getpeername）、
+                          net_set_keepalive（SO_KEEPALIVE 9/0x0008）、
+                          net_recv_until_close（读 HTTP 响应体用）、
+                          net_send_all（循环完整发送）
+                        - std/hash +6（runtime C，标准算法）：
+                          crc32/crc32_file（IEEE 0xEDB88320，check 0xCBF43926）、
+                          crc16（IBM 0xA001，check 0xBB3D）、
+                          sha1/sha1_file（40 位 hex，abc 向量验证）、
+                          hmac_sha256（复用 sha256 ctx，RFC 4231 向量验证）
+                        - std/time +7（全部纯 Sw）：month_name（1-12 英文月）、
+                          weekday_name（0-6 英文星期）、time_ago_cn（刚刚/
+                          N 分钟前/小时前/天前/周前/月前/年前）、time_ago_en、
+                          days_between/hours_between/minutes_between
+                        - 附加（能加就加，全中英文）：
+                          std/map +1 map_get_or（纯 Sw：?? 兜底）、
+                          std/set +3 set_union/intersect/difference（纯 Sw）、
+                          std/csv +2 csv_read_all/csv_write_all（纯 Sw：
+                          循环 parse/join，含 roundtrip）、
+                          std/array +3 chunk_int/float/string（纯 Sw：
+                          切片 + push 分块）、
+                          std/http +1 http_get_json（纯 Sw：GET 后 json_parse）
+                        - 说明：HTTP keep-alive 需连接层重写，本批实现
+                          TCP keepalive 选项 + net_recv_until_close（http
+                          读响应体所需）+ http_get_json 便捷读取
+                        - codegen extern_c_symbol 追加 16 个映射
+                        - 新增探针 probe-batch8.sw（45 断言：回环超时连接/
+                          对端信息/keepalive/可读字节/读到关闭、crc32/crc16/
+                          sha1/hmac 标准向量、文件流式哈希、时间人性化全档、
+                          map/set/csv/chunk），登记 run-examples.py；demo
+                          新增 demo-batch8.sw 输出存 outputs/demo-batch8.txt
+                        - 验证：cargo test 56 全绿；89 examples 全过；
+                          fmt 通过；runtime.c 无新外部依赖
+
+    2026-08-15 12:20  修复 CI batch7 失败（run_with_env Linux/macOS）：
+                       - 根因：POSIX 分支用 execve（不做 PATH 查找），
+                         run_with_env("sh", ...) 找不到 sh，子进程退出
+                         127、输出为空；Windows CreateProcess 自动查
+                         PATH 所以通过
+                       - 修复：execve 前先 os_which 按 PATH 解析完整
+                         路径（找不到再原样 exec 让系统报错），与
+                         Windows 行为对齐；os_which 加前置声明
+                       - 验证：cargo test 56 全绿；89 examples 全过；
+                         fmt 通过；runtime.c 三平台交叉编译通过
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
-       2. 标准库继续扩充：std/net 增强（TCP 超时/HTTP keep-alive）、
-          或 std/hash 补 crc32/sha1/hmac、或 std/time 人性化时间
+       2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、
+          或 std/console 补扩展键/方向键、或 std/string 更多实用
 
 二、已知限制
 

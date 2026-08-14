@@ -14,6 +14,7 @@
 // ===========================================================================
 
 import { map_get, map_get_int } from "std/map";
+import { json_parse } from "std/json";
 
 /// 发起 GET 请求，返回 map：status / body / headers。
 /// 失败时 status 为 0、body 为空串。
@@ -56,4 +57,15 @@ export function 取状态码(resp: ptr<void>): int {
 
 export function 取响应内容(resp: ptr<void>): string {
     return http_body(resp);
+}
+
+/// GET 并把响应体解析为 JSON 值（复用 json_parse）；请求失败或 JSON 非法
+/// 返回 null（kind 0）。示例：http_get_json("http://host/api")。
+export function http_get_json(url: string): ptr<void> {
+    const resp = http_get(url);
+    return json_parse(http_body(resp));
+}
+
+export function 取网页JSON(url: string): ptr<void> {
+    return http_get_json(url);
 }

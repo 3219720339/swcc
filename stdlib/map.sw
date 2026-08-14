@@ -98,3 +98,12 @@ export function 置逻辑(map: ptr<void>, key: string, value: bool): int {
 export function 取逻辑(map: ptr<void>, key: string, fallback: bool): bool {
     return map_get_bool(map, key, fallback);
 }
+
+/// 读取键对应值；键不存在返回 fallback（便捷默认值）。
+export function map_get_or(map: ptr<void>, key: string, fallback: string): string {
+    return map_get(map, key) ?? fallback;
+}
+
+export function 取键值或默认(map: ptr<void>, key: string, fallback: string): string {
+    return map_get_or(map, key, fallback);
+}

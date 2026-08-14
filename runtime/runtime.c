@@ -2835,6 +2835,9 @@ void __main(void) {}
 extern char** environ;
 #endif
 
+// 前置声明（定义在文件后部，run_with_env 等需要）。
+sw_string* os_which(sw_string* name);
+
 #if !defined(SW_NO_MAIN)
 int main(int argc, char** argv) {
 #if defined(_WIN32)
@@ -6459,7 +6462,14 @@ static sw_string* sw_run_impl_env(
         }
         if (envp != NULL) {
             extern int execve(const char* file, char* const argv[], char* const envp[]);
-            execve(argv[0], argv, envp);
+            // execve 不做 PATH 查找：先按 PATH 解析完整路径（与 Windows
+            // CreateProcess 行为一致），找不到再原样尝试让 exec 报错。
+            const char* resolved = argv[0];
+            sw_string* found = os_which(sw_string_from_literal(argv[0], (int64_t)strlen(argv[0])));
+            if (found != NULL && found->len > 0) {
+                resolved = found->data;
+            }
+            execve(resolved, argv, envp);
         } else {
             execvp(argv[0], argv);
         }
@@ -6760,6 +6770,400 @@ int64_t sw_net_port(int64_t fd) {
 #endif
     unsigned short net_port = *(unsigned short*)(name + 2);
     return ((net_port & 0xFF) << 8) | (net_port >> 8);
+}
+
+// ---------------------------------------------------------------------------
+// 网络增强（std/net）：连接超时、收发超时、可读字节、域名解析、对端信息、
+// TCP keepalive、读到关闭、完整发送。
+// ---------------------------------------------------------------------------
+
+// 单 fd select 等待可写（connect 完成检测）。返回：1 可写 / 0 超时 / -1 错误。
+static int sw_net_wait_writable(int64_t fd, int64_t timeout_ms) {
+#if defined(_WIN32)
+    typedef struct {
+        unsigned int fd_count;
+        uintptr_t fd_array[64];
+    } sw_fdset;
+    sw_fdset write_fds;
+    memset(&write_fds, 0, sizeof(write_fds));
+    write_fds.fd_count = 1;
+    write_fds.fd_array[0] = (uintptr_t)fd;
+    struct {
+        int tv_sec;
+        int tv_usec;
+    } tv;
+    tv.tv_sec = (int)(timeout_ms / 1000);
+    tv.tv_usec = (int)((timeout_ms % 1000) * 1000);
+    extern int select(int nfds, void* readfds, void* writefds, void* exceptfds, void* timeout);
+    int result = select(0, NULL, &write_fds, NULL, timeout_ms > 0 ? &tv : NULL);
+    return result > 0 ? 1 : (result == 0 ? 0 : -1);
+#else
+    unsigned char fds[128];  // fd_set：FD_SETSIZE=1024 位
+    memset(fds, 0, sizeof(fds));
+    int wordsize = 64;
+#if defined(__APPLE__)
+    wordsize = 32;
+#endif
+    int word = (int)(fd / wordsize);
+    int bit = (int)(fd % wordsize);
+    if (wordsize == 64) {
+        if (word >= 16) {
+            return -1;
+        }
+        ((unsigned long long*)fds)[word] |= (1ULL << bit);
+    } else {
+        if (word >= 32) {
+            return -1;
+        }
+        ((unsigned int*)fds)[word] |= (1u << bit);
+    }
+    struct {
+        long tv_sec;
+        long tv_usec;
+    } tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    extern int select(int nfds, void* readfds, void* writefds, void* exceptfds, void* timeout);
+    int result = select((int)fd + 1, NULL, fds, NULL, timeout_ms > 0 ? &tv : NULL);
+    return result > 0 ? 1 : (result == 0 ? 0 : -1);
+#endif
+}
+
+static int sw_net_set_nonblocking(int64_t fd, int on) {
+#if defined(_WIN32)
+    extern int ioctlsocket(uintptr_t s, long cmd, unsigned long* argp);
+    unsigned long mode = on ? 1 : 0;
+    return ioctlsocket((uintptr_t)fd, 0x8004667Eu /*FIONBIO*/, &mode) == 0 ? 0 : -1;
+#else
+    extern int fcntl(int fd, int cmd, ...);
+    int nonblock_flag = 0x800;  // O_NONBLOCK（Linux）
+#if defined(__APPLE__)
+    nonblock_flag = 0x4;        // O_NONBLOCK（macOS/BSD）
+#endif
+    int flags = fcntl((int)fd, 3 /*F_GETFL*/, 0);
+    if (flags < 0) {
+        return -1;
+    }
+    int updated = on ? (flags | nonblock_flag) : (flags & ~nonblock_flag);
+    return fcntl((int)fd, 4 /*F_SETFL*/, updated) == 0 ? 0 : -1;
+#endif
+}
+
+// 检查 connect 结果（非阻塞 connect 完成后读 SO_ERROR）。
+static int sw_net_connect_result(int64_t fd) {
+#if defined(_WIN32)
+    extern int getsockopt(uintptr_t s, int level, int optname, char* optval, int* optlen);
+    int error = 0;
+    int len = sizeof(error);
+    if (getsockopt((uintptr_t)fd, 0xFFFF /*SOL_SOCKET*/, 0x1007 /*SO_ERROR*/, (char*)&error, &len) != 0) {
+        return -1;
+    }
+    return error == 0 ? 0 : -1;
+#else
+    extern int getsockopt(int s, int level, int optname, void* optval, unsigned int* optlen);
+    int error = 0;
+    unsigned int len = sizeof(error);
+    if (getsockopt((int)fd, 1 /*SOL_SOCKET*/, 4 /*SO_ERROR*/, &error, &len) != 0) {
+        return -1;
+    }
+    return error == 0 ? 0 : -1;
+#endif
+}
+
+// 带超时的 TCP 连接（timeout_ms<=0 不限时）。返回 fd；失败/超时返回 -1。
+int64_t sw_net_connect_timeout(sw_string* host, int64_t port, int64_t timeout_ms) {
+    if (host == NULL || port < 0 || port > 65535) {
+        return -1;
+    }
+    char* host_copy = (char*)sw_gc_alloc((uint64_t)host->len + 1);
+    memcpy(host_copy, host->data, (uint64_t)host->len);
+    host_copy[host->len] = 0;
+    char port_text[16];
+    snprintf(port_text, sizeof(port_text), "%lld", (long long)port);
+#if defined(_WIN32)
+    extern int getaddrinfo(const char* node, const char* service, const void* hints, void** result);
+    extern void freeaddrinfo(void* result);
+    extern uintptr_t socket(int domain, int type, int protocol);
+    extern int connect(uintptr_t s, const void* name, int namelen);
+    extern int closesocket(uintptr_t s);
+    extern int WSAGetLastError(void);
+    sw_net_init();
+#else
+    extern int getaddrinfo(const char* node, const char* service, const void* hints, void** result);
+    extern void freeaddrinfo(void* result);
+    extern int socket(int domain, int type, int protocol);
+    extern int connect(int s, const void* name, unsigned int namelen);
+    extern int close(int s);
+#endif
+    sw_addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.family = 2;
+    hints.socktype = 1;
+    void* results = NULL;
+    if (getaddrinfo(host_copy, port_text, &hints, &results) != 0 || results == NULL) {
+        return -1;
+    }
+    sw_addrinfo* info = (sw_addrinfo*)results;
+#if defined(_WIN32)
+    uintptr_t sock = socket(info->family, info->socktype, info->protocol);
+    if (sock == (uintptr_t)~0) {
+        freeaddrinfo(results);
+        return -1;
+    }
+#else
+    int sock = socket(info->family, info->socktype, info->protocol);
+    if (sock < 0) {
+        freeaddrinfo(results);
+        return -1;
+    }
+#endif
+    sw_net_set_nonblocking((int64_t)sock, 1);
+    int ok;
+#if defined(_WIN32)
+    ok = connect(sock, info->addr, (int)info->addrlen);
+#else
+    ok = connect(sock, info->addr, (unsigned int)info->addrlen);
+#endif
+    if (ok != 0) {
+        int in_progress = 0;
+#if defined(_WIN32)
+        in_progress = WSAGetLastError() == 10035;  // WSAEWOULDBLOCK
+#elif defined(__APPLE__)
+        extern int* __error(void);
+        in_progress = *__error() == 4;  // EINPROGRESS（macOS）
+#else
+        extern int* __errno_location(void);
+        in_progress = *__errno_location() == 115;  // EINPROGRESS（Linux）
+#endif
+        if (!in_progress) {
+            freeaddrinfo(results);
+#if defined(_WIN32)
+            closesocket(sock);
+#else
+            close(sock);
+#endif
+            return -1;
+        }
+        int ready = sw_net_wait_writable((int64_t)sock, timeout_ms);
+        if (ready <= 0 || sw_net_connect_result((int64_t)sock) != 0) {
+            freeaddrinfo(results);
+#if defined(_WIN32)
+            closesocket(sock);
+#else
+            close(sock);
+#endif
+            return -1;
+        }
+    }
+    freeaddrinfo(results);
+    sw_net_set_nonblocking((int64_t)sock, 0);
+    return (int64_t)sock;
+}
+
+// 收发超时（SO_RCVTIMEO/SO_SNDTIMEO，毫秒；0 表示不限时）。
+int64_t sw_net_set_recv_timeout(int64_t fd, int64_t timeout_ms) {
+#if defined(_WIN32)
+    extern int setsockopt(uintptr_t s, int level, int optname, const char* optval, int optlen);
+    unsigned int ms = (unsigned int)(timeout_ms < 0 ? 0 : timeout_ms);
+    return setsockopt((uintptr_t)fd, 0xFFFF /*SOL_SOCKET*/, 0x1006 /*SO_RCVTIMEO*/, (const char*)&ms, sizeof(ms)) == 0 ? 0 : -1;
+#else
+    extern int setsockopt(int s, int level, int optname, const void* optval, unsigned int optlen);
+    struct {
+        long tv_sec;
+        long tv_usec;
+    } tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    int optname = 20;  // SO_RCVTIMEO（Linux）
+#if defined(__APPLE__)
+    optname = 0x1006;  // SO_RCVTIMEO（macOS/BSD）
+#endif
+    return setsockopt((int)fd, 1 /*SOL_SOCKET*/, optname, &tv, sizeof(tv)) == 0 ? 0 : -1;
+#endif
+}
+
+int64_t sw_net_set_send_timeout(int64_t fd, int64_t timeout_ms) {
+#if defined(_WIN32)
+    extern int setsockopt(uintptr_t s, int level, int optname, const char* optval, int optlen);
+    unsigned int ms = (unsigned int)(timeout_ms < 0 ? 0 : timeout_ms);
+    return setsockopt((uintptr_t)fd, 0xFFFF /*SOL_SOCKET*/, 0x1005 /*SO_SNDTIMEO*/, (const char*)&ms, sizeof(ms)) == 0 ? 0 : -1;
+#else
+    extern int setsockopt(int s, int level, int optname, const void* optval, unsigned int optlen);
+    struct {
+        long tv_sec;
+        long tv_usec;
+    } tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    int optname = 19;  // SO_SNDTIMEO（Linux）
+#if defined(__APPLE__)
+    optname = 0x1005;  // SO_SNDTIMEO（macOS/BSD）
+#endif
+    return setsockopt((int)fd, 1 /*SOL_SOCKET*/, optname, &tv, sizeof(tv)) == 0 ? 0 : -1;
+#endif
+}
+
+// 可读字节数（FIONREAD）。
+int64_t sw_net_available(int64_t fd) {
+#if defined(_WIN32)
+    extern int ioctlsocket(uintptr_t s, long cmd, unsigned long* argp);
+    unsigned long n = 0;
+    return ioctlsocket((uintptr_t)fd, 0x4004667Fu /*FIONREAD*/, &n) == 0 ? (int64_t)n : -1;
+#else
+    extern int ioctl(int fd, unsigned long request, void* arg);
+    int n = 0;
+    unsigned long request = 0x541B;  // FIONREAD（Linux）
+#if defined(__APPLE__)
+    request = 0x4004667Fu;           // FIONREAD（macOS/BSD）
+#endif
+    return ioctl((int)fd, request, &n) == 0 ? (int64_t)n : -1;
+#endif
+}
+
+// 域名解析为 IPv4 点分字符串；失败返回空串。
+sw_string* sw_net_resolve(sw_string* host) {
+    if (host == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* host_copy = (char*)sw_gc_alloc((uint64_t)host->len + 1);
+    memcpy(host_copy, host->data, (uint64_t)host->len);
+    host_copy[host->len] = 0;
+#if defined(_WIN32)
+    extern int getaddrinfo(const char* node, const char* service, const void* hints, void** result);
+    extern void freeaddrinfo(void* result);
+    sw_net_init();
+#else
+    extern int getaddrinfo(const char* node, const char* service, const void* hints, void** result);
+    extern void freeaddrinfo(void* result);
+#endif
+    sw_addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.family = 2;
+    hints.socktype = 1;
+    void* results = NULL;
+    if (getaddrinfo(host_copy, NULL, &hints, &results) != 0 || results == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_addrinfo* info = (sw_addrinfo*)results;
+    unsigned int ip = *(unsigned int*)((char*)info->addr + 4);  // sockaddr_in 的 sin_addr
+    freeaddrinfo(results);
+    char text[32];
+    int used = snprintf(
+        text, sizeof(text), "%u.%u.%u.%u",
+        ip & 0xFFu, (ip >> 8) & 0xFFu, (ip >> 16) & 0xFFu, (ip >> 24) & 0xFFu
+    );
+    return sw_string_from_literal(text, used);
+}
+
+// 对端 IP（getpeername，IPv4 点分）；失败返回空串。
+sw_string* sw_net_peer_ip(int64_t fd) {
+    unsigned char name[128];
+    unsigned int namelen = sizeof(name);
+#if defined(_WIN32)
+    extern int getpeername(uintptr_t s, void* name, int* namelen);
+    if (getpeername((uintptr_t)fd, name, (int*)&namelen) != 0) {
+        return sw_string_from_literal("", 0);
+    }
+#else
+    extern int getpeername(int s, void* name, unsigned int* namelen);
+    if (getpeername((int)fd, name, &namelen) != 0) {
+        return sw_string_from_literal("", 0);
+    }
+#endif
+    unsigned int ip = *(unsigned int*)(name + 4);
+    char text[32];
+    int used = snprintf(
+        text, sizeof(text), "%u.%u.%u.%u",
+        ip & 0xFFu, (ip >> 8) & 0xFFu, (ip >> 16) & 0xFFu, (ip >> 24) & 0xFFu
+    );
+    return sw_string_from_literal(text, used);
+}
+
+// 对端端口（getpeername）；失败返回 -1。
+int64_t sw_net_peer_port(int64_t fd) {
+    unsigned char name[128];
+    unsigned int namelen = sizeof(name);
+#if defined(_WIN32)
+    extern int getpeername(uintptr_t s, void* name, int* namelen);
+    if (getpeername((uintptr_t)fd, name, (int*)&namelen) != 0) {
+        return -1;
+    }
+#else
+    extern int getpeername(int s, void* name, unsigned int* namelen);
+    if (getpeername((int)fd, name, &namelen) != 0) {
+        return -1;
+    }
+#endif
+    unsigned short net_port = *(unsigned short*)(name + 2);
+    return ((net_port & 0xFF) << 8) | (net_port >> 8);
+}
+
+// TCP keepalive 选项（SO_KEEPALIVE）。
+int64_t sw_net_set_keepalive(int64_t fd, int64_t enabled) {
+    int value = enabled ? 1 : 0;
+#if defined(_WIN32)
+    extern int setsockopt(uintptr_t s, int level, int optname, const char* optval, int optlen);
+    return setsockopt((uintptr_t)fd, 0xFFFF /*SOL_SOCKET*/, 8 /*SO_KEEPALIVE*/, (const char*)&value, sizeof(value)) == 0 ? 0 : -1;
+#else
+    extern int setsockopt(int s, int level, int optname, const void* optval, unsigned int optlen);
+    int optname = 9;  // SO_KEEPALIVE（Linux）
+#if defined(__APPLE__)
+    optname = 0x0008;  // SO_KEEPALIVE（macOS/BSD）
+#endif
+    return setsockopt((int)fd, 1 /*SOL_SOCKET*/, optname, &value, sizeof(value)) == 0 ? 0 : -1;
+#endif
+}
+
+// 读取直到对端关闭（HTTP 响应体等）；失败/EOF 返回已读内容。
+sw_string* sw_net_recv_until_close(int64_t fd) {
+    char chunk[4096];
+    char* buffer = (char*)malloc(4096);
+    int64_t capacity = 4096;
+    int64_t length = 0;
+    while (1) {
+#if defined(_WIN32)
+        extern int recv(uintptr_t s, char* buf, int len, int flags);
+        int got = recv((uintptr_t)fd, chunk, sizeof(chunk), 0);
+#else
+        extern long recv(int s, void* buf, uintptr_t len, int flags);
+        long got = recv((int)fd, chunk, sizeof(chunk), 0);
+#endif
+        if (got <= 0) {
+            break;
+        }
+        if (length + (int64_t)got > capacity) {
+            capacity = (length + (int64_t)got) * 2;
+            buffer = (char*)realloc(buffer, (sw_size)capacity);
+        }
+        memcpy(buffer + length, chunk, (uint64_t)got);
+        length += (int64_t)got;
+    }
+    sw_string* result = sw_string_from_literal(buffer, length);
+    free(buffer);
+    return result;
+}
+
+// 完整发送（循环直到全部写入）；返回发送字节数；失败 -1。
+int64_t sw_net_send_all(int64_t fd, sw_string* data) {
+    if (fd < 0 || data == NULL) {
+        return -1;
+    }
+    int64_t total = 0;
+    while (total < data->len) {
+#if defined(_WIN32)
+        extern int send(uintptr_t s, const char* buf, int len, int flags);
+        int64_t max = (data->len - total) > 0x7FFFFFFF ? 0x7FFFFFFF : (data->len - total);
+        int sent = send((uintptr_t)fd, data->data + total, (int)max, 0);
+#else
+        extern long send(int s, const void* buf, uintptr_t len, int flags);
+        long sent = send((int)fd, data->data + total, (uintptr_t)(data->len - total), 0);
+#endif
+        if (sent <= 0) {
+            return -1;
+        }
+        total += (int64_t)sent;
+    }
+    return total;
 }
 
 // ---------------------------------------------------------------------------
@@ -8879,8 +9283,263 @@ sw_string* sha256_file(sw_string* path) {
 }
 
 // ---------------------------------------------------------------------------
-// URL 解析与查询参数
+// 哈希增强（std/hash）：CRC-32 / CRC-16、SHA-1、HMAC-SHA256。
 // ---------------------------------------------------------------------------
+
+// CRC-32（IEEE 802.3，反射多项式 0xEDB88320，无表逐位）。返回 uint32 位模式。
+uint64_t crc32(sw_string* text) {
+    uint64_t crc = 0xFFFFFFFFu;
+    if (text != NULL) {
+        for (int64_t i = 0; i < text->len; i++) {
+            crc ^= (unsigned char)text->data[i];
+            for (int bit = 0; bit < 8; bit++) {
+                crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1)));
+            }
+        }
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+uint64_t crc32_file(sw_string* path) {
+    uint64_t crc = 0xFFFFFFFFu;
+    if (path == NULL) {
+        return 0;
+    }
+    sw_file_handle* file = fopen(path->data, "rb");
+    if (file == NULL) {
+        return 0;
+    }
+    unsigned char buffer[4096];
+    uint64_t got;
+    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        for (uint64_t i = 0; i < got; i++) {
+            crc ^= buffer[i];
+            for (int bit = 0; bit < 8; bit++) {
+                crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1)));
+            }
+        }
+    }
+    fclose(file);
+    return crc ^ 0xFFFFFFFFu;
+}
+
+// CRC-16（CRC-16/IBM，反射多项式 0xA001）。返回 uint16 位模式。
+uint64_t crc16(sw_string* text) {
+    uint64_t crc = 0;
+    if (text != NULL) {
+        for (int64_t i = 0; i < text->len; i++) {
+            crc ^= (unsigned char)text->data[i];
+            for (int bit = 0; bit < 8; bit++) {
+                crc = (crc >> 1) ^ (0xA001u & (0u - (crc & 1)));
+            }
+        }
+    }
+    return crc & 0xFFFFu;
+}
+
+// SHA-1
+typedef struct {
+    unsigned int state[5];
+    uint64_t count;
+    unsigned char buffer[64];
+} sw_sha1_ctx;
+
+static unsigned int sw_sha1_rotl(unsigned int value, int shift) {
+    return (value << shift) | (value >> (32 - shift));
+}
+
+static void sw_sha1_transform(sw_sha1_ctx* ctx, const unsigned char block[64]) {
+    unsigned int w[80];
+    for (int i = 0; i < 16; i++) {
+        w[i] = ((unsigned int)block[i * 4] << 24) |
+               ((unsigned int)block[i * 4 + 1] << 16) |
+               ((unsigned int)block[i * 4 + 2] << 8) |
+               (unsigned int)block[i * 4 + 3];
+    }
+    for (int i = 16; i < 80; i++) {
+        w[i] = sw_sha1_rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    }
+    unsigned int a = ctx->state[0];
+    unsigned int b = ctx->state[1];
+    unsigned int c = ctx->state[2];
+    unsigned int d = ctx->state[3];
+    unsigned int e = ctx->state[4];
+    for (int i = 0; i < 80; i++) {
+        unsigned int f;
+        unsigned int k;
+        if (i < 20) {
+            f = (b & c) | ((~b) & d);
+            k = 0x5A827999u;
+        } else if (i < 40) {
+            f = b ^ c ^ d;
+            k = 0x6ED9EBA1u;
+        } else if (i < 60) {
+            f = (b & c) | (b & d) | (c & d);
+            k = 0x8F1BBCDCu;
+        } else {
+            f = b ^ c ^ d;
+            k = 0xCA62C1D6u;
+        }
+        unsigned int temp = sw_sha1_rotl(a, 5) + f + e + k + w[i];
+        e = d;
+        d = c;
+        c = sw_sha1_rotl(b, 30);
+        b = a;
+        a = temp;
+    }
+    ctx->state[0] += a;
+    ctx->state[1] += b;
+    ctx->state[2] += c;
+    ctx->state[3] += d;
+    ctx->state[4] += e;
+}
+
+static void sw_sha1_init(sw_sha1_ctx* ctx) {
+    ctx->state[0] = 0x67452301u;
+    ctx->state[1] = 0xEFCDAB89u;
+    ctx->state[2] = 0x98BADCFEu;
+    ctx->state[3] = 0x10325476u;
+    ctx->state[4] = 0xC3D2E1F0u;
+    ctx->count = 0;
+}
+
+static void sw_sha1_update(sw_sha1_ctx* ctx, const unsigned char* data, uint64_t len) {
+    uint64_t index = ctx->count & 0x3F;
+    ctx->count += len;
+    uint64_t add = 64 - index;
+    if (len >= add) {
+        memcpy(ctx->buffer + index, data, add);
+        sw_sha1_transform(ctx, ctx->buffer);
+        uint64_t i;
+        for (i = add; i + 63 < len; i += 64) {
+            sw_sha1_transform(ctx, data + i);
+        }
+        index = 0;
+        data += i;
+        len -= i;
+    }
+    if (len > 0) {
+        memcpy(ctx->buffer + index, data, len);
+    }
+}
+
+static void sw_sha1_final(sw_sha1_ctx* ctx, unsigned char digest[20]) {
+    uint64_t bits = ctx->count << 3;
+    unsigned char pad[72];
+    uint64_t index = ctx->count & 0x3F;
+    uint64_t pad_len = index < 56 ? 56 - index : 120 - index;
+    memset(pad, 0, sizeof(pad));
+    pad[0] = 0x80;
+    sw_sha1_update(ctx, pad, pad_len);
+    unsigned char len_bytes[8];
+    for (int i = 0; i < 8; i++) {
+        len_bytes[i] = (unsigned char)((bits >> (56 - i * 8)) & 0xFF);
+    }
+    sw_sha1_update(ctx, len_bytes, 8);
+    for (int i = 0; i < 5; i++) {
+        digest[i * 4] = (unsigned char)((ctx->state[i] >> 24) & 0xFF);
+        digest[i * 4 + 1] = (unsigned char)((ctx->state[i] >> 16) & 0xFF);
+        digest[i * 4 + 2] = (unsigned char)((ctx->state[i] >> 8) & 0xFF);
+        digest[i * 4 + 3] = (unsigned char)(ctx->state[i] & 0xFF);
+    }
+}
+
+static sw_string* sw_sha1_bytes(const unsigned char* data, uint64_t len) {
+    sw_sha1_ctx ctx;
+    sw_sha1_init(&ctx);
+    sw_sha1_update(&ctx, data, len);
+    unsigned char digest[20];
+    sw_sha1_final(&ctx, digest);
+    char* out = (char*)sw_gc_alloc(41);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 20; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0F];
+    }
+    out[40] = 0;
+    return sw_string_from_literal(out, 40);
+}
+
+sw_string* sha1(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_sha1_bytes((const unsigned char*)text->data, (uint64_t)text->len);
+}
+
+sw_string* sha1_file(sw_string* path) {
+    if (path == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_file_handle* file = fopen(path->data, "rb");
+    if (file == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_sha1_ctx ctx;
+    sw_sha1_init(&ctx);
+    unsigned char buffer[4096];
+    uint64_t got;
+    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        sw_sha1_update(&ctx, buffer, got);
+    }
+    fclose(file);
+    unsigned char digest[20];
+    sw_sha1_final(&ctx, digest);
+    char* out = (char*)sw_gc_alloc(41);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 20; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0F];
+    }
+    out[40] = 0;
+    return sw_string_from_literal(out, 40);
+}
+
+// HMAC-SHA256：key 超 64 字节先哈希；内层 ipad^key || message，外层 opad^key || 内层摘要。
+sw_string* hmac_sha256(sw_string* key, sw_string* text) {
+    unsigned char k[64];
+    memset(k, 0, sizeof(k));
+    if (key != NULL) {
+        if (key->len > 64) {
+            sw_sha256_ctx ctx;
+            sw_sha256_init(&ctx);
+            sw_sha256_update(&ctx, (const unsigned char*)key->data, (uint64_t)key->len);
+            unsigned char digest[32];
+            sw_sha256_final(&ctx, digest);
+            memcpy(k, digest, 32);
+        } else {
+            memcpy(k, key->data, (uint64_t)key->len);
+        }
+    }
+    unsigned char ipad[64];
+    unsigned char opad[64];
+    for (int i = 0; i < 64; i++) {
+        ipad[i] = k[i] ^ 0x36u;
+        opad[i] = k[i] ^ 0x5Cu;
+    }
+    sw_sha256_ctx inner;
+    sw_sha256_init(&inner);
+    sw_sha256_update(&inner, ipad, 64);
+    if (text != NULL) {
+        sw_sha256_update(&inner, (const unsigned char*)text->data, (uint64_t)text->len);
+    }
+    unsigned char inner_digest[32];
+    sw_sha256_final(&inner, inner_digest);
+    sw_sha256_ctx outer;
+    sw_sha256_init(&outer);
+    sw_sha256_update(&outer, opad, 64);
+    sw_sha256_update(&outer, inner_digest, 32);
+    unsigned char digest[32];
+    sw_sha256_final(&outer, digest);
+    char* out = (char*)sw_gc_alloc(65);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0F];
+    }
+    out[64] = 0;
+    return sw_string_from_literal(out, 64);
+}
 
 // 解析 URL 为 map：scheme / host / port(int) / path / query。
 void* url_parse(sw_string* url) {

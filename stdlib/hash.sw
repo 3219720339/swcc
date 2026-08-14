@@ -52,3 +52,46 @@ export function 取SHA256(text: string): string {
 export function 取SHA256文件(path: string): string {
     return sha256_file(path);
 }
+
+/// CRC-32（IEEE 802.3，无表逐位）；返回 32 位无符号位模式。
+/// 示例：crc32("hello") == 0x3610A686。
+export extern c function crc32(text: string): int;
+
+/// 文件 CRC-32（按字节流计算）；文件不存在/读取失败返回 0。
+export extern c function crc32_file(path: string): int;
+
+/// CRC-16（CRC-16/IBM，反射多项式 0xA001）；返回 16 位无符号位模式。
+export extern c function crc16(text: string): int;
+
+/// SHA-1 哈希（40 位十六进制小写）。示例：sha1("abc") 为标准 40 位摘要。
+export extern c function sha1(text: string): string;
+
+/// 文件 SHA-1（按字节流计算）；文件不存在/读取失败返回空串。
+export extern c function sha1_file(path: string): string;
+
+/// HMAC-SHA256（密钥 + 消息，64 位十六进制小写）。key 超 64 字节先哈希。
+export extern c function hmac_sha256(key: string, text: string): string;
+
+export function 取CRC32(text: string): int {
+    return crc32(text);
+}
+
+export function 取CRC32文件(path: string): int {
+    return crc32_file(path);
+}
+
+export function 取CRC16(text: string): int {
+    return crc16(text);
+}
+
+export function 取SHA1(text: string): string {
+    return sha1(text);
+}
+
+export function 取SHA1文件(path: string): string {
+    return sha1_file(path);
+}
+
+export function 取HMACSHA256(key: string, text: string): string {
+    return hmac_sha256(key, text);
+}

@@ -98,6 +98,7 @@ EXPECTED = {
     "probe-cross-module-iface.sw": 0,
     "probe-console.sw": 0,
     "probe-batch7.sw": 0,
+    "probe-batch8.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]

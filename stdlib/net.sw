@@ -73,3 +73,75 @@ export function 发送UDP数据(fd: int, host: string, port: int, data: string):
 export function 接收UDP数据(fd: int, max_bytes: int): string {
     return udp_recv(fd, max_bytes);
 }
+
+/// 带超时建立 TCP 连接（timeout_ms 毫秒，<=0 不限时）；成功返回 socket，
+/// 失败/超时返回 -1。用于避免对不可达主机无限阻塞。
+export extern c function net_connect_timeout(host: string, port: int, timeout_ms: int): int;
+
+/// 设置接收超时（毫秒，0 不限时）；成功返回 0，失败返回 -1。
+/// 超时后 net_recv 返回空串。
+export extern c function net_set_recv_timeout(fd: int, timeout_ms: int): int;
+
+/// 设置发送超时（毫秒，0 不限时）；成功返回 0，失败返回 -1。
+export extern c function net_set_send_timeout(fd: int, timeout_ms: int): int;
+
+/// 当前可读取的字节数；失败返回 -1。
+export extern c function net_available(fd: int): int;
+
+/// 域名解析为 IPv4 点分字符串；失败返回空串。
+export extern c function net_resolve(host: string): string;
+
+/// 对端 IP（IPv4 点分字符串）；失败返回空串。
+export extern c function net_peer_ip(fd: int): string;
+
+/// 对端端口；失败返回 -1。
+export extern c function net_peer_port(fd: int): int;
+
+/// 启用/禁用 TCP keepalive；成功返回 0，失败返回 -1。
+export extern c function net_set_keepalive(fd: int, enabled: bool): int;
+
+/// 读取直到对端关闭（返回全部内容）；适合读 HTTP 响应体。
+export extern c function net_recv_until_close(fd: int): string;
+
+/// 完整发送（循环直到全部写入）；返回发送字节数，失败返回 -1。
+export extern c function net_send_all(fd: int, data: string): int;
+
+export function 带超时连接(host: string, port: int, timeout_ms: int): int {
+    return net_connect_timeout(host, port, timeout_ms);
+}
+
+export function 设置接收超时(fd: int, timeout_ms: int): int {
+    return net_set_recv_timeout(fd, timeout_ms);
+}
+
+export function 设置发送超时(fd: int, timeout_ms: int): int {
+    return net_set_send_timeout(fd, timeout_ms);
+}
+
+export function 取可读字节数(fd: int): int {
+    return net_available(fd);
+}
+
+export function 域名解析(host: string): string {
+    return net_resolve(host);
+}
+
+export function 取对端IP(fd: int): string {
+    return net_peer_ip(fd);
+}
+
+export function 取对端端口(fd: int): int {
+    return net_peer_port(fd);
+}
+
+export function 设置心跳(fd: int, enabled: bool): int {
+    return net_set_keepalive(fd, enabled);
+}
+
+export function 读取到关闭(fd: int): string {
+    return net_recv_until_close(fd);
+}
+
+export function 完整发送(fd: int, data: string): int {
+    return net_send_all(fd, data);
+}

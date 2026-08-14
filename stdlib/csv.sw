@@ -27,3 +27,32 @@ export function 解析CSV行(text: string): string[] {
 export function 生成CSV行(items: string[]): string {
     return csv_join(items);
 }
+
+/// 解析整个 CSV 文本为 string[][]（每行一个 string[]，自动跳过空行）。
+export function csv_read_all(text: string): string[][] {
+    const result: string[][] = [];
+    for (const line of text.lines()) {
+        if (line.trim() == "") {
+            continue;
+        }
+        result.push(csv_parse_line(line));
+    }
+    return result;
+}
+
+/// 把 string[][] 连接为完整 CSV 文本（每行末尾 \r\n）。
+export function csv_write_all(rows: string[][]): string {
+    let result = "";
+    for (const row of rows) {
+        result = result + csv_join(row) + "\r\n";
+    }
+    return result;
+}
+
+export function 解析CSV文本(text: string): string[][] {
+    return csv_read_all(text);
+}
+
+export function 生成CSV文本(rows: string[][]): string {
+    return csv_write_all(rows);
+}

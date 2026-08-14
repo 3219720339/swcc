@@ -1,0 +1,22 @@
+正在读取并检查语法...
+正在语义分析...
+正在生成目标代码...
+正在链接...
+编译成功：demo-batch8.exe（用时 67 ms）
+== hash 校验 ==
+crc32(hello)=3610a686  crc16(123456789)=bb3d
+a9993e364706816aba3e25717850c26c9cd0d89d
+f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8
+== time 人性化 ==
+1 分钟前
+2 小时前
+August Wednesday
+days_between=3
+== net 回环（超时连接 + 读到关闭） ==
+echo=ping-from-timeout-connect peer_ip=127.0.0.1 pong=pong
+resolve(localhost)=127.0.0.1
+== 集合 / CSV / 分块 ==
+union=x,y,z
+csv rows=3 first=name
+csv roundtrip=3
+chunks=3 last=7

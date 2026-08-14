@@ -271,3 +271,49 @@ export function 取最小值位置小数(items: float[]): int {
 export function 取最大值位置小数(items: float[]): int {
     return max_index_float(items);
 }
+
+/// 按 size 分块 int[]，返回 int[][]（最后一块可能不足 size）。
+/// 示例：chunk_int([1,2,3,4,5], 2) == [[1,2],[3,4],[5]]。
+export function chunk_int(items: int[], size: int): int[][] {
+    const result: int[][] = [];
+    let i = 0;
+    while (i < items.length) {
+        result.push(items[i : i + size]);
+        i += size;
+    }
+    return result;
+}
+
+/// 按 size 分块 float[]，返回 float[][]。
+export function chunk_float(items: float[], size: int): float[][] {
+    const result: float[][] = [];
+    let i = 0;
+    while (i < items.length) {
+        result.push(items[i : i + size]);
+        i += size;
+    }
+    return result;
+}
+
+/// 按 size 分块 string[]，返回 string[][]。
+export function chunk_string(items: string[], size: int): string[][] {
+    const result: string[][] = [];
+    let i = 0;
+    while (i < items.length) {
+        result.push(items[i : i + size]);
+        i += size;
+    }
+    return result;
+}
+
+export function 数组分块整数(items: int[], size: int): int[][] {
+    return chunk_int(items, size);
+}
+
+export function 数组分块小数(items: float[], size: int): float[][] {
+    return chunk_float(items, size);
+}
+
+export function 数组分块文本(items: string[], size: int): string[][] {
+    return chunk_string(items, size);
+}

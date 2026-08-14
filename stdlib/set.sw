@@ -72,3 +72,49 @@ export function 集合长度(set: ptr<void>): int {
 export function 集合转数组(set: ptr<void>): string[] {
     return set_to_array(set);
 }
+
+/// 并集（新集合：a 全部 + b 新增，保持插入顺序）。
+export function set_union(a: ptr<void>, b: ptr<void>): ptr<void> {
+    const result = set_new();
+    for (const item of set_to_array(a)) {
+        set_add(result, item);
+    }
+    for (const item of set_to_array(b)) {
+        set_add(result, item);
+    }
+    return result;
+}
+
+/// 交集（新集合：a 中同时存在于 b 的元素）。
+export function set_intersect(a: ptr<void>, b: ptr<void>): ptr<void> {
+    const result = set_new();
+    for (const item of set_to_array(a)) {
+        if (set_has(b, item)) {
+            set_add(result, item);
+        }
+    }
+    return result;
+}
+
+/// 差集（新集合：a 中存在而 b 中没有的元素）。
+export function set_difference(a: ptr<void>, b: ptr<void>): ptr<void> {
+    const result = set_new();
+    for (const item of set_to_array(a)) {
+        if (!set_has(b, item)) {
+            set_add(result, item);
+        }
+    }
+    return result;
+}
+
+export function 集合并集(a: ptr<void>, b: ptr<void>): ptr<void> {
+    return set_union(a, b);
+}
+
+export function 集合交集(a: ptr<void>, b: ptr<void>): ptr<void> {
+    return set_intersect(a, b);
+}
+
+export function 集合差集(a: ptr<void>, b: ptr<void>): ptr<void> {
+    return set_difference(a, b);
+}

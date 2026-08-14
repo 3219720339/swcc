@@ -8,6 +8,8 @@
 //   const elapsed = now_ms() - start;
 // ===========================================================================
 
+import { format } from "std/string";
+
 /// 返回自 Unix 纪元（1970-01-01 UTC）以来的毫秒数。
 export extern c function now_ms(): int;
 
@@ -240,4 +242,125 @@ export function 月份增减(seconds: int, months: int): int {
 
 export function 年份增减(seconds: int, years: int): int {
     return add_years(seconds, years);
+}
+
+// ---------------------------------------------------------------------------
+// 人性化时间（纯 Sw 组合；相对时间/月份星期名/时间间隔）
+// ---------------------------------------------------------------------------
+
+/// 英文月份名（1-12）；越界返回空串。month_name(3) == "March"。
+export function month_name(month: int): string {
+    const names = [
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    ];
+    if (month < 1 || month > 12) {
+        return "";
+    }
+    return names[month - 1];
+}
+
+/// 英文星期名（0-6，0=星期天）；越界返回空串。weekday_name(0) == "Sunday"。
+export function weekday_name(day: int): string {
+    const names = [
+        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+    ];
+    if (day < 0 || day > 6) {
+        return "";
+    }
+    return names[day];
+}
+
+/// 中文相对时间：time_ago_cn(90) == "1 分钟前"；<=0 返回 "刚刚"。
+export function time_ago_cn(seconds: int): string {
+    const s = seconds < 0 ? 0 : seconds;
+    if (s < 60) {
+        return "刚刚";
+    }
+    if (s < 3600) {
+        return format("%d 分钟前", s / 60);
+    }
+    if (s < 86400) {
+        return format("%d 小时前", s / 3600);
+    }
+    if (s < 604800) {
+        return format("%d 天前", s / 86400);
+    }
+    if (s < 2592000) {
+        return format("%d 周前", s / 604800);
+    }
+    if (s < 31536000) {
+        return format("%d 个月前", s / 2592000);
+    }
+    return format("%d 年前", s / 31536000);
+}
+
+/// 英文相对时间：time_ago_en(90) == "1 minutes ago"；<=0 返回 "just now"。
+export function time_ago_en(seconds: int): string {
+    const s = seconds < 0 ? 0 : seconds;
+    if (s < 60) {
+        return "just now";
+    }
+    if (s < 3600) {
+        return format("%d minutes ago", s / 60);
+    }
+    if (s < 86400) {
+        return format("%d hours ago", s / 3600);
+    }
+    if (s < 604800) {
+        return format("%d days ago", s / 86400);
+    }
+    if (s < 2592000) {
+        return format("%d weeks ago", s / 604800);
+    }
+    if (s < 31536000) {
+        return format("%d months ago", s / 2592000);
+    }
+    return format("%d years ago", s / 31536000);
+}
+
+/// 两个 Unix 秒时间戳相差的天数（绝对值）。
+export function days_between(a: int, b: int): int {
+    const d = a > b ? a - b : b - a;
+    return d / 86400;
+}
+
+/// 两个 Unix 秒时间戳相差的小时数（绝对值）。
+export function hours_between(a: int, b: int): int {
+    const d = a > b ? a - b : b - a;
+    return d / 3600;
+}
+
+/// 两个 Unix 秒时间戳相差的分钟数（绝对值）。
+export function minutes_between(a: int, b: int): int {
+    const d = a > b ? a - b : b - a;
+    return d / 60;
+}
+
+export function 取月份英文名(month: int): string {
+    return month_name(month);
+}
+
+export function 取星期英文名(day: int): string {
+    return weekday_name(day);
+}
+
+export function 时间差文本(seconds: int): string {
+    return time_ago_cn(seconds);
+}
+
+export function 时间差文本英文(seconds: int): string {
+    return time_ago_en(seconds);
+}
+
+export function 相差天数(a: int, b: int): int {
+    return days_between(a, b);
+}
+
+export function 相差小时数(a: int, b: int): int {
+    return hours_between(a, b);
+}
+
+export function 相差分钟数(a: int, b: int): int {
+    return minutes_between(a, b);
 }
