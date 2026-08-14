@@ -3911,6 +3911,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         .map(|ty| self.lowerer.lower_type_for_mir(ty))
                         .unwrap_or(Type::Error);
                     let catch_local = self.declare_local(&catch.name.name, catch_ty, false);
+                    self.name_scopes
+                        .last_mut()
+                        .expect("作用域存在")
+                        .insert(catch.name.name.clone(), catch_local);
                     let mut catch_body = vec![MirStmt::new(MirStmtKind::VarDecl {
                         local: catch_local,
                         init: Some(MirExpr::Call {

@@ -421,9 +421,21 @@ Sw 编译器（swcc）开发进度
                        - 备注：重建 swc 后偶发首链接失败、重试即成功（环境抖动，
                          非代码问题）
 
+    2026-08-14 22:34  内存管理强化：异常对象/帧纳入 GC + GC 压测：
+                       - sw_try_begin/sw_throw 改用 sw_gc_alloc（异常帧与异常对象由
+                         GC 回收，不再 malloc/free 泄漏；sw_current_frame 是数据段
+                         全局根，出链后自然可回收）
+                       - 修复隐藏 bug：catch 变量在 MIR 降级时未注册进名字作用域
+                         （检查阶段注册了、降级阶段漏掉），catch(e) 里使用 e 报
+                         "无法降级标识符"；降级时补插入作用域
+                       - 新增 examples/probe-gc.sw：8 万次分配（字符串/数组/类/
+                         struct/map）强制多次 GC 后数据完整；3 万次异常捕获循环
+                         不泄漏不崩溃；异常后再分配正常
+                       - 39 个 examples 全过；51 测试全绿；runtime.c 六目标交叉
+                         编译通过；probe-gc musl x86_64/aarch64 链接通过
+
     待办（下一批，按推荐优先级）：
-       1. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
-       2. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
+       1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
 二、已知限制
 

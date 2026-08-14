@@ -2361,7 +2361,9 @@ typedef struct sw_frame {
 static sw_frame* sw_current_frame = NULL;
 
 void* sw_try_begin(void) {
-    sw_frame* frame = (sw_frame*)malloc(sizeof(sw_frame));
+    // 帧由 GC 管理：sw_current_frame 是全局根（数据段被 GC 扫描），
+    // try_leave 出链后自然可回收，不再 malloc/free。
+    sw_frame* frame = (sw_frame*)sw_gc_alloc(sizeof(sw_frame));
     frame->exception = NULL;
     frame->prev = sw_current_frame;
     sw_current_frame = frame;
@@ -2375,12 +2377,12 @@ void* sw_try_value(void* frame) {
 void sw_try_leave(void* frame) {
     sw_frame* current = (sw_frame*)frame;
     sw_current_frame = current->prev;
-    free(current);
 }
 
 void sw_throw(void* value, int64_t type_id) {
     sw_frame* frame = sw_current_frame;
-    sw_exception* exception = (sw_exception*)malloc(sizeof(sw_exception));
+    // 异常对象由 GC 管理：挂在帧上（帧在链上直到 try_leave），catch 后随帧一起回收。
+    sw_exception* exception = (sw_exception*)sw_gc_alloc(sizeof(sw_exception));
     exception->type_id = type_id;
     exception->value = value;
     frame->exception = exception;

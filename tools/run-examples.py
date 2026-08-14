@@ -27,6 +27,7 @@ EXPECTED = {
     "probe-exc-setup.sw": 0,
     "probe-exceptions.sw": 42,
     "probe-format.sw": 0,
+    "probe-gc.sw": 0,
     "probe-generic.sw": 0,
     "probe-if.sw": 42,
     "probe-interface.sw": 0,
