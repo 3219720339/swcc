@@ -92,6 +92,8 @@ pub enum MirTarget {
     Index {
         object: Box<MirExpr>,
         index: Box<MirExpr>,
+        /// 元素类型（浮点数组读写需按 f64 位模式转换）。
+        elem: Box<Type>,
     },
 }
 
@@ -126,6 +128,8 @@ pub enum MirExpr {
     Index {
         object: Box<MirExpr>,
         index: Box<MirExpr>,
+        /// 元素类型（浮点数组读写需按 f64 位模式转换）。
+        elem: Box<Type>,
     },
     /// 数组字面量：由运行时分配并填充。
     Array {

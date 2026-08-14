@@ -338,14 +338,32 @@ Sw 编译器（swcc）开发进度
                          编译通过；musl x86_64/aarch64 端到端链接通过，
                          nm 确认 statvfs/lstat/readlink/unsetenv 未被遮蔽
 
+    2026-08-14 21:45  容器 std/array + std/map + `+` 字符串拼接放开：
+                       - 语言（用法糖）：`+` 拼接放开——string + int/float/bool/char
+                         （及反向 42 + "!"）自动转字符串拼接（JS 风格）；
+                         check_binary 类型检查 + MIR 降级插入 int/float/bool/char_
+                         to_string 再 string_concat
+                       - std/array（新模块，13 个类型化函数）：sort_int/float/string、
+                         reverse_int/float/string、min/max/sum_int、min/max/sum_float、
+                         unique_string（原地排序/反转，qsort；空数组 min/max 返回 0）
+                       - std/map（新模块，7 个函数）：map_new/set/get/has/remove/len/keys，
+                         字符串键值、GC 管理、保持插入顺序
+                       - 顺手修后端存量 bug：浮点数组此前从未验证——数组字面量存浮点
+                         没做 bitcast（float→i64 槽）、索引读写没转回 f64；
+                         给 MirExpr::Index/MirTarget::Index 增加 elem 类型字段，
+                         读写按 f64 位模式 bitcast（cranelift 0.134 的 bitcast
+                         需要 MemFlags 参数）
+                       - codegen extern_c_symbol 追加 20 个 sw_ 映射
+                       - 新增 examples/probe-stdlib3.sw（39 项断言），35 个 examples
+                         全过；cargo test 51 全绿；runtime.c 六目标交叉编译通过；
+                         musl x86_64/aarch64 端到端链接通过，nm 确认 qsort 等无遮蔽
+
     待办（下一批，按推荐优先级）：
        1. 网络：TCP 连接/收发基础
        2. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、
           接口方法 struct 返回值、闭包 struct 参数
-       3. 容器：std/array（sort_int/sort_float/sort_string/reverse/min/max/sum/unique）、
-          std/map（字符串键）
-       4. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
-       5. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
+       3. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
+       4. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
 二、已知限制
 

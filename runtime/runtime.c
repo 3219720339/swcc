@@ -5023,3 +5023,303 @@ sw_string* json_type_name(void* value) {
             return sw_string_from_literal("object", 6);
     }
 }
+
+// ---------------------------------------------------------------------------
+// 数组工具：类型化排序/反转/最值/求和/去重（std/array）
+// ---------------------------------------------------------------------------
+
+static int sw_cmp_i64(const void* a, const void* b) {
+    int64_t x = *(const int64_t*)a;
+    int64_t y = *(const int64_t*)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+static int sw_cmp_f64(const void* a, const void* b) {
+    double x = *(const double*)a;
+    double y = *(const double*)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+static int sw_cmp_str(const void* a, const void* b) {
+    sw_string* x = *(sw_string* const*)a;
+    sw_string* y = *(sw_string* const*)b;
+    int64_t min = x->len < y->len ? x->len : y->len;
+    int cmp = min > 0 ? memcmp(x->data, y->data, (uint64_t)min) : 0;
+    if (cmp != 0) {
+        return cmp;
+    }
+    return x->len < y->len ? -1 : (x->len > y->len ? 1 : 0);
+}
+
+void sw_sort_int(sw_array* items) {
+    if (items != NULL && items->len > 1) {
+        qsort(items->data, (uint64_t)items->len, 8, sw_cmp_i64);
+    }
+}
+
+void sw_sort_float(sw_array* items) {
+    if (items != NULL && items->len > 1) {
+        qsort(items->data, (uint64_t)items->len, 8, sw_cmp_f64);
+    }
+}
+
+void sw_sort_string(sw_array* items) {
+    if (items != NULL && items->len > 1) {
+        qsort(items->data, (uint64_t)items->len, 8, sw_cmp_str);
+    }
+}
+
+void sw_reverse_int(sw_array* items) {
+    if (items == NULL) {
+        return;
+    }
+    int64_t* data = (int64_t*)items->data;
+    for (int64_t i = 0; i < items->len / 2; i++) {
+        int64_t tmp = data[i];
+        data[i] = data[items->len - 1 - i];
+        data[items->len - 1 - i] = tmp;
+    }
+}
+
+void sw_reverse_float(sw_array* items) {
+    if (items == NULL) {
+        return;
+    }
+    double* data = (double*)items->data;
+    for (int64_t i = 0; i < items->len / 2; i++) {
+        double tmp = data[i];
+        data[i] = data[items->len - 1 - i];
+        data[items->len - 1 - i] = tmp;
+    }
+}
+
+void sw_reverse_string(sw_array* items) {
+    if (items == NULL) {
+        return;
+    }
+    int64_t* data = (int64_t*)items->data;
+    for (int64_t i = 0; i < items->len / 2; i++) {
+        int64_t tmp = data[i];
+        data[i] = data[items->len - 1 - i];
+        data[items->len - 1 - i] = tmp;
+    }
+}
+
+int64_t sw_min_int(sw_array* items) {
+    if (items == NULL || items->len == 0) {
+        return 0;
+    }
+    int64_t* data = (int64_t*)items->data;
+    int64_t result = data[0];
+    for (int64_t i = 1; i < items->len; i++) {
+        if (data[i] < result) {
+            result = data[i];
+        }
+    }
+    return result;
+}
+
+int64_t sw_max_int(sw_array* items) {
+    if (items == NULL || items->len == 0) {
+        return 0;
+    }
+    int64_t* data = (int64_t*)items->data;
+    int64_t result = data[0];
+    for (int64_t i = 1; i < items->len; i++) {
+        if (data[i] > result) {
+            result = data[i];
+        }
+    }
+    return result;
+}
+
+int64_t sw_sum_int(sw_array* items) {
+    if (items == NULL) {
+        return 0;
+    }
+    int64_t* data = (int64_t*)items->data;
+    int64_t total = 0;
+    for (int64_t i = 0; i < items->len; i++) {
+        total += data[i];
+    }
+    return total;
+}
+
+double sw_min_float(sw_array* items) {
+    if (items == NULL || items->len == 0) {
+        return 0.0;
+    }
+    double* data = (double*)items->data;
+    double result = data[0];
+    for (int64_t i = 1; i < items->len; i++) {
+        if (data[i] < result) {
+            result = data[i];
+        }
+    }
+    return result;
+}
+
+double sw_max_float(sw_array* items) {
+    if (items == NULL || items->len == 0) {
+        return 0.0;
+    }
+    double* data = (double*)items->data;
+    double result = data[0];
+    for (int64_t i = 1; i < items->len; i++) {
+        if (data[i] > result) {
+            result = data[i];
+        }
+    }
+    return result;
+}
+
+double sw_sum_float(sw_array* items) {
+    if (items == NULL) {
+        return 0.0;
+    }
+    double* data = (double*)items->data;
+    double total = 0.0;
+    for (int64_t i = 0; i < items->len; i++) {
+        total += data[i];
+    }
+    return total;
+}
+
+sw_array* sw_unique_string(sw_array* items) {
+    if (items == NULL) {
+        return sw_array_new(8, 0);
+    }
+    sw_array* result = sw_array_new(8, items->len);
+    int64_t slot = 0;
+    for (int64_t i = 0; i < items->len; i++) {
+        sw_string* item = (sw_string*)((int64_t*)items->data)[i];
+        int64_t seen = 0;
+        for (int64_t k = 0; k < slot; k++) {
+            if (string_eq(item, (sw_string*)((int64_t*)result->data)[k])) {
+                seen = 1;
+                break;
+            }
+        }
+        if (!seen) {
+            ((int64_t*)result->data)[slot++] = (int64_t)item;
+        }
+    }
+    result->len = slot;
+    result->cap = slot;
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// map：字符串键字典（GC 管理，保持插入顺序）
+// ---------------------------------------------------------------------------
+
+typedef struct sw_map_node {
+    struct sw_map_node* next;
+    sw_string* key;
+    sw_string* value;
+} sw_map_node;
+
+typedef struct sw_map {
+    sw_map_node* head;
+    sw_map_node* tail;
+    int64_t count;
+} sw_map;
+
+void* sw_map_new(void) {
+    sw_map* map = (sw_map*)sw_gc_alloc(sizeof(sw_map));
+    map->head = NULL;
+    map->tail = NULL;
+    map->count = 0;
+    return map;
+}
+
+static sw_map_node* sw_map_find(sw_map* map, sw_string* key) {
+    for (sw_map_node* node = map->head; node != NULL; node = node->next) {
+        if (string_eq(node->key, key)) {
+            return node;
+        }
+    }
+    return NULL;
+}
+
+int64_t sw_map_set(void* handle, sw_string* key, sw_string* value) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL || key == NULL) {
+        return -1;
+    }
+    sw_map_node* node = sw_map_find(map, key);
+    if (node != NULL) {
+        node->value = value;
+        return 0;
+    }
+    sw_map_node* fresh = (sw_map_node*)sw_gc_alloc(sizeof(sw_map_node));
+    fresh->next = NULL;
+    fresh->key = key;
+    fresh->value = value;
+    if (map->tail != NULL) {
+        map->tail->next = fresh;
+    } else {
+        map->head = fresh;
+    }
+    map->tail = fresh;
+    map->count++;
+    return 0;
+}
+
+sw_string* sw_map_get(void* handle, sw_string* key) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL) {
+        return NULL;
+    }
+    sw_map_node* node = sw_map_find(map, key);
+    return node != NULL ? node->value : NULL;
+}
+
+int64_t sw_map_has(void* handle, sw_string* key) {
+    sw_map* map = (sw_map*)handle;
+    return map != NULL && sw_map_find(map, key) != NULL ? 1 : 0;
+}
+
+int64_t sw_map_remove(void* handle, sw_string* key) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL) {
+        return -1;
+    }
+    sw_map_node* prev = NULL;
+    sw_map_node* node = map->head;
+    while (node != NULL) {
+        if (string_eq(node->key, key)) {
+            if (prev != NULL) {
+                prev->next = node->next;
+            } else {
+                map->head = node->next;
+            }
+            if (map->tail == node) {
+                map->tail = prev;
+            }
+            map->count--;
+            return 0;
+        }
+        prev = node;
+        node = node->next;
+    }
+    return -1;
+}
+
+int64_t sw_map_len(void* handle) {
+    sw_map* map = (sw_map*)handle;
+    return map != NULL ? map->count : 0;
+}
+
+sw_array* sw_map_keys(void* handle) {
+    sw_map* map = (sw_map*)handle;
+    sw_array* array = sw_array_new(8, map != NULL ? map->count : 0);
+    if (map == NULL) {
+        return array;
+    }
+    int64_t slot = 0;
+    for (sw_map_node* node = map->head; node != NULL; node = node->next) {
+        ((int64_t*)array->data)[slot++] = (int64_t)node->key;
+    }
+    return array;
+}

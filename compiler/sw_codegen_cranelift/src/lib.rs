@@ -807,6 +807,26 @@ fn extern_c_symbol(name: &str) -> &str {
         "base64url_encode" => "sw_base64url_encode",
         "base64url_decode" => "sw_base64url_decode",
         "html_escape" => "sw_html_escape",
+        "sort_int" => "sw_sort_int",
+        "sort_float" => "sw_sort_float",
+        "sort_string" => "sw_sort_string",
+        "reverse_int" => "sw_reverse_int",
+        "reverse_float" => "sw_reverse_float",
+        "reverse_string" => "sw_reverse_string",
+        "min_int" => "sw_min_int",
+        "max_int" => "sw_max_int",
+        "sum_int" => "sw_sum_int",
+        "min_float" => "sw_min_float",
+        "max_float" => "sw_max_float",
+        "sum_float" => "sw_sum_float",
+        "unique_string" => "sw_unique_string",
+        "map_new" => "sw_map_new",
+        "map_set" => "sw_map_set",
+        "map_get" => "sw_map_get",
+        "map_has" => "sw_map_has",
+        "map_remove" => "sw_map_remove",
+        "map_len" => "sw_map_len",
+        "map_keys" => "sw_map_keys",
         _ => name,
     }
 }
@@ -1463,7 +1483,11 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .ins()
                     .load(ty, MemFlagsData::new(), object, offset))
             }
-            MirTarget::Index { object, index } => {
+            MirTarget::Index {
+                object,
+                index,
+                elem,
+            } => {
                 let compact = self.array_elem_size(object) == 1;
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
@@ -1475,10 +1499,17 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                         .load(types::I8, MemFlagsData::new(), address, 0);
                     Ok(self.builder.ins().uextend(types::I64, byte))
                 } else {
-                    Ok(self
-                        .builder
-                        .ins()
-                        .load(types::I64, MemFlagsData::new(), address, 0))
+                    let value =
+                        self.builder
+                            .ins()
+                            .load(types::I64, MemFlagsData::new(), address, 0);
+                    Ok(if elem.is_float() {
+                        self.builder
+                            .ins()
+                            .bitcast(types::F64, MemFlagsData::new(), value)
+                    } else {
+                        value
+                    })
                 }
             }
         }
@@ -1527,11 +1558,22 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     Ok(())
                 }
             }
-            MirTarget::Index { object, index } => {
+            MirTarget::Index {
+                object,
+                index,
+                elem,
+            } => {
                 let compact = self.array_elem_size(object) == 1;
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
                 let address = self.index_address(object, index, compact);
+                let value = if elem.is_float() {
+                    self.builder
+                        .ins()
+                        .bitcast(types::I64, MemFlagsData::new(), value)
+                } else {
+                    value
+                };
                 if compact {
                     let byte = self.builder.ins().ireduce(types::I8, value);
                     self.builder
@@ -1829,7 +1871,11 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .ins()
                     .load(ty, MemFlagsData::new(), object, offset)
             }
-            MirExpr::Index { object, index } => {
+            MirExpr::Index {
+                object,
+                index,
+                elem,
+            } => {
                 let compact = self.array_elem_size(object) == 1;
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
@@ -1841,9 +1887,17 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                         .load(types::I8, MemFlagsData::new(), address, 0);
                     self.builder.ins().uextend(types::I64, byte)
                 } else {
-                    self.builder
-                        .ins()
-                        .load(types::I64, MemFlagsData::new(), address, 0)
+                    let value =
+                        self.builder
+                            .ins()
+                            .load(types::I64, MemFlagsData::new(), address, 0);
+                    if elem.is_float() {
+                        self.builder
+                            .ins()
+                            .bitcast(types::F64, MemFlagsData::new(), value)
+                    } else {
+                        value
+                    }
                 }
             }
             MirExpr::Len { object, string } => {
@@ -1867,6 +1921,13 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 self.builder.ins().stack_store(types::I64, array, slot, 0);
                 for (index, item) in items.iter().enumerate() {
                     let item = self.expr(item)?;
+                    let item = if elem.is_float() {
+                        self.builder
+                            .ins()
+                            .bitcast(types::I64, MemFlagsData::new(), item)
+                    } else {
+                        item
+                    };
                     let index_value = self.builder.ins().iconst(types::I64, index as i64);
                     let array = self
                         .builder

@@ -2341,6 +2341,14 @@ impl<'s> Checker<'s> {
         }
     }
 
+    /// 可与字符串 `+` 拼接的类型（自动转字符串）。
+    fn concatable_with_string(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Str | Type::Int | Type::F32 | Type::F64 | Type::Bool | Type::Char
+        )
+    }
+
     fn check_binary(&mut self, op: &BinaryOp, left: &Expr, right: &Expr, span: Span) -> Type {
         let left_ty = self.check_expr(left);
         let right_ty = self.check_expr(right);
@@ -2348,6 +2356,12 @@ impl<'s> Checker<'s> {
         match op {
             BinaryOp::Add => {
                 if left_ty == Type::Str && right_ty == Type::Str {
+                    return Type::Str;
+                }
+                // "a" + 42 / "a" + true / 42 + "a"：标量自动转字符串拼接（JS 风格）。
+                if (left_ty == Type::Str && Self::concatable_with_string(&right_ty))
+                    || (right_ty == Type::Str && Self::concatable_with_string(&left_ty))
+                {
                     return Type::Str;
                 }
                 if left_ty.is_numeric() && left_ty == right_ty {
@@ -3754,7 +3768,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     Type::Str => Type::Char,
                     _ => Type::Error,
                 };
-                let element_local = self.declare_local(&name.name, element_ty, true);
+                let element_local = self.declare_local(&name.name, element_ty.clone(), true);
                 self.name_scopes
                     .last_mut()
                     .expect("作用域存在")
@@ -3773,6 +3787,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     MirExpr::Index {
                         object: Box::new(array.clone()),
                         index: Box::new(index_expr.clone()),
+                        elem: Box::new(element_ty.clone()),
                     }
                 };
                 body_stmts.push(MirStmt::new(MirStmtKind::Assign {
@@ -4280,6 +4295,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             ExprKind::Index { object, index, .. } => Some(MirTarget::Index {
                 object: Box::new(self.lower_expr(object)),
                 index: Box::new(self.lower_expr(index)),
+                elem: Box::new(match self.expr_type(object).without_nullable() {
+                    Type::Array(inner) => (**inner).clone(),
+                    _ => Type::Int,
+                }),
             }),
             _ => None,
         }
@@ -4287,6 +4306,26 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
 
     fn lower_value(&mut self, expr: &Expr) -> MirExpr {
         self.lower_expr(expr)
+    }
+
+    /// 把右/左操作数包装成字符串：标量经 to_string intrinsic 转换，字符串原样。
+    fn to_string_expr(value: MirExpr, ty: &Type) -> MirExpr {
+        if *ty == Type::Str {
+            return value;
+        }
+        let name = match ty {
+            Type::Int => "int_to_string",
+            Type::F32 | Type::F64 => "float_to_string",
+            Type::Bool => "bool_to_string",
+            Type::Char => "char_to_string",
+            _ => "int_to_string",
+        };
+        MirExpr::Call {
+            callee: MirCallee::Intrinsic {
+                name: name.to_owned(),
+            },
+            args: vec![value],
+        }
     }
 
     fn lower_expr(&mut self, expr: &Expr) -> MirExpr {
@@ -4397,15 +4436,32 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
             }
             ExprKind::Binary { op, left, right } => {
-                if *op == BinaryOp::Add && self.expr_type(left) == Type::Str {
-                    let left = self.lower_expr(left);
-                    let right = self.lower_expr(right);
-                    return MirExpr::Call {
-                        callee: MirCallee::Intrinsic {
-                            name: "string_concat".to_owned(),
-                        },
-                        args: vec![left, right],
-                    };
+                if *op == BinaryOp::Add {
+                    let left_ty = self.expr_type(left);
+                    let right_ty = self.expr_type(right);
+                    if left_ty == Type::Str && Checker::concatable_with_string(&right_ty) {
+                        let left = self.lower_expr(left);
+                        let right = Self::to_string_expr(self.lower_expr(right), &right_ty);
+                        return MirExpr::Call {
+                            callee: MirCallee::Intrinsic {
+                                name: "string_concat".to_owned(),
+                            },
+                            args: vec![left, right],
+                        };
+                    }
+                    if right_ty == Type::Str
+                        && left_ty != Type::Str
+                        && Checker::concatable_with_string(&left_ty)
+                    {
+                        let left = Self::to_string_expr(self.lower_expr(left), &left_ty);
+                        let right = self.lower_expr(right);
+                        return MirExpr::Call {
+                            callee: MirCallee::Intrinsic {
+                                name: "string_concat".to_owned(),
+                            },
+                            args: vec![left, right],
+                        };
+                    }
                 }
                 if *op == BinaryOp::Pow {
                     let is_float = self.expr_type(left).is_float();
@@ -4774,9 +4830,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         args: vec![self.lower_expr(object), self.lower_expr(index)],
                     }
                 } else {
+                    let elem = match self.expr_type(object).without_nullable() {
+                        Type::Array(inner) => (**inner).clone(),
+                        _ => Type::Int,
+                    };
                     MirExpr::Index {
                         object: Box::new(self.lower_expr(object)),
                         index: Box::new(self.lower_expr(index)),
+                        elem: Box::new(elem),
                     }
                 };
                 if *optional {
