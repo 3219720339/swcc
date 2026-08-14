@@ -6409,7 +6409,14 @@ static int sw_time_field(int64_t seconds, int field) {
         return -1;
     }
     static const int offsets[] = {20, 16, 24, 12, 8, 4, 0};
-    return *(int*)(tm + offsets[field]);
+    int value = *(int*)(tm + offsets[field]);
+    if (field == 0) {
+        return value + 1900;  // tm_year 是从 1900 起的年数
+    }
+    if (field == 1) {
+        return value + 1;     // tm_mon 是 0-11
+    }
+    return value;
 #endif
 }
 
@@ -6653,7 +6660,12 @@ int64_t uptime_ms(void) {
 #else
     extern int clock_gettime(int clock_id, void* ts);
     unsigned char ts[16];
-    if (clock_gettime(1 /* CLOCK_MONOTONIC */, ts) != 0) {
+#if defined(__APPLE__)
+    const int clock_monotonic = 6;  // macOS CLOCK_MONOTONIC
+#else
+    const int clock_monotonic = 1;  // Linux CLOCK_MONOTONIC
+#endif
+    if (clock_gettime(clock_monotonic, ts) != 0) {
         return 0;
     }
     int64_t sec = *(int64_t*)ts;
