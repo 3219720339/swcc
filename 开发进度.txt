@@ -1128,6 +1128,10 @@ Sw 编译器（swcc）开发进度
                          模板插值（先 ?? 兜底再打印）；字符串控制字符转义
                          用 \u{1} 写法
 
+    2026-08-15 04:45  演示写法清理：纯文本输出不再用模板字符串
+                       （demo-net 的 println(`closed`) → println("closed")），
+                       仅多值拼接/数字转文本时保留 ${} 插值，重新跑通
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

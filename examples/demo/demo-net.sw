@@ -24,6 +24,6 @@ function main(): int {
     net_close(peer);
     net_close(client);
     net_close(server);
-    println(`closed`);
+    println("closed");
     return 0;
 }
