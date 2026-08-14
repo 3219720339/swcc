@@ -19,6 +19,7 @@ typedef unsigned long sw_size;
 extern void* malloc(sw_size size);
 extern void free(void* ptr);
 extern void* calloc(sw_size count, sw_size size);
+extern void* realloc(void* ptr, sw_size size);
 extern void* memcpy(void* dest, const void* src, sw_size count);
 extern void* memset(void* dest, int value, sw_size count);
 extern int memcmp(const void* a, const void* b, sw_size count);
@@ -2487,5 +2488,472 @@ sw_string* sw_getenv(sw_string* name) {
         }
     }
     return NULL;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// 进程：spawn / wait / poll / kill / run / run_with_input / run_status
+// Windows 用 CreateProcessA + 管道；POSIX 用 fork + execvp + 管道。
+// 注意：Sw 侧名字经 codegen 映射为 sw_ 前缀（避免遮蔽 libc 同名符号）。
+// ---------------------------------------------------------------------------
+
+#define SW_MAX_PROCESSES 64
+
+typedef struct sw_proc_entry {
+    int64_t pid;
+    void* handle;
+    int64_t used;
+} sw_proc_entry;
+
+static sw_proc_entry sw_processes[SW_MAX_PROCESSES];
+
+static void* sw_proc_handle(int64_t pid) {
+    for (int64_t i = 0; i < SW_MAX_PROCESSES; i++) {
+        if (sw_processes[i].used && sw_processes[i].pid == pid) {
+            return sw_processes[i].handle;
+        }
+    }
+    return NULL;
+}
+
+static void sw_proc_store(int64_t pid, void* handle) {
+    for (int64_t i = 0; i < SW_MAX_PROCESSES; i++) {
+        if (!sw_processes[i].used) {
+            sw_processes[i].used = 1;
+            sw_processes[i].pid = pid;
+            sw_processes[i].handle = handle;
+            return;
+        }
+    }
+}
+
+static void sw_proc_clear(int64_t pid) {
+    for (int64_t i = 0; i < SW_MAX_PROCESSES; i++) {
+        if (sw_processes[i].used && sw_processes[i].pid == pid) {
+            sw_processes[i].used = 0;
+            return;
+        }
+    }
+}
+
+// argv 数组：argv[0]=cmd，其后为 args，末尾 NULL（POSIX execvp 需要）。
+static char** sw_build_argv(sw_string* cmd, sw_array* args) {
+    int64_t count = 1 + args->len;
+    char** argv = (char**)sw_gc_alloc((uint64_t)(count + 1) * sizeof(char*));
+    argv[0] = cmd->data;
+    for (int64_t i = 0; i < args->len; i++) {
+        sw_string* item = (sw_string*)((int64_t*)args->data)[i];
+        argv[i + 1] = item->data;
+    }
+    argv[count] = NULL;
+    return argv;
+}
+
+#if defined(_WIN32)
+
+// 把 argv 拼成 CreateProcessA 的命令行：含空格/制表/引号的参数用双引号包裹，内部引号双写。
+static char* sw_build_cmdline(sw_string* cmd, sw_array* args) {
+    int64_t total = cmd->len + 4;
+    for (int64_t i = 0; i < args->len; i++) {
+        sw_string* item = (sw_string*)((int64_t*)args->data)[i];
+        int64_t extra = 0;
+        for (int64_t j = 0; j < item->len; j++) {
+            if (item->data[j] == '"') {
+                extra++;
+            }
+        }
+        total += item->len + extra + 4;
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)total + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < args->len + 1; i++) {
+        sw_string* part =
+            i == 0 ? cmd : (sw_string*)((int64_t*)args->data)[i - 1];
+        int64_t need_quote = part->len == 0;
+        for (int64_t j = 0; j < part->len && !need_quote; j++) {
+            char ch = part->data[j];
+            if (ch == ' ' || ch == '\t' || ch == '"') {
+                need_quote = 1;
+            }
+        }
+        if (i > 0) {
+            buffer[out++] = ' ';
+        }
+        if (need_quote) {
+            buffer[out++] = '"';
+        }
+        for (int64_t j = 0; j < part->len; j++) {
+            char ch = part->data[j];
+            if (ch == '"') {
+                buffer[out++] = '"';
+            }
+            buffer[out++] = ch;
+        }
+        if (need_quote) {
+            buffer[out++] = '"';
+        }
+    }
+    buffer[out] = 0;
+    return buffer;
+}
+
+// STARTUPINFOA（x64 104 字节）与 PROCESS_INFORMATION（24 字节）。
+typedef struct sw_startup_info {
+    unsigned int cb;
+    char* reserved;
+    char* desktop;
+    char* title;
+    unsigned int x;
+    unsigned int y;
+    unsigned int x_size;
+    unsigned int y_size;
+    unsigned int x_chars;
+    unsigned int y_chars;
+    unsigned int fill;
+    unsigned int flags;
+    unsigned short show_window;
+    unsigned short reserved2_count;
+    unsigned char* reserved2;
+    void* h_std_input;
+    void* h_std_output;
+    void* h_std_error;
+} sw_startup_info;
+
+typedef struct sw_proc_info {
+    void* h_process;
+    void* h_thread;
+    unsigned int process_id;
+    unsigned int thread_id;
+} sw_proc_info;
+
+extern int CreatePipe(void** read_handle, void** write_handle, void* attr, unsigned int size);
+extern int SetHandleInformation(void* handle, unsigned int mask, unsigned int flags);
+extern int CreateProcessA(
+    const char* app,
+    char* cmdline,
+    void* proc_attr,
+    void* thread_attr,
+    int inherit,
+    unsigned int flags,
+    void* env,
+    const char* cwd,
+    void* startup,
+    void* proc_info
+);
+extern unsigned long WaitForSingleObject(void* handle, unsigned long ms);
+extern int GetExitCodeProcess(void* handle, unsigned int* code);
+extern int TerminateProcess(void* handle, unsigned int code);
+extern int CloseHandle(void* handle);
+extern int ReadFile(void* handle, void* buffer, unsigned int bytes, unsigned int* read, void* overlapped);
+extern int WriteFile(void* handle, const void* buffer, unsigned int bytes, unsigned int* written, void* overlapped);
+
+int64_t sw_spawn(sw_string* cmd, sw_array* args) {
+    char* cmdline = sw_build_cmdline(cmd, args);
+    sw_startup_info startup;
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    sw_proc_info info;
+    memset(&info, 0, sizeof(info));
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, 1, 0, NULL, NULL, &startup, &info)) {
+        return 0;
+    }
+    int64_t pid = (int64_t)info.process_id;
+    CloseHandle(info.h_thread);
+    sw_proc_store(pid, info.h_process);
+    return pid;
+}
+
+int64_t sw_wait(int64_t pid) {
+    void* handle = sw_proc_handle(pid);
+    if (handle == NULL) {
+        return -1;
+    }
+    WaitForSingleObject(handle, 0xFFFFFFFFu);
+    unsigned int code = 0;
+    GetExitCodeProcess(handle, &code);
+    CloseHandle(handle);
+    sw_proc_clear(pid);
+    return (int64_t)code;
+}
+
+int64_t sw_poll(int64_t pid) {
+    void* handle = sw_proc_handle(pid);
+    if (handle == NULL) {
+        return -2;
+    }
+    if (WaitForSingleObject(handle, 0) == 0x00000102u) {  // WAIT_TIMEOUT
+        return -1;
+    }
+    unsigned int code = 0;
+    GetExitCodeProcess(handle, &code);
+    CloseHandle(handle);
+    sw_proc_clear(pid);
+    return (int64_t)code;
+}
+
+int64_t sw_kill(int64_t pid) {
+    void* handle = sw_proc_handle(pid);
+    if (handle == NULL) {
+        return -1;
+    }
+    return TerminateProcess(handle, 1) ? 0 : -1;
+}
+
+static sw_string* sw_run_impl(sw_string* cmd, sw_array* args, sw_string* input) {
+    void* out_read = NULL;
+    void* out_write = NULL;
+    void* in_read = NULL;
+    void* in_write = NULL;
+    int64_t has_input = input != NULL && input->len > 0;
+    if (!CreatePipe(&out_read, &out_write, NULL, 0)) {
+        return sw_string_from_literal("", 0);
+    }
+    SetHandleInformation(out_write, 1, 1);
+    if (has_input) {
+        if (!CreatePipe(&in_read, &in_write, NULL, 0)) {
+            CloseHandle(out_read);
+            CloseHandle(out_write);
+            return sw_string_from_literal("", 0);
+        }
+        SetHandleInformation(in_read, 1, 1);
+    }
+    char* cmdline = sw_build_cmdline(cmd, args);
+    sw_startup_info startup;
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    startup.flags = 0x00000100u;  // STARTF_USESTDHANDLES
+    startup.h_std_output = out_write;
+    startup.h_std_error = out_write;
+    startup.h_std_input = in_read;
+    sw_proc_info info;
+    memset(&info, 0, sizeof(info));
+    int ok = CreateProcessA(NULL, cmdline, NULL, NULL, 1, 0, NULL, NULL, &startup, &info);
+    CloseHandle(out_write);
+    if (in_read != NULL) {
+        CloseHandle(in_read);
+    }
+    if (!ok) {
+        CloseHandle(out_read);
+        if (in_write != NULL) {
+            CloseHandle(in_write);
+        }
+        return sw_string_from_literal("", 0);
+    }
+    CloseHandle(info.h_thread);
+    if (has_input) {
+        unsigned int written = 0;
+        WriteFile(in_write, input->data, (unsigned int)input->len, &written, NULL);
+    }
+    if (in_write != NULL) {
+        CloseHandle(in_write);
+    }
+    char chunk[4096];
+    char* buffer = (char*)malloc(4096);
+    int64_t capacity = 4096;
+    int64_t length = 0;
+    while (1) {
+        unsigned int got = 0;
+        if (!ReadFile(out_read, chunk, sizeof(chunk), &got, NULL) || got == 0) {
+            break;
+        }
+        if (length + (int64_t)got > capacity) {
+            capacity = (length + (int64_t)got) * 2;
+            buffer = (char*)realloc(buffer, (sw_size)capacity);
+        }
+        memcpy(buffer + length, chunk, got);
+        length += (int64_t)got;
+    }
+    CloseHandle(out_read);
+    WaitForSingleObject(info.h_process, 0xFFFFFFFFu);
+    CloseHandle(info.h_process);
+    sw_string* result = sw_string_from_literal(buffer, length);
+    free(buffer);
+    return result;
+}
+
+int64_t sw_run_status(sw_string* cmd, sw_array* args) {
+    char* cmdline = sw_build_cmdline(cmd, args);
+    sw_startup_info startup;
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    sw_proc_info info;
+    memset(&info, 0, sizeof(info));
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, 1, 0, NULL, NULL, &startup, &info)) {
+        return -1;
+    }
+    CloseHandle(info.h_thread);
+    WaitForSingleObject(info.h_process, 0xFFFFFFFFu);
+    unsigned int code = 0;
+    GetExitCodeProcess(info.h_process, &code);
+    CloseHandle(info.h_process);
+    return (int64_t)code;
+}
+
+#else  // POSIX（Linux / macOS）
+
+extern int pipe(int fds[2]);
+extern int fork(void);
+extern int execvp(const char* file, char* const argv[]);
+extern int waitpid(int pid, int* status, int options);
+extern int kill(int pid, int signal);
+extern long read(int fd, void* buffer, unsigned long count);
+extern long write(int fd, const void* buffer, unsigned long count);
+extern int close(int fd);
+extern int dup2(int old_fd, int new_fd);
+extern void _exit(int code);
+
+int64_t sw_spawn(sw_string* cmd, sw_array* args) {
+    char** argv = sw_build_argv(cmd, args);
+    int pid = fork();
+    if (pid < 0) {
+        return 0;
+    }
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    return (int64_t)pid;
+}
+
+int64_t sw_wait(int64_t pid) {
+    int status = 0;
+    if (waitpid((int)pid, &status, 0) < 0) {
+        return -1;
+    }
+    int code = status & 0x7f;
+    if (code == 0) {
+        return (status >> 8) & 0xff;
+    }
+    return 128 + code;  // 被信号杀死：128+信号号
+}
+
+int64_t sw_poll(int64_t pid) {
+    int status = 0;
+    int result = waitpid((int)pid, &status, 1);  // WNOHANG=1
+    if (result == 0) {
+        return -1;  // 仍在运行
+    }
+    if (result < 0) {
+        return -2;  // 未知或已回收
+    }
+    int code = status & 0x7f;
+    if (code == 0) {
+        return (status >> 8) & 0xff;
+    }
+    return 128 + code;
+}
+
+int64_t sw_kill(int64_t pid) {
+    return kill((int)pid, 9) == 0 ? 0 : -1;  // SIGKILL=9
+}
+
+static sw_string* sw_run_impl(sw_string* cmd, sw_array* args, sw_string* input) {
+    int out_pipe[2];
+    int in_pipe[2] = {-1, -1};
+    int64_t has_input = input != NULL && input->len > 0;
+    if (pipe(out_pipe) != 0) {
+        return sw_string_from_literal("", 0);
+    }
+    if (has_input && pipe(in_pipe) != 0) {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        return sw_string_from_literal("", 0);
+    }
+    char** argv = sw_build_argv(cmd, args);
+    int pid = fork();
+    if (pid < 0) {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        if (has_input) {
+            close(in_pipe[0]);
+            close(in_pipe[1]);
+        }
+        return sw_string_from_literal("", 0);
+    }
+    if (pid == 0) {
+        dup2(out_pipe[1], 1);
+        dup2(out_pipe[1], 2);
+        if (has_input) {
+            dup2(in_pipe[0], 0);
+        }
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        if (has_input) {
+            close(in_pipe[0]);
+            close(in_pipe[1]);
+        }
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(out_pipe[1]);
+    if (has_input) {
+        close(in_pipe[0]);
+        if (input->len > 0) {
+            (void)write(in_pipe[1], input->data, (unsigned long)input->len);
+        }
+        close(in_pipe[1]);
+    }
+    char chunk[4096];
+    char* buffer = (char*)malloc(4096);
+    int64_t capacity = 4096;
+    int64_t length = 0;
+    while (1) {
+        long got = read(out_pipe[0], chunk, sizeof(chunk));
+        if (got <= 0) {
+            break;
+        }
+        if (length + got > capacity) {
+            capacity = (length + got) * 2;
+            buffer = (char*)realloc(buffer, (sw_size)capacity);
+        }
+        memcpy(buffer + length, chunk, (uint64_t)got);
+        length += got;
+    }
+    close(out_pipe[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    sw_string* result = sw_string_from_literal(buffer, length);
+    free(buffer);
+    return result;
+}
+
+int64_t sw_run_status(sw_string* cmd, sw_array* args) {
+    char** argv = sw_build_argv(cmd, args);
+    int pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        return -1;
+    }
+    int code = status & 0x7f;
+    if (code == 0) {
+        return (status >> 8) & 0xff;
+    }
+    return 128 + code;
+}
+
+#endif
+
+sw_string* sw_run(sw_string* cmd, sw_array* args) {
+    return sw_run_impl(cmd, args, NULL);
+}
+
+sw_string* sw_run_with_input(sw_string* cmd, sw_array* args, sw_string* input) {
+    return sw_run_impl(cmd, args, input);
+}
+
+sw_string* sw_platform(void) {
+#if defined(_WIN32)
+    return sw_string_from_literal("windows", 7);
+#elif defined(__APPLE__)
+    return sw_string_from_literal("macos", 5);
+#else
+    return sw_string_from_literal("linux", 5);
 #endif
 }

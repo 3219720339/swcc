@@ -33,6 +33,7 @@ EXPECTED = {
     "probe-json.sw": 0,
     "probe-param-if.sw": 3,
     "probe-param.sw": 42,
+    "probe-process.sw": 0,
     "probe-println.sw": 0,
     "probe-return.sw": 42,
     "probe-string.sw": 0,

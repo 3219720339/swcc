@@ -239,13 +239,33 @@ Sw 编译器（swcc）开发进度
                          工具链端到端编译运行 fib/probe-argv/probe-dir/probe-exceptions
                          全部通过；--version 输出 swc 0.1.1
 
+    2026-08-14 20:10  进程交互标准库（std/os 新增 8 个函数，纯运行时）：
+                       - platform()：windows/linux/macos
+                       - run(cmd, args)：执行到结束，返回 stdout+stderr 合并文本
+                       - run_with_input(cmd, args, input)：先写 stdin 再捕获输出
+                       - run_status(cmd, args)：退出码（输出继承父进程）
+                       - spawn(cmd, args)：后台启动返回 pid（失败 0）
+                       - wait(pid)：阻塞等待并回收，返回退出码
+                       - poll(pid)：非阻塞，退出码 / -1 运行中 / -2 未知
+                       - kill(pid)：强制终止（成功 0）
+                       - Windows 用 CreateProcessA + 管道（STARTF_USESTDHANDLES，
+                         命令行自动按空格/引号转义）；POSIX 用 fork + execvp + 管道；
+                         run_with_input 的 input 建议 < 管道缓冲（Windows 4KB），
+                         过大且子进程不及时读会阻塞
+                       - codegen extern_c_symbol 追加 8 个映射（sw_spawn/sw_wait/
+                         sw_poll/sw_kill/sw_run/sw_run_with_input/sw_run_status/
+                         sw_platform），避免静态链接遮蔽 libc 的 wait/kill/poll
+                       - 示例 examples/probe-process.sw（三平台分支：cmd/sh、more/cat、
+                         ping/sleep、true），31 个 examples 全过；cargo test 51 全绿；
+                         runtime.c 六目标交叉编译通过，musl x86_64/aarch64 端到端链接
+                         通过，nm 确认 libc wait/kill/poll 未被遮蔽
+
     待办（下一批，按推荐优先级）：
-       1. 进程交互：spawn/管道读写/退出码/等待（工具类程序最后一块基础）
-       2. 网络：TCP 连接/收发基础
-       3. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、
+       1. 网络：TCP 连接/收发基础
+       2. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、
           接口方法 struct 返回值、闭包 struct 参数
-       4. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
-       5. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
+       3. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
+       4. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
 二、已知限制
 

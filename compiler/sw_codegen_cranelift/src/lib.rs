@@ -717,6 +717,14 @@ fn extern_c_symbol(name: &str) -> &str {
         "rename" => "sw_rename",
         "remove" => "sw_remove",
         "getenv" => "sw_getenv",
+        "spawn" => "sw_spawn",
+        "wait" => "sw_wait",
+        "poll" => "sw_poll",
+        "kill" => "sw_kill",
+        "run" => "sw_run",
+        "run_with_input" => "sw_run_with_input",
+        "run_status" => "sw_run_status",
+        "platform" => "sw_platform",
         _ => name,
     }
 }
