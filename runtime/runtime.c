@@ -5365,18 +5365,26 @@ typedef struct sw_sockaddr_in {
     unsigned char zero[8];
 } sw_sockaddr_in;
 
-// addrinfo：Linux/macOS 是 addr 在前、canonname 在后；Windows 相反
-// （canonname 在 24、addr 在 32）。按平台排字段。
+// addrinfo 布局按平台：
+// - Windows：addrlen(size_t)@16、canonname@24、addr@32、next@40
+// - macOS：addrlen(socklen_t=uint32)@16+pad、canonname@24、addr@32、next@40
+// - Linux：addrlen(uint32)@16+pad、addr@24、canonname@32、next@40
 typedef struct sw_addrinfo {
     int flags;
     int family;
     int socktype;
     int protocol;
-    uint64_t addrlen;
 #if defined(_WIN32)
+    uint64_t addrlen;
+    char* canonname;
+    void* addr;
+#elif defined(__APPLE__)
+    unsigned int addrlen;
+    unsigned int pad;
     char* canonname;
     void* addr;
 #else
+    uint64_t addrlen;
     void* addr;
     char* canonname;
 #endif

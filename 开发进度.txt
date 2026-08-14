@@ -481,6 +481,21 @@ Sw 编译器（swcc）开发进度
                          x86_64-linux 通过；Windows 41 个 examples 全过；
                          cargo test 51 全绿；提交推 Gitee + GitHub 复跑 CI
 
+    2026-08-14 23:15  macOS probe-net 二次修复（net_connect 失败根因）：
+                       - CI 日志明确：net_listen/net_port 通过、net_connect 失败
+                       - 根因：addrinfo 字段顺序 macOS 与 Windows 一致
+                         （canonname@24、addr@32），只有 Linux 是 addr@24、
+                         canonname@32；原代码把 macOS 按 Linux 排，info->addr
+                         实际读到 ai_canonname 字符串指针，connect 把 ASCII
+                         当 sockaddr 用必然失败
+                       - 修复：sw_addrinfo 按 _WIN32 / __APPLE__ / Linux 三分支
+                         排字段；macOS 分支 addrlen 用 uint32（socklen_t）+
+                         pad，保证 canonname@24、addr@32
+                       - 验证：runtime.c 交叉编译 aarch64-apple-darwin /
+                         x86_64-linux / x86_64-w64-windows-gnu 通过；
+                         Windows 41 个 examples 全过；cargo test 51 全绿；
+                         提交推 Gitee + GitHub 复跑 CI
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
