@@ -439,19 +439,83 @@ sw_string* sw_bool_to_string(int64_t value) {
     return sw_string_from_literal(value ? "true" : "false", value ? 4 : 5);
 }
 
+// 可变参数运行时类型标签（与编译器 SW_TAG_* 保持一致）。
+#define SW_TAG_INT 0
+#define SW_TAG_FLOAT 1
+#define SW_TAG_STR 2
+#define SW_TAG_BOOL 3
+#define SW_TAG_CHAR 4
+
 void sw_print_string(sw_string* string) {
     if (string->len > 0) {
         fwrite(string->data, 1, (uint64_t)string->len, stdout);
     }
 }
 
-void println(sw_string* string) {
-    sw_print_string(string);
+// 按 varargs 打包数组输出任意类型（每元素两槽：tag, value）。
+void sw_print_any(sw_array* args) {
+    if (args != NULL && args->len > 0) {
+        int64_t* data = (int64_t*)args->data;
+        // args->len 是参数对数，每对占两槽（tag, value）。
+        for (int64_t i = 0; i + 1 < args->len * 2; i += 2) {
+            if (i > 0) {
+                fputc(' ', stdout);
+            }
+            int64_t tag = data[i];
+            int64_t value = data[i + 1];
+            switch (tag) {
+                case SW_TAG_INT: {
+                    sw_string* text = sw_int_to_string(value);
+                    sw_print_string(text);
+                    break;
+                }
+                case SW_TAG_FLOAT: {
+                    double d;
+                    memcpy(&d, &value, 8);
+                    sw_string* text = sw_float_to_string(d);
+                    sw_print_string(text);
+                    break;
+                }
+                case SW_TAG_STR: {
+                    sw_string* text = (sw_string*)value;
+                    if (text != NULL) {
+                        sw_print_string(text);
+                    }
+                    break;
+                }
+                case SW_TAG_BOOL: {
+                    sw_string* text = sw_bool_to_string(value);
+                    sw_print_string(text);
+                    break;
+                }
+                case SW_TAG_CHAR: {
+                    sw_string* text = sw_char_to_string(value);
+                    sw_print_string(text);
+                    break;
+                }
+                default: {
+                    sw_string* text = sw_int_to_string(value);
+                    sw_print_string(text);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void println(sw_array* args) {
+    sw_print_any(args);
     fputc('\n', stdout);
 }
 
-void print(sw_string* string) {
+void print(sw_array* args) {
+    sw_print_any(args);
+}
+
+// 测试 runner 专用：按单个字符串输出一行（@test 的 [ok]/[FAIL] 打印）。
+void sw_test_println(sw_string* string) {
     sw_print_string(string);
+    fputc('\n', stdout);
 }
 
 extern char* fgets(char* buffer, int size, void* stream);
@@ -1808,13 +1872,6 @@ sw_string* datetime_string(int64_t seconds) {
 #endif
     return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
 }
-
-// 可变参数运行时类型标签（与编译器 SW_TAG_* 保持一致）。
-#define SW_TAG_INT 0
-#define SW_TAG_FLOAT 1
-#define SW_TAG_STR 2
-#define SW_TAG_BOOL 3
-#define SW_TAG_CHAR 4
 
 static int sw_format_conv(char c) {
     return c == 'd' || c == 'i' || c == 'u' || c == 'x' || c == 'X' ||

@@ -16,7 +16,8 @@ swc run examples/demo/demo-os.sw       # 系统/进程
 
 | 模块 | 演示内容 | 输出示例（节选） |
 | --- | --- | --- |
-| demo-time | 时间戳/字段/中文星期/时长/增减/间隔 | `date=2026-08-15` `weekday_cn=六` `duration 90 -> 00:01:30` |
+| demo-print | **println 直接输出任意类型**（int/float/bool/char/string） | `42` `3.14` `true` `2026-08-15` |
+| demo-time | 时间戳/字段/中文星期/时长/增减/间隔（直接输出） | `2026-08-15` `6 六` `00:01:30` |
 | demo-string | 链式方法/格式化/解析/中文字符/中文函数名 | `reverse=wS好你` `format=score: 42 (3.14)` `format_float=3.14` |
 | demo-math | 取整/三角/对数/随机/常量 | `sqrt(16)=4.0000` `hypot(3,4)=5.0000` `pi=3.1416` |
 | demo-array | 排序/反转/极值/求和/去重/查找 | `sort_int=[1,2,3,4,5]` `sum_int=15` `unique=[a,b,c]` |
@@ -28,6 +29,9 @@ swc run examples/demo/demo-os.sw       # 系统/进程
 | demo-fs | 文件读写/目录/路径/glob/walk | `lines=3` `file_size=29` `walk_files_count=2` |
 | demo-os | 平台/目录/环境变量/子进程 | `platform=windows` `run=[hello-from-subprocess]` |
 | demo-net | 本机 TCP 回环收发 | `listen_port=52843` `recv=hello-from-sw` |
+
+> demo-time / demo-print 展示新能力：`println(任意类型)` 直接输出结果，
+> 多参数之间用空格分隔，无需标签、拼接或模板字符串。
 
 ## 完整输出
 

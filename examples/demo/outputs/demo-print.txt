@@ -1,0 +1,13 @@
+﻿构建成功：demo-print.exe（用时 37 ms）
+hello
+42
+-7
+3.14
+true
+S
+2026-08-15
+1786739977
+7
+a b c
+1 2.5 true
+no newline

@@ -1137,6 +1137,24 @@ Sw 编译器（swcc）开发进度
                        date_string(now))），输出结果不变，不再使用反引号；
                        其余 demo 保持模板字符串仅用于多值插值场景
 
+    2026-08-15 05:00  语言级：println/print 支持任意类型直接输出：
+                       - std/io 声明改为 println(...args: any) / print(...args: any)
+                       - runtime 新增 sw_print_any：按 varargs 打包数组
+                         （tag+value 槽）遍历，int/float/bool/char/string
+                         分别转文本输出，多参数空格分隔，println 末尾换行
+                       - @test runner 内部改调 sw_test_println（单 string），
+                         避免与新 varargs 签名冲突
+                       - 用法：println(42)、println(3.14)、println(true)、
+                         println('S')、println(date_string(now))、
+                         println(1, 2.5, "x")（空格分隔）——无需标签/拼接/
+                         模板字符串
+                       - demo-time 改为纯直接输出（println(now)、
+                         println(year_of(now), month_of(now), day_of(now))）；
+                         新增 demo-print.sw 演示任意类型输出
+                       - 验证：70 examples 回归通过、cargo test 52 全绿、
+                         @test runner [ok] 输出正常、demo-print/demo-time
+                         输出正确
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

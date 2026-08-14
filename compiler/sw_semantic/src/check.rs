@@ -5016,7 +5016,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
         let fail_prefix = self.intern_string("[FAIL] ");
         let println_sig = || FunctionSig {
             module: ModuleId(0),
-            name: "println".to_owned(),
+            name: "sw_test_println".to_owned(),
             generics: Vec::new(),
             bounds: HashMap::new(),
             params: vec![ParamSig {
@@ -5057,7 +5057,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
             let name_str = self.intern_string(&sig.name);
             let ok_print = MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
                 callee: MirCallee::Extern {
-                    name: "println".to_owned(),
+                    name: "sw_test_println".to_owned(),
                     sig: println_sig(),
                 },
                 args: vec![MirExpr::Call {
@@ -5077,7 +5077,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
             });
             let fail_print = MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
                 callee: MirCallee::Extern {
-                    name: "println".to_owned(),
+                    name: "sw_test_println".to_owned(),
                     sig: println_sig(),
                 },
                 args: vec![MirExpr::Call {
