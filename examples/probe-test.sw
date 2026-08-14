@@ -5,8 +5,8 @@ import { assert, expect_eq, expect_true, expect_false, fail } from "std/test";
 function add(a: int, b: int): int {
     return a + b;
 }
-
-@test function test_add(): int {
+@test
+function test_add(): int {
     expect_eq(add(1, 2), 3);
     assert(add(0, 0) == 0);
     assert(add(-1, 1) == 0, "负数相加");

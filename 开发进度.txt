@@ -852,7 +852,27 @@ Sw 编译器（swcc）开发进度
                        - runtime.c 加 fnv1a_64/fnv1a_64_seed/djb2，plain 链接
                        - 新增 examples/probe-hash.sw（7 项断言：确定性/种子/大小写/空串）
                          注册进 run-examples.py
-                       - 验证：cargo test 51 全绿、probe-hash 通过
+                        - 验证：cargo test 51 全绿、probe-hash 通过
+
+    2026-08-15 02:41  复核用户批次 + 全量验证 + 提交：
+                       - 学习用户新增的 10 个提交：
+                         a) 泛型约束剩余项：where T: Container<U> 反向推导
+                            （从实参类实现的同模板接口实例反推 U）、vtable
+                            槽位对齐修复（resolve_concrete_interface 经
+                            type_args 替换查具体接口实例 id）、泛型接口约束
+                            缺实参显式报错、约束校验沿基类链
+                         b) C 风格枚举成员访问修复（去掉"任一带字段"门控，
+                            EnumName.Variant 一律登记 EnumConstruct）
+                         c) 标准库：std/hash（fnv1a_64/seed/djb2）、
+                            map_values/map_clear、sort_*_desc 降序、
+                            parse_bool（链式）、unicode +4
+                            （utf8_byte_len/index_to_byte/byte_to_index/
+                            is_printable）、u8[] 切片 elem_size 修复
+                       - 全量验证：61 个 examples 全过、cargo test 52 全绿
+                         （含新增 semantic 测试 1 项）
+                       - probe-test.sw 格式化：@test 独占一行（确认属性
+                         跨行写法等价）
+                       - 提交：本次（probe-test 格式 + 进度复核记录）
 
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
