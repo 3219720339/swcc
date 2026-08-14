@@ -550,6 +550,23 @@ Sw 编译器（swcc）开发进度
                        - 验证：cargo test 51 项、showcase 通过
                        - 提交：375c816 修复继承类接口虚表
 
+    2026-08-15 00:40  复核用户批次 + 文档同步：
+                       - 复核 1ca664e / a91322f / 375c816 / 5314458 四个提交：
+                         Windows 本机 43 个 examples 全过（含 showcase）、
+                         cargo test 51 全绿、cargo fmt 通过；showcase 16 组断言
+                         全部 [ok]（类型/运算符/struct/数组/switch/默认参数/
+                         类与接口/继承/可空链/闭包/泛型/字符串/编码/JSON/时间/
+                         路径/异常/全局变量）
+                       - 分析结论：a91322f 的 switch 降级改为嵌套互斥分支，
+                         无 fall-through、default 兜底；break 在 switch 内合法；
+                         默认参数在调用点按缺参补齐（仅同模块顶层函数）。
+                         375c816 沿基类链收集接口槽位，修复派生类当基类接口
+                         用时 vtable 空指针
+                       - docs/08-能力清单.md 同步：固定宽度整数/浮点类型与
+                         字面量后缀、switch 互斥语义、默认参数调用补齐、
+                         继承接口虚表、showcase 综合示例入口
+                       - 提交：本次（文档 + 进度复核记录）
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
