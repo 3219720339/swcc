@@ -76,6 +76,8 @@ struct Symbol {
     kind: SymbolKind,
     exported: bool,
     span: Span,
+    /// 声明该符号的模块（跨模块全局变量导入时用于生成链接符号名）。
+    module: ModuleId,
 }
 
 struct ModuleState {
@@ -172,7 +174,7 @@ impl Analyzer {
         &self.symbols[id.0 as usize]
     }
 
-    fn alloc_symbol(&mut self) -> SymbolId {
+    fn alloc_symbol(&mut self, module: ModuleId) -> SymbolId {
         let id = SymbolId(self.symbols.len() as u32);
         self.symbols.push(Symbol {
             kind: SymbolKind::Global {
@@ -181,6 +183,7 @@ impl Analyzer {
             },
             exported: false,
             span: Span::empty(0),
+            module,
         });
         id
     }
@@ -350,7 +353,7 @@ impl Analyzer {
                 let is_function = matches!(kind, SymbolKind::Function(_));
                 if is_function && existing_is_function {
                     // 顶层函数允许重载
-                    let id = self.alloc_symbol();
+                    let id = self.alloc_symbol(module_id);
                     if let Some(existing) = self.symbols.get_mut(id.0 as usize) {
                         existing.kind = kind;
                         existing.exported = exported;
@@ -369,7 +372,7 @@ impl Analyzer {
                 self.error(format!("名称 `{name}` 重复声明"), span);
                 continue;
             }
-            let id = self.alloc_symbol();
+            let id = self.alloc_symbol(module_id);
             if let Some(existing) = self.symbols.get_mut(id.0 as usize) {
                 existing.kind = kind;
                 existing.exported = exported;
@@ -419,6 +422,7 @@ impl Analyzer {
                         kind: SymbolKind::Namespace(target_id),
                         exported: false,
                         span: import.span,
+                        module: module_id,
                     });
                     self.bind_import(module_id, stem, vec![id], import.span)?;
                 }
@@ -456,6 +460,7 @@ impl Analyzer {
                         kind: SymbolKind::Namespace(target_id),
                         exported: false,
                         span: alias.span,
+                        module: module_id,
                     });
                     self.bind_import(module_id, alias.name.clone(), vec![id], alias.span)?;
                 }
@@ -1218,6 +1223,14 @@ impl Analyzer {
         let types = &mut self.types;
         let registry = &self.registry;
         let diagnostics = &mut self.diagnostics;
+        let mut decl_names = HashMap::new();
+        for st in &self.states {
+            for (name, ids) in &st.names {
+                for id in ids {
+                    decl_names.entry(id.0).or_insert_with(|| name.clone());
+                }
+            }
+        }
         let state = &mut self.states[module_id.0 as usize];
         let mir = {
             let mut lowerer = MirLowerer {
@@ -1228,6 +1241,7 @@ impl Analyzer {
                 diagnostics,
                 state,
                 global_index_by_symbol: HashMap::new(),
+                decl_names,
                 hidden_functions: Vec::new(),
                 generic_instances: HashMap::new(),
                 generic_counter: 0,
@@ -1565,6 +1579,7 @@ impl<'s> Checker<'s> {
             kind: SymbolKind::Param { ty: Type::Error },
             exported: false,
             span: Span::empty(0),
+            module: ModuleId(0),
         });
         id
     }
@@ -3129,6 +3144,8 @@ struct MirLowerer<'m, 's> {
     diagnostics: &'s mut Diagnostics,
     state: &'s mut ModuleState,
     global_index_by_symbol: HashMap<u32, usize>,
+    /// SymbolId → 声明名（跨模块全局变量导入时生成链接符号名，支持别名）。
+    decl_names: HashMap<u32, String>,
     hidden_functions: Vec<MirFunction>,
     /// 泛型实例缓存：key → (实例函数名, 实例签名)。
     generic_instances: HashMap<String, (String, FunctionSig)>,
@@ -3278,6 +3295,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
         let items = self.module.items.clone();
 
         // 顶层全局变量
+        let mut module_global_ids = std::collections::HashSet::new();
         for item in &items {
             if let ItemKind::Variable(variable) = &item.kind {
                 let symbol_id = self
@@ -3303,9 +3321,39 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     ty,
                     mutable,
                     init,
+                    module: self.state.id.0,
                 });
+                module_global_ids.insert(symbol_id.0);
                 self.global_index_by_symbol
                     .insert(symbol_id.0, index as usize);
+            }
+        }
+        // 跨模块全局变量：本模块 names 引用的 Global 符号若不属于本模块声明，
+        // 生成同名的导入条目（codegen 按 module 字段声明为 Import 外部数据）。
+        let names = self.state.names.clone();
+        for (_, ids) in &names {
+            for id in ids {
+                if module_global_ids.contains(&id.0)
+                    || self.global_index_by_symbol.contains_key(&id.0)
+                {
+                    continue;
+                }
+                let symbol = self.symbol(*id);
+                let SymbolKind::Global { ty, mutable } = &symbol.kind else {
+                    continue;
+                };
+                let Some(decl_name) = self.decl_names.get(&id.0) else {
+                    continue;
+                };
+                let index = module_mir.globals.len() as u32;
+                module_mir.globals.push(MirGlobal {
+                    name: format!("sw_global_{}_{}", symbol.module.0, decl_name),
+                    ty: ty.clone(),
+                    mutable: *mutable,
+                    init: None,
+                    module: symbol.module.0,
+                });
+                self.global_index_by_symbol.insert(id.0, index as usize);
             }
         }
         let global_by_symbol = self.global_index_by_symbol.clone();

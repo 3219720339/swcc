@@ -158,7 +158,9 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Interface) => ItemKind::Interface(self.parse_interface()?),
             TokenKind::Keyword(Keyword::Type) => ItemKind::TypeAlias(self.parse_type_alias()?),
             TokenKind::Keyword(Keyword::Let) | TokenKind::Keyword(Keyword::Const) => {
-                ItemKind::Variable(self.parse_variable().ok()?)
+                let variable = self.parse_variable().ok()?;
+                self.expect(&TokenKind::Semicolon, "变量声明缺少 `;`").ok();
+                ItemKind::Variable(variable)
             }
             TokenKind::Keyword(keyword)
                 if matches!(

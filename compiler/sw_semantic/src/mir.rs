@@ -18,6 +18,9 @@ pub struct MirGlobal {
     pub ty: Type,
     pub mutable: bool,
     pub init: Option<MirExpr>,
+    /// 定义该全局的模块 id（跨模块引用时指向定义模块，codegen 按此决定
+    /// Export 定义还是 Import 引用）。
+    pub module: u32,
 }
 
 #[derive(Clone, Debug)]

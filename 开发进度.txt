@@ -496,6 +496,32 @@ Sw 编译器（swcc）开发进度
                          Windows 41 个 examples 全过；cargo test 51 全绿；
                          提交推 Gitee + GitHub 复跑 CI
 
+    2026-08-14 23:38  跨文件全局变量 + 顶层变量解析修复 + 能力清单文档：
+                       - 修 parser bug：顶层 let/const 声明解析完没消费结尾
+                         `;`（函数体内语句路径有 expect(Semicolon)，顶层 item
+                         路径漏了），`const VERSION = 3;` 一直报"顶层只能出现…";
+                         parse_item 的 Variable 分支补 expect(Semicolon)
+                       - 跨文件全局变量端到端（examples/lib-vars.sw +
+                         probe-vars.sw，退出码 0）：
+                         export const / export let，导入后读、跨模块写入共享；
+                         - Symbol 增加 module 字段（声明归属模块）；
+                         - MirGlobal 增加 module 字段；
+                         - 语义层 lower_module 扫描本模块引用的跨模块 Global
+                           符号，生成同名的 sw_global_<模块>_<名字> 导入条目
+                           （支持 as 别名：用 decl_names 反查声明名）；
+                         - codegen declare_global 按 module == 当前模块区分
+                           Export（定义+初值）与 Import（外部数据），
+                           读（MirExpr::Global）与写（MirTarget::Global）
+                           都走既有路径
+                       - 验证：import * as geo 命名空间别名导入可用
+                         （examples/tmp-ns.sw，已手工验证）；42 个 examples
+                         全过（新增 probe-vars）；cargo test 51 全绿
+                       - 新增 docs/08-能力清单.md：实测能力清单（多文件导入
+                         三种形式、全局变量/跨文件全局、跨文件引用表、
+                         语言能力速览、已知限制），docs/README.md 挂索引
+                       - 待确认：examples/tmp-vars-a~e.sw、tmp-ns.sw 为诊断
+                         临时文件，是否删除待用户确认
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 

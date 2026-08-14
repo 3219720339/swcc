@@ -128,7 +128,7 @@ impl Generator {
 
         // 全局变量
         for (index, global) in mir.globals.iter().enumerate() {
-            self.declare_global(index as u32, global)?;
+            self.declare_global(index as u32, global, mir.module_id)?;
         }
 
         // 先声明全部导出函数，保证互相调用（含递归）都能解析
@@ -204,24 +204,42 @@ impl Generator {
         Ok(product.object.write().map_err(|error| error.to_string())?)
     }
 
-    fn declare_global(&mut self, index: u32, global: &MirGlobal) -> Result<(), CodegenError> {
+    fn declare_global(
+        &mut self,
+        index: u32,
+        global: &MirGlobal,
+        current_module: u32,
+    ) -> Result<(), CodegenError> {
+        // 本模块定义的全局导出为可链接符号；跨模块引用声明为 Import 外部数据。
+        let defining = global.module == current_module;
         let data_id = self
             .module
-            .declare_data(global.name.as_str(), Linkage::Local, global.mutable, false)
+            .declare_data(
+                global.name.as_str(),
+                if defining {
+                    Linkage::Export
+                } else {
+                    Linkage::Import
+                },
+                global.mutable,
+                false,
+            )
             .map_err(|error| error.to_string())?;
-        let mut description = DataDescription::new();
-        let bytes = global
-            .init
-            .as_ref()
-            .and_then(const_i64)
-            .map(|value| value.to_le_bytes().to_vec())
-            .unwrap_or_else(|| vec![0u8; 8]);
-        description.init = Init::Bytes {
-            contents: bytes.into_boxed_slice(),
-        };
-        self.module
-            .define_data(data_id, &description)
-            .map_err(|error| error.to_string())?;
+        if defining {
+            let mut description = DataDescription::new();
+            let bytes = global
+                .init
+                .as_ref()
+                .and_then(const_i64)
+                .map(|value| value.to_le_bytes().to_vec())
+                .unwrap_or_else(|| vec![0u8; 8]);
+            description.init = Init::Bytes {
+                contents: bytes.into_boxed_slice(),
+            };
+            self.module
+                .define_data(data_id, &description)
+                .map_err(|error| error.to_string())?;
+        }
         self.global_data.insert(index, data_id);
         Ok(())
     }
