@@ -3784,6 +3784,10 @@ impl<'s> Checker<'s> {
             if !ok {
                 continue;
             }
+            // 约束驱动反向推导：where T: Container<U> 这类接口实参含类型参数的
+            // 约束，从实参类实现的同模板接口具体实例反推 U（检查期即推导，
+            // 保证泛型返回类型可被替换）。
+            self.derive_bound_params_checker(&sig.bounds, &mut type_args);
             let ret = self.substitute(&sig.ret, &type_args);
             let sig = FunctionSig { ret, ..sig.clone() };
             match &best {
@@ -3862,6 +3866,69 @@ impl<'s> Checker<'s> {
                 self.infer_type_arg(param_inner, arg_inner, known)
             }
             _ => None,
+        }
+    }
+
+    /// 约束驱动反向推导（检查期）：`where T: Container<U>` 的接口实参若是类型
+    /// 参数，从实参类实现的同模板接口具体实例反推 U 填入 type_args。这样泛型
+    /// 函数的返回类型可在 pick_overload 的返回类型替换阶段被代入。
+    fn derive_bound_params_checker(
+        &self,
+        bounds: &HashMap<String, Vec<Type>>,
+        type_args: &mut HashMap<String, Type>,
+    ) {
+        for (param_name, bound_tys) in bounds {
+            let Some(actual) = type_args.get(param_name).cloned() else {
+                continue;
+            };
+            let Type::Class(class_id) = actual else {
+                continue;
+            };
+            for bound_ty in bound_tys {
+                let Type::Interface(bound_iface_id) = bound_ty else {
+                    continue;
+                };
+                let Some((bound_template_id, bound_args)) = self
+                    .types
+                    .generic_interface_instances
+                    .iter()
+                    .find(|entry| *entry.1 == *bound_iface_id)
+                    .map(|((t, args), _)| (*t, args.clone()))
+                else {
+                    continue;
+                };
+                for cid in self.types.class_base_chain(class_id) {
+                    let Some(ifaces) = self.types.class_interfaces.get(&cid) else {
+                        continue;
+                    };
+                    for &inst_id in ifaces {
+                        let Some((t2, concrete_args)) = self
+                            .types
+                            .generic_interface_instances
+                            .iter()
+                            .find(|entry| *entry.1 == inst_id)
+                            .map(|((t, args), _)| (*t, args.clone()))
+                        else {
+                            continue;
+                        };
+                        if t2 != bound_template_id {
+                            continue;
+                        }
+                        for (bound, concrete) in bound_args.iter().zip(concrete_args.iter()) {
+                            if let Type::TypeParam(name) = bound {
+                                if !matches!(
+                                    concrete,
+                                    Type::TypeParam(_) | Type::Unknown | Type::Error
+                                ) {
+                                    type_args
+                                        .entry(name.clone())
+                                        .or_insert_with(|| concrete.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -5302,19 +5369,25 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         // 校验 where 约束：类型实参必须实现约束接口（沿基类链收集，与 vtable/
         // 接口赋值规则一致——接口只需被基类 implements，子类实参即满足约束）。
         for (param_name, bound_tys) in &template.bounds {
-            let Some(actual) = type_args.get(param_name) else {
+            let Some(actual) = type_args.get(param_name).cloned() else {
                 continue;
             };
             for bound_ty in bound_tys {
-                if let Type::Interface(interface_id) = bound_ty {
+                if let Type::Interface(bound_iface_id) = bound_ty {
+                    // 约束驱动反向推导：若 bound 接口实参含类型参数（where T:
+                    // Container<U>），从实参类实现的同模板接口具体实例反推 U，
+                    // 再据此把 bound 实例化到具体接口做校验。
+                    let derived =
+                        self.derive_bound_params(&mut type_args, *bound_iface_id, &actual);
                     let implements = match actual {
                         Type::Class(class_id) => {
                             let types = &self.lowerer.types;
-                            types.class_base_chain(*class_id).iter().any(|id| {
+                            let check_id = derived.unwrap_or(*bound_iface_id);
+                            types.class_base_chain(class_id).iter().any(|id| {
                                 types
                                     .class_interfaces
                                     .get(id)
-                                    .map(|ids| ids.contains(interface_id))
+                                    .map(|ids| ids.contains(&check_id))
                                     .unwrap_or(false)
                             })
                         }
@@ -5325,7 +5398,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             format!(
                                 "类型实参 {} 未实现约束接口 {}",
                                 actual.display(),
-                                self.lowerer.types.interfaces[*interface_id as usize].name
+                                self.lowerer.types.interfaces[*bound_iface_id as usize].name
                             ),
                             span,
                         );
@@ -5420,6 +5493,61 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         let instance_function = nested.lower_function(Some(&body), false);
         self.lowerer.hidden_functions.push(instance_function);
         (instance_name, instance_sig)
+    }
+
+    /// 约束驱动反向推导：对 `where T: Container<U>` 这类"接口实参含类型参数"的
+    /// 约束，从实参类（T）实现的同模板接口具体实例反推 U 写入 type_args，
+    /// 并把约束实例化到那个具体接口 id 返回；找不到则返回 None（沿用原 bound）。
+    fn derive_bound_params(
+        &self,
+        type_args: &mut HashMap<String, Type>,
+        bound_iface_id: u32,
+        actual: &Type,
+    ) -> Option<u32> {
+        let types = &self.lowerer.types;
+        // 反查 bound 接口的泛型模板与实参（含类型参数的实例 id → (模板, 实参)）。
+        let (bound_template_id, bound_args) = types
+            .generic_interface_instances
+            .iter()
+            .find(|entry| *entry.1 == bound_iface_id)
+            .map(|((t, args), _)| (*t, args.clone()))?;
+        // 反推来源：实参类实现的同模板接口具体实例（沿基类链）。
+        let Type::Class(class_id) = actual else {
+            return None;
+        };
+        let mut concrete_bound: Option<u32> = None;
+        for cid in types.class_base_chain(*class_id) {
+            let Some(ifaces) = types.class_interfaces.get(&cid) else {
+                continue;
+            };
+            for &inst_id in ifaces {
+                let Some((t2, concrete_args)) = types
+                    .generic_interface_instances
+                    .iter()
+                    .find(|entry| *entry.1 == inst_id)
+                    .map(|((t, args), _)| (*t, args.clone()))
+                else {
+                    continue;
+                };
+                if t2 != bound_template_id {
+                    continue;
+                }
+                // 同一模板接口实例：把 bound 实参里的类型参数按具体实参反推。
+                for (b, c) in bound_args.iter().zip(concrete_args.iter()) {
+                    if let Type::TypeParam(name) = b {
+                        if !matches!(c, Type::TypeParam(_) | Type::Unknown | Type::Error) {
+                            type_args.entry(name.clone()).or_insert_with(|| c.clone());
+                        }
+                    }
+                }
+                concrete_bound = Some(inst_id);
+                break;
+            }
+            if concrete_bound.is_some() {
+                break;
+            }
+        }
+        concrete_bound
     }
 
     fn lower_target(&mut self, expr: &Expr) -> Option<MirTarget> {
@@ -5966,6 +6094,27 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             .and_then(|info| info.methods.get(index))
                             .cloned()
                             .unwrap_or_else(placeholder_sig);
+                        // 泛型实例化时用 type_args 替换接口方法签名里的类型参数
+                        // （如 `where T: Container<U>` 的方法返回 U → 具体类型）。
+                        let method_sig = FunctionSig {
+                            module: method_sig.module,
+                            name: method_sig.name,
+                            generics: Vec::new(),
+                            bounds: HashMap::new(),
+                            params: method_sig
+                                .params
+                                .iter()
+                                .map(|param| ParamSig {
+                                    name: param.name.clone(),
+                                    ty: substitute_type(&param.ty, &self.type_args),
+                                    has_default: param.has_default,
+                                    rest: param.rest,
+                                })
+                                .collect(),
+                            ret: substitute_type(&method_sig.ret, &self.type_args),
+                            extern_c: method_sig.extern_c,
+                            span: method_sig.span,
+                        };
                         MirCallee::InterfaceMethod {
                             interface,
                             index,
@@ -6768,6 +6917,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             .expr_types
             .get(&(expr.span.start, expr.span.end))
             .cloned()
+            // 泛型实例化降级时，把记录的类型里的 TypeParam 用实例 type_args 替换
+            // （如约束接口方法返回的 U → 具体类型），否则 codegen 收到 TypeParam 会拒。
+            .map(|ty| substitute_type(&ty, &self.type_args))
             .unwrap_or(Type::Error)
     }
 

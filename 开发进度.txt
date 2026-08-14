@@ -768,9 +768,26 @@ Sw 编译器（swcc）开发进度
                        - 验证：cargo test 51 全绿；53 examples 通过（合法用法
                          where T: Container<int> / where T: Shape 无误伤）
 
+    2026-08-15 02:40  泛型约束剩余项（其三，进行中）：where 约束里接口实参为类型
+                       参数（`where T: Container<U>`）的反向推导：
+                       - 检查期：pick_overload 增 derive_bound_params_checker——从实参类
+                         实现的同模板接口具体实例反推 U 写入 type_args（使泛型返回
+                         类型能被替换）；instantiate_generic 降级期同样反推并缓存
+                       - 修 TypeParam 泄漏：FnLower::expr_type 对记录类型做 substitute_type
+                         （约束接口方法返回的 U 在实例化时替换）；MirCallee::
+                         InterfaceMethod 的方法签名也同样替换 type_args
+                       - 效果：`where T: Container<U>` 现在能通过语义检查并编译
+                         （此前报"未实现约束接口"/"不支持类型 U"）
+                       - 未完成：接口约束派发运行时的 vtable 槽位对齐待修——bound 接口
+                         用 TypeParam 实例化的 id 与实参类具体接口 id 不一致，运行时
+                         read_via(box) 在 vtable 读取处崩溃（0xC0000005）。此路径尚未
+                         生成正式探针
+                       - 验证：cargo test 51 全绿、53 examples 全部通过（无回归）；
+                         反向推导使新场景编译通过但运行时待修
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
-       2. 泛型约束：where T: Container<U> 类型参数反向推导（较深）
+       2. 泛型约束：where T: Container<U> 反向推导的 vtable 运行时对齐（接上）
 
 二、已知限制
 
