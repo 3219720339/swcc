@@ -1686,6 +1686,15 @@ Sw 编译器（swcc）开发进度
                        - 验证：本机两探针 PASS；89 examples 全过；
                          cargo test 56 全绿；fmt 通过
 
+    2026-08-15 13:00  修复 macOS net_connect_timeout（batch8 CI 暴露）：
+                       - 根因：sw_net_connect_result 的 POSIX 分支硬编码
+                         SO_ERROR=4（Linux 值），macOS/BSD 是 0x1007；
+                         macOS 上 getsockopt 读不到错误 → 误判连接失败
+                       - 修复：SO_ERROR 按 __APPLE__ 区分（4 / 0x1007），
+                         与 SO_RCVTIMEO/SO_SNDTIMEO 的 macOS 分支对齐
+                       - 验证：本机 89 examples 全过；runtime.c 三平台
+                         交叉编译通过（macOS 行为待 CI 复验）
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、

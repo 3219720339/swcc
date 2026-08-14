@@ -6863,7 +6863,11 @@ static int sw_net_connect_result(int64_t fd) {
     extern int getsockopt(int s, int level, int optname, void* optval, unsigned int* optlen);
     int error = 0;
     unsigned int len = sizeof(error);
-    if (getsockopt((int)fd, 1 /*SOL_SOCKET*/, 4 /*SO_ERROR*/, &error, &len) != 0) {
+    int so_error = 4;  // SO_ERROR（Linux）
+#if defined(__APPLE__)
+    so_error = 0x1007;  // SO_ERROR（macOS/BSD）
+#endif
+    if (getsockopt((int)fd, 1 /*SOL_SOCKET*/, so_error, &error, &len) != 0) {
         return -1;
     }
     return error == 0 ? 0 : -1;
