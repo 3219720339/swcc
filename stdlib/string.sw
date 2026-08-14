@@ -164,3 +164,38 @@ export extern c function is_digit(text: string): bool;
 
 /// 首字母大写，其余不变。
 export extern c function capitalize(text: string): string;
+
+/// 是否空白（空格/全角空格/换行/制表符，空串也算空白）。
+export extern c function is_blank(text: string): bool;
+
+/// 删除全部空白（空格、全角空格、\r \n \t）。
+export extern c function strip_whitespace(text: string): string;
+
+/// 取首个 start 与之后首个 end 之间的内容；找不到返回空串。
+export extern c function substring_between(text: string, start: string, end: string): string;
+
+/// 从右往左：最后一个 end 之前、最后一个 start 之后的内容。
+export extern c function substring_between_last(text: string, start: string, end: string): string;
+
+/// 批量提取 start 与 end 之间的全部内容，返回 string[]。
+export extern c function extract_between(text: string, start: string, end: string): string[];
+
+/// 第一个 marker 左侧的内容；找不到返回空串。
+export extern c function before(text: string, marker: string): string;
+
+/// 第一个 marker 右侧的内容；找不到返回空串。
+export extern c function after(text: string, marker: string): string;
+
+/// 最后一个 marker 左侧的内容；找不到返回空串。
+export extern c function before_last(text: string, marker: string): string;
+
+/// 最后一个 marker 右侧的内容；找不到返回空串。
+export extern c function after_last(text: string, marker: string): string;
+
+/// 第 index 个字符（UTF-8 码点）的代码值；越界返回 -1。
+export extern c function char_code(text: string, index: int): int;
+
+/// 连续子文本替换：参数成对（欲替换值, 替换值, ...），依次替换。
+/// 例：replace_pairs("你好，火山", "你好", "Hello", "火山", "火山中文编程")
+///     → "Hello，火山中文编程"
+export extern c function replace_pairs(text: string, ...pairs: any): string;

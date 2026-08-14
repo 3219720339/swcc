@@ -6045,3 +6045,286 @@ int64_t index_of_string(sw_array* items, sw_string* value) {
     }
     return -1;
 }
+
+// ---------------------------------------------------------------------------
+// 文本处理库（火山文本处理类参考）：UTF-8 字节安全，中文可用
+// ---------------------------------------------------------------------------
+
+static int sw_is_whitespace_byte(unsigned char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+// 全角空格 U+3000 的 UTF-8 编码是 EF 80 80。
+static int sw_is_fullwidth_space(const char* text, int64_t offset, int64_t len) {
+    return offset + 2 < len && (unsigned char)text[offset] == 0xEF
+        && (unsigned char)text[offset + 1] == 0x80
+        && (unsigned char)text[offset + 2] == 0x80;
+}
+
+int64_t is_blank(sw_string* text) {
+    if (text == NULL) {
+        return 1;
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char c = (unsigned char)text->data[i];
+        if (sw_is_whitespace_byte(c)) {
+            continue;
+        }
+        if (sw_is_fullwidth_space(text->data, i, text->len)) {
+            i += 2;
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+sw_string* strip_whitespace(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char c = (unsigned char)text->data[i];
+        if (sw_is_whitespace_byte(c)) {
+            continue;
+        }
+        if (sw_is_fullwidth_space(text->data, i, text->len)) {
+            i += 2;
+            continue;
+        }
+        buffer[out++] = text->data[i];
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+// 首个 start 标记后、其后首个 end 标记前的内容（字节位置，找不到返回空）。
+sw_string* substring_between(sw_string* text, sw_string* start, sw_string* end) {
+    if (text == NULL || start == NULL || end == NULL || start->len == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t begin = index_of(text, start);
+    if (begin < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    begin += start->len;
+    sw_string tail = { text->data + begin, text->len - begin };
+    int64_t finish = index_of(&tail, end);
+    if (finish < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(text->data + begin, finish);
+}
+
+// 从右往左：最后一个 end 标记前的、其前最后一个 start 标记后的内容。
+sw_string* substring_between_last(sw_string* text, sw_string* start, sw_string* end) {
+    if (text == NULL || start == NULL || end == NULL || start->len == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    // 从右往左：先找最后一个 start（右侧标记），再在其左侧找最后一个 end。
+    int64_t begin = -1;
+    for (int64_t i = 0; i + start->len <= text->len; i++) {
+        int64_t ok = 1;
+        for (int64_t j = 0; j < start->len; j++) {
+            if (text->data[i + j] != start->data[j]) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) {
+            begin = i;
+        }
+    }
+    if (begin < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t finish = -1;
+    for (int64_t i = 0; i + end->len <= begin; i++) {
+        int64_t ok = 1;
+        for (int64_t j = 0; j < end->len; j++) {
+            if (text->data[i + j] != end->data[j]) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) {
+            finish = i;
+        }
+    }
+    if (finish < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    finish += end->len;
+    if (finish > begin) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(text->data + finish, begin - finish);
+}
+
+// 批量提取 start 与 end 之间的全部内容，返回 string[]。
+sw_array* extract_between(sw_string* text, sw_string* start, sw_string* end) {
+    sw_array* result = sw_array_new(8, 0);
+    if (text == NULL || start == NULL || end == NULL || start->len == 0) {
+        return result;
+    }
+    int64_t position = 0;
+    while (position + start->len <= text->len) {
+        sw_string tail = { text->data + position, text->len - position };
+        int64_t begin = index_of(&tail, start);
+        if (begin < 0) {
+            break;
+        }
+        int64_t content = begin + start->len;
+        sw_string after = { text->data + position + content, text->len - position - content };
+        int64_t finish = index_of(&after, end);
+        if (finish < 0) {
+            break;
+        }
+        if (finish > 0) {
+            sw_string* piece = sw_string_from_literal(
+                text->data + position + content,
+                finish
+            );
+            sw_array* bigger = sw_array_new(8, result->len + 1);
+            memcpy(bigger->data, result->data, (sw_size)((uint64_t)result->len * 8));
+            bigger->len = result->len;
+            result = bigger;
+            ((int64_t*)result->data)[result->len++] = (int64_t)piece;
+        }
+        position += content + finish + end->len;
+    }
+    return result;
+}
+
+sw_string* before(sw_string* text, sw_string* marker) {
+    if (text == NULL || marker == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t position = index_of(text, marker);
+    if (position < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(text->data, position);
+}
+
+sw_string* after(sw_string* text, sw_string* marker) {
+    if (text == NULL || marker == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t position = index_of(text, marker);
+    if (position < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t offset = position + marker->len;
+    return sw_string_from_literal(text->data + offset, text->len - offset);
+}
+
+sw_string* before_last(sw_string* text, sw_string* marker) {
+    if (text == NULL || marker == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t position = -1;
+    for (int64_t i = 0; i + marker->len <= text->len; i++) {
+        int64_t ok = 1;
+        for (int64_t j = 0; j < marker->len; j++) {
+            if (text->data[i + j] != marker->data[j]) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) {
+            position = i;
+        }
+    }
+    if (position < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(text->data, position);
+}
+
+sw_string* after_last(sw_string* text, sw_string* marker) {
+    if (text == NULL || marker == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t position = -1;
+    for (int64_t i = 0; i + marker->len <= text->len; i++) {
+        int64_t ok = 1;
+        for (int64_t j = 0; j < marker->len; j++) {
+            if (text->data[i + j] != marker->data[j]) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) {
+            position = i;
+        }
+    }
+    if (position < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t offset = position + marker->len;
+    return sw_string_from_literal(text->data + offset, text->len - offset);
+}
+
+// 第 index 个字符（UTF-8 码点）的代码值；越界返回 -1。
+int64_t char_code(sw_string* text, int64_t index) {
+    if (text == NULL || index < 0) {
+        return -1;
+    }
+    int64_t offset = 0;
+    for (int64_t i = 0; i < index; i++) {
+        if (offset >= text->len) {
+            return -1;
+        }
+        offset += sw_utf8_char_length(text->data, offset, text->len);
+    }
+    if (offset >= text->len) {
+        return -1;
+    }
+    unsigned char c = (unsigned char)text->data[offset];
+    if (c < 0x80) {
+        return c;
+    }
+    int64_t length = sw_utf8_char_length(text->data, offset, text->len);
+    if (length == 2) {
+        return ((c & 0x1F) << 6) | ((unsigned char)text->data[offset + 1] & 0x3F);
+    }
+    if (length == 3) {
+        return ((c & 0x0F) << 12)
+            | (((unsigned char)text->data[offset + 1] & 0x3F) << 6)
+            | ((unsigned char)text->data[offset + 2] & 0x3F);
+    }
+    if (length == 4) {
+        return ((c & 0x07) << 18)
+            | (((unsigned char)text->data[offset + 1] & 0x3F) << 12)
+            | (((unsigned char)text->data[offset + 2] & 0x3F) << 6)
+            | ((unsigned char)text->data[offset + 3] & 0x3F);
+    }
+    return -1;
+}
+
+// 连续子文本替换：pairs 为 varargs 打包数组，元素成对（tag, value），
+// 依次替换（前一轮结果再进入下一轮）。
+sw_string* replace_pairs(sw_string* text, sw_array* pairs) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_string* result = sw_string_from_literal(text->data, text->len);
+    if (pairs == NULL) {
+        return result;
+    }
+    int64_t* data = (int64_t*)pairs->data;
+    int64_t count = pairs->len / 2;
+    for (int64_t i = 0; i < count; i++) {
+        // varargs 打包：每元素占两槽（tag, value），成对取 value。
+        int64_t pair = i * 2;
+        sw_string* from = (sw_string*)data[pair * 2 + 1];
+        sw_string* to = (sw_string*)data[(pair + 1) * 2 + 1];
+        if (from != NULL && to != NULL) {
+            result = replace(result, from, to);
+        }
+    }
+    return result;
+}

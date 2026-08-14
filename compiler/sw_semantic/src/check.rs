@@ -4533,6 +4533,15 @@ fn string_method(method: &str) -> Option<(String, Vec<Type>, Type)> {
         "remove_prefix" | "remove_suffix" => (method.to_owned(), vec![Type::Str], Type::Str),
         "is_upper" | "is_lower" | "is_digit" => (method.to_owned(), vec![], Type::Bool),
         "capitalize" => ("capitalize".to_owned(), vec![], Type::Str),
+        "is_blank" => ("is_blank".to_owned(), vec![], Type::Bool),
+        "strip_whitespace" => ("strip_whitespace".to_owned(), vec![], Type::Str),
+        "substring_between" | "substring_between_last" => {
+            (method.to_owned(), vec![Type::Str, Type::Str], Type::Str)
+        }
+        "before" | "after" | "before_last" | "after_last" => {
+            (method.to_owned(), vec![Type::Str], Type::Str)
+        }
+        "char_code" => ("char_code".to_owned(), vec![Type::Int], Type::Int),
         _ => return None,
     })
 }

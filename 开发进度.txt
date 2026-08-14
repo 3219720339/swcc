@@ -1052,6 +1052,22 @@ Sw 编译器（swcc）开发进度
                          类型/个数、方法重载 int/string、无构造 new），
                          67 个 examples 全过；cargo test 52 全绿；fmt 通过
 
+    2026-08-15 04:14  文本处理库（参考火山文本处理类，UTF-8 中文安全）：
+                       - std/string +11：is_blank（空白判定，含全角空格）、
+                         strip_whitespace（删全部空白）、substring_between/
+                         substring_between_last（取中间，左/右方向）、
+                         extract_between（批量取中间 → string[]）、
+                         before/after/before_last/after_last（取左侧/右侧）、
+                         char_code（UTF-8 码点）、replace_pairs（varargs
+                         成对连续替换）
+                       - 全部注册链式方法表（text.before("|") 等）
+                       - runtime 实现 UTF-8 字节安全（中文标点/全角空格
+                         处理）；replace_pairs 用 varargs 打包数组
+                         （tag+value 两槽，成对取值）
+                       - 新增 examples/probe-text.sw（17 断言：中英文
+                         空白/取中间/左右/码点/连续替换），68 个 examples
+                         全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

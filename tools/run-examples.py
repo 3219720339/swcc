@@ -73,6 +73,7 @@ EXPECTED = {
     "probe-template-escape.sw": 0,
     "probe-ternary.sw": 43,
     "probe-test.sw": 0,
+    "probe-text.sw": 0,
     "probe-trait.sw": 0,
     "probe-unicode.sw": 0,
     "probe-vars.sw": 0,
