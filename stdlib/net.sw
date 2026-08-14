@@ -38,3 +38,38 @@ export extern c function net_accept(fd: int): int;
 
 /// 监听 socket 实际绑定的端口号（net_listen(0) 后用）；失败返回 -1。
 export extern c function net_port(fd: int): int;
+
+/// 创建 UDP 数据报 socket；失败返回 -1。
+export extern c function udp_socket(): int;
+
+/// UDP 绑定本地端口（0 由系统分配）；成功返回 0，失败返回 -1。
+export extern c function udp_bind(fd: int, port: int): int;
+
+/// UDP 发送数据报到 host:port；返回发送字节数，失败返回 -1。
+export extern c function udp_send(fd: int, host: string, port: int, data: string): int;
+
+/// UDP 接收数据报；返回收到的文本，失败返回空串。
+export extern c function udp_recv(fd: int, max_bytes: int): string;
+
+/// 关闭 UDP socket；成功返回 0，失败返回 -1。
+export extern c function udp_close(fd: int): int;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 创建UDPSocket(): int {
+    return udp_socket();
+}
+
+export function 绑定UDP端口(fd: int, port: int): int {
+    return udp_bind(fd, port);
+}
+
+export function 发送UDP数据(fd: int, host: string, port: int, data: string): int {
+    return udp_send(fd, host, port, data);
+}
+
+export function 接收UDP数据(fd: int, max_bytes: int): string {
+    return udp_recv(fd, max_bytes);
+}

@@ -84,6 +84,8 @@ EXPECTED = {
     "probe-http.sw": 0,
     "probe-util2.sw": 0,
     "probe-cross-stdlib.sw": 0,
+    "probe-batch3.sw": 0,
+    "probe-batch4.sw": 0,
     "probe-trait.sw": 0,
     "probe-unicode.sw": 0,
     "probe-vars.sw": 0,

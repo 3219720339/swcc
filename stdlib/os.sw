@@ -137,3 +137,18 @@ export function 含参数(args: string[], name: string): bool {
 export function 取参数值(args: string[], name: string): string? {
     return flag_value(args, name);
 }
+
+/// 按 PATH 查找可执行文件完整路径；未找到返回空串。
+/// 示例：os_which("cmd")、os_which("python")。
+export extern c function os_which(name: string): string;
+
+/// 创建唯一临时目录，返回完整路径；失败返回空串。
+export extern c function mkdtemp(prefix: string): string;
+
+export function 查找可执行文件(name: string): string {
+    return os_which(name);
+}
+
+export function 创建临时目录(prefix: string): string {
+    return mkdtemp(prefix);
+}

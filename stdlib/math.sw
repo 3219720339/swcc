@@ -148,3 +148,17 @@ export function 取随机布尔(): bool {
 export function 取随机UUID(): string {
     return random_uuid();
 }
+
+/// 随机字母数字字符串（A-Z a-z 0-9，length 个字符）。
+export extern c function random_string(length: int): string;
+
+/// 随机十六进制 token（2*length 个 hex 字符，用于验证码/令牌）。
+export extern c function random_token(length: int): string;
+
+export function 取随机字符串(length: int): string {
+    return random_string(length);
+}
+
+export function 取随机令牌(length: int): string {
+    return random_token(length);
+}

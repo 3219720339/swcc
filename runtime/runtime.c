@@ -7750,6 +7750,8 @@ sw_string* regex_replace(sw_string* text, sw_string* pattern, sw_string* replace
     // 收集所有匹配区间。
     int64_t* starts = (int64_t*)sw_gc_alloc((uint64_t)(cp.len + 1) * 8);
     int64_t* ends = (int64_t*)sw_gc_alloc((uint64_t)(cp.len + 1) * 8);
+    // 每个匹配的捕获组（最多 8 组 × 起止，match_count × 16）。
+    int64_t* cap_store = (int64_t*)sw_gc_alloc((uint64_t)(cp.len + 1) * 16 * 8);
     int64_t match_count = 0;
     int64_t from = 0;
     while (from <= cp.len) {
@@ -7761,6 +7763,9 @@ sw_string* regex_replace(sw_string* text, sw_string* pattern, sw_string* replace
         if (e >= 0) {
             starts[match_count] = from;
             ends[match_count] = e;
+            for (int64_t k = 0; k < 16; k++) {
+                cap_store[match_count * 16 + k] = caps[k];
+            }
             match_count++;
             from = e > from ? e : from + 1;
         } else {
@@ -7779,10 +7784,10 @@ sw_string* regex_replace(sw_string* text, sw_string* pattern, sw_string* replace
     }
     text_bytes[text->len] = 0;
     int64_t cursor = 0;
-    int64_t byte_cursor = 0;
     for (int64_t m = 0; m < match_count; m++) {
         int64_t start = starts[m];
         int64_t end = ends[m];
+        int64_t* caps = cap_store + m * 16;
         // 拷贝匹配前原文：码点 [cursor, start) → 字节。
         sw_string* prefix = rx_slice(cp.data, cursor, start);
         for (int64_t i = 0; i < prefix->len && used + 1 < cap; i++) {
@@ -7800,13 +7805,21 @@ sw_string* regex_replace(sw_string* text, sw_string* pattern, sw_string* replace
                             buffer[used++] = whole->data[k];
                         }
                     } else {
-                        // $1..$9 分组捕获：当前引擎在替换时未保留分组区间，
-                        // 先按字面 $N 输出（避免静默丢字符）。
-                        if (used + 1 < cap) {
-                            buffer[used++] = replacement->data[i];
-                        }
-                        if (used + 1 < cap) {
-                            buffer[used++] = replacement->data[i + 1];
+                        int64_t cs = idx * 2;
+                        int64_t ce = idx * 2 + 1;
+                        if (cs < 16 && ce < 16 && caps[cs] >= 0 && caps[ce] >= caps[cs]) {
+                            sw_string* group = rx_slice(cp.data, caps[cs], caps[ce]);
+                            for (int64_t k = 0; k < group->len && used + 1 < cap; k++) {
+                                buffer[used++] = group->data[k];
+                            }
+                        } else {
+                            // 分组未参与匹配：按字面 $N 输出。
+                            if (used + 1 < cap) {
+                                buffer[used++] = replacement->data[i];
+                            }
+                            if (used + 1 < cap) {
+                                buffer[used++] = replacement->data[i + 1];
+                            }
                         }
                     }
                     i++;
@@ -7818,7 +7831,6 @@ sw_string* regex_replace(sw_string* text, sw_string* pattern, sw_string* replace
             }
         }
         cursor = end;
-        byte_cursor = end;
     }
     // 尾部原文。
     sw_string* tail = rx_slice(cp.data, cursor, cp.len);
@@ -9017,4 +9029,686 @@ sw_string* temp_file_path(sw_string* prefix) {
     used += snprintf(out + used, 200, "%lld.tmp", (long long)now_ms());
     out[used] = 0;
     return sw_string_from_literal(out, used);
+}
+
+// ---------------------------------------------------------------------------
+// 第一批：INI 解析 / 随机字符串 / JSON 美化 / 数组实用
+// ---------------------------------------------------------------------------
+
+// 解析 INI 文本为 map：无节键直接存；[section] 下键存 "section.key"。
+// 支持 # 与 ; 注释、key = value、空行。
+void* ini_parse(sw_string* text) {
+    void* map = sw_map_new();
+    if (text == NULL) {
+        return map;
+    }
+    char* section = (char*)sw_gc_alloc(256);
+    int section_len = 0;
+    int64_t i = 0;
+    while (i <= text->len) {
+        // 取一行
+        int64_t line_end = i;
+        while (line_end < text->len && text->data[line_end] != '\n') {
+            line_end++;
+        }
+        // 去首尾空白
+        int64_t start = i;
+        int64_t end = line_end;
+        while (start < end && (text->data[start] == ' ' || text->data[start] == '\t' ||
+                               text->data[start] == '\r')) {
+            start++;
+        }
+        while (end > start && (text->data[end - 1] == ' ' || text->data[end - 1] == '\t' ||
+                               text->data[end - 1] == '\r')) {
+            end--;
+        }
+        if (end > start) {
+            char first = text->data[start];
+            if (first == '#' || first == ';') {
+                // 注释
+            } else if (first == '[') {
+                int64_t close = start + 1;
+                while (close < end && text->data[close] != ']') {
+                    close++;
+                }
+                section_len = 0;
+                for (int64_t k = start + 1; k < close && k < end && section_len < 255; k++) {
+                    if (text->data[k] != ' ' && text->data[k] != '\t') {
+                        section[section_len++] = text->data[k];
+                    }
+                }
+                section[section_len] = 0;
+            } else {
+                // key = value
+                int64_t eq = start;
+                while (eq < end && text->data[eq] != '=') {
+                    eq++;
+                }
+                if (eq < end) {
+                    int64_t key_start = start;
+                    int64_t key_end = eq;
+                    while (key_start < key_end &&
+                           (text->data[key_start] == ' ' || text->data[key_start] == '\t')) {
+                        key_start++;
+                    }
+                    while (key_end > key_start &&
+                           (text->data[key_end - 1] == ' ' || text->data[key_end - 1] == '\t')) {
+                        key_end--;
+                    }
+                    int64_t value_start = eq + 1;
+                    int64_t value_end = end;
+                    while (value_start < value_end &&
+                           (text->data[value_start] == ' ' || text->data[value_start] == '\t')) {
+                        value_start++;
+                    }
+                    while (value_end > value_start &&
+                           (text->data[value_end - 1] == ' ' || text->data[value_end - 1] == '\t')) {
+                        value_end--;
+                    }
+                    // 去掉行尾注释（值后 # / ;）
+                    for (int64_t k = value_start; k < value_end; k++) {
+                        if (text->data[k] == '#' || text->data[k] == ';') {
+                            value_end = k;
+                            break;
+                        }
+                    }
+                    while (value_end > value_start &&
+                           (text->data[value_end - 1] == ' ' || text->data[value_end - 1] == '\t')) {
+                        value_end--;
+                    }
+                    // 组装键名
+                    int64_t key_cap = section_len + (key_end - key_start) + 2;
+                    char* key = (char*)sw_gc_alloc((uint64_t)key_cap);
+                    int64_t key_used = 0;
+                    for (int64_t k = 0; k < section_len && key_used < key_cap - 1; k++) {
+                        key[key_used++] = section[k];
+                    }
+                    if (section_len > 0) {
+                        key[key_used++] = '.';
+                    }
+                    for (int64_t k = key_start; k < key_end && key_used < key_cap - 1; k++) {
+                        key[key_used++] = text->data[k];
+                    }
+                    key[key_used] = 0;
+                    sw_string* key_str = sw_string_from_literal(key, key_used);
+                    sw_string* value_str =
+                        sw_string_from_literal(text->data + value_start, value_end - value_start);
+                    sw_map_set(map, key_str, value_str);
+                }
+            }
+        }
+        i = line_end + 1;
+    }
+    return map;
+}
+
+// 序列化 map 为 INI 文本（无节键在前，[section] 分组输出）。
+sw_string* ini_save(void* map) {
+    sw_array* keys = sw_map_keys(map);
+    sw_array* values = sw_map_values(map);
+    int64_t* kdata = (int64_t*)keys->data;
+    int64_t* vdata = (int64_t*)values->data;
+    int64_t cap = 256;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    char* current_section = (char*)sw_gc_alloc(256);
+    int current_len = 0;
+    for (int64_t i = 0; i < keys->len; i++) {
+        sw_string* key = (sw_string*)kdata[i];
+        sw_string* value = (sw_string*)vdata[i];
+        // 拆 section.key
+        int64_t dot = -1;
+        for (int64_t k = 0; k < key->len; k++) {
+            if (key->data[k] == '.') {
+                dot = k;
+                break;
+            }
+        }
+        if (dot >= 0) {
+            char* sec = (char*)sw_gc_alloc((uint64_t)dot + 1);
+            for (int64_t k = 0; k < dot; k++) {
+                sec[k] = key->data[k];
+            }
+            sec[dot] = 0;
+            if (current_len != dot ||
+                memcmp(current_section, sec, (uint64_t)dot) != 0) {
+                if (used + dot + 8 < cap) {
+                    buffer[used++] = '[';
+                    for (int64_t k = 0; k < dot; k++) {
+                        buffer[used++] = sec[k];
+                    }
+                    buffer[used++] = ']';
+                    buffer[used++] = '\n';
+                }
+                current_len = dot;
+                for (int64_t k = 0; k < dot; k++) {
+                    current_section[k] = sec[k];
+                }
+                current_section[dot] = 0;
+            }
+            if (used + key->len + value->len + 4 < cap) {
+                for (int64_t k = dot + 1; k < key->len; k++) {
+                    buffer[used++] = key->data[k];
+                }
+                buffer[used++] = '=';
+                for (int64_t k = 0; k < value->len; k++) {
+                    buffer[used++] = value->data[k];
+                }
+                buffer[used++] = '\n';
+            }
+        } else {
+            if (used + key->len + value->len + 4 < cap) {
+                for (int64_t k = 0; k < key->len; k++) {
+                    buffer[used++] = key->data[k];
+                }
+                buffer[used++] = '=';
+                for (int64_t k = 0; k < value->len; k++) {
+                    buffer[used++] = value->data[k];
+                }
+                buffer[used++] = '\n';
+            }
+        }
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
+}
+
+// 随机字母数字字符串（A-Z a-z 0-9）。
+sw_string* random_string(int64_t length) {
+    if (length < 0) {
+        length = 0;
+    }
+    static const char charset[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    char* out = (char*)sw_gc_alloc((uint64_t)length + 1);
+    for (int64_t i = 0; i < length; i++) {
+        out[i] = charset[rand_int_range(0, 62)];
+    }
+    out[length] = 0;
+    return sw_string_from_literal(out, length);
+}
+
+// 随机十六进制 token（2*length 字符）。
+sw_string* random_token(int64_t length) {
+    if (length < 0) {
+        length = 0;
+    }
+    static const char hex[] = "0123456789abcdef";
+    char* out = (char*)sw_gc_alloc((uint64_t)(length * 2) + 1);
+    for (int64_t i = 0; i < length; i++) {
+        out[i * 2] = hex[rand_int_range(0, 16)];
+        out[i * 2 + 1] = hex[rand_int_range(0, 16)];
+    }
+    out[length * 2] = 0;
+    return sw_string_from_literal(out, length * 2);
+}
+
+// JSON 美化输出（缩进 2 空格）。
+static void sw_json_write_pretty(
+    sw_str_builder* builder,
+    sw_json* value,
+    int64_t depth
+) {
+    switch (value->kind) {
+        case 0:
+            sw_builder_append(builder, "null", 4);
+            break;
+        case 1:
+            sw_builder_append(builder, value->int_value ? "true" : "false", value->int_value ? 4 : 5);
+            break;
+        case 2: {
+            char number[32];
+            int len = snprintf(number, sizeof(number), "%lld", (long long)value->int_value);
+            sw_builder_append(builder, number, len);
+            break;
+        }
+        case 3: {
+            char number[64];
+            int len = snprintf(number, sizeof(number), "%.17g", value->float_value);
+            sw_builder_append(builder, number, len);
+            break;
+        }
+        case 4:
+            sw_json_escape_append(builder, value->string_value, value->length);
+            break;
+        case 5:
+            if (value->length == 0) {
+                sw_builder_append(builder, "[]", 2);
+                break;
+            }
+            sw_builder_char(builder, '[');
+            for (int64_t i = 0; i < value->length; i++) {
+                if (i > 0) {
+                    sw_builder_char(builder, ',');
+                }
+                sw_builder_char(builder, '\n');
+                for (int64_t d = 0; d <= depth + 1; d++) {
+                    sw_builder_append(builder, "  ", 2);
+                }
+                sw_json_write_pretty(builder, value->items[i], depth + 1);
+            }
+            sw_builder_char(builder, '\n');
+            for (int64_t d = 0; d < depth; d++) {
+                sw_builder_append(builder, "  ", 2);
+            }
+            sw_builder_char(builder, ']');
+            break;
+        case 6:
+            if (value->length == 0) {
+                sw_builder_append(builder, "{}", 2);
+                break;
+            }
+            sw_builder_char(builder, '{');
+            for (int64_t i = 0; i < value->length; i++) {
+                if (i > 0) {
+                    sw_builder_char(builder, ',');
+                }
+                sw_builder_char(builder, '\n');
+                for (int64_t d = 0; d <= depth + 1; d++) {
+                    sw_builder_append(builder, "  ", 2);
+                }
+                sw_json_escape_append(builder, value->keys[i], (int64_t)strlen(value->keys[i]));
+                sw_builder_append(builder, ": ", 2);
+                sw_json_write_pretty(builder, value->items[i], depth + 1);
+            }
+            sw_builder_char(builder, '\n');
+            for (int64_t d = 0; d < depth; d++) {
+                sw_builder_append(builder, "  ", 2);
+            }
+            sw_builder_char(builder, '}');
+            break;
+        default:
+            sw_builder_append(builder, "null", 4);
+    }
+}
+
+sw_string* json_stringify_pretty(void* value) {
+    sw_json* node = (sw_json*)value;
+    if (node == NULL) {
+        return sw_string_from_literal("null", 4);
+    }
+    sw_str_builder builder = {NULL, 0, 0};
+    sw_json_write_pretty(&builder, node, 0);
+    sw_builder_grow(&builder, 1);
+    builder.data[builder.len] = 0;
+    sw_string* result = sw_string_from_literal(builder.data, builder.len);
+    free(builder.data);
+    return result;
+}
+
+// 生成整数序列 [start, end)：step 可为负；step=0 返回空数组。
+sw_array* arr_range(int64_t start, int64_t end, int64_t step) {
+    if (step == 0) {
+        return sw_array_new(8, 0);
+    }
+    int64_t count = 0;
+    if (step > 0) {
+        if (end > start) {
+            count = (end - start + step - 1) / step;
+        }
+    } else {
+        if (end < start) {
+            count = (start - end + (-step) - 1) / (-step);
+        }
+    }
+    if (count < 0) {
+        count = 0;
+    }
+    sw_array* array = sw_array_new(8, count);
+    int64_t* data = (int64_t*)array->data;
+    int64_t value = start;
+    for (int64_t i = 0; i < count; i++) {
+        data[i] = value;
+        value += step;
+    }
+    return array;
+}
+
+// 生成 count 个 value 的 int[]。
+sw_array* arr_fill(int64_t value, int64_t count) {
+    if (count < 0) {
+        count = 0;
+    }
+    sw_array* array = sw_array_new(8, count);
+    int64_t* data = (int64_t*)array->data;
+    for (int64_t i = 0; i < count; i++) {
+        data[i] = value;
+    }
+    return array;
+}
+
+// 统计 int[] 中等于 value 的元素个数。
+int64_t arr_count_int(sw_array* items, int64_t value) {
+    if (items == NULL) {
+        return 0;
+    }
+    int64_t* data = (int64_t*)items->data;
+    int64_t count = 0;
+    for (int64_t i = 0; i < items->len; i++) {
+        if (data[i] == value) {
+            count++;
+        }
+    }
+    return count;
+}
+
+// int[] 平均值；空数组返回 0.0。
+double arr_avg_int(sw_array* items) {
+    if (items == NULL || items->len == 0) {
+        return 0.0;
+    }
+    int64_t* data = (int64_t*)items->data;
+    double total = 0.0;
+    for (int64_t i = 0; i < items->len; i++) {
+        total += (double)data[i];
+    }
+    return total / (double)items->len;
+}
+
+// ---------------------------------------------------------------------------
+// 第二批：UTC 时间字段 / 日历加减 / which / mkdtemp / UDP / regex 捕获
+// ---------------------------------------------------------------------------
+
+// UTC 字段提取（gmtime 语义）：field 0=年 1=月 2=星期 3=日 4=时 5=分 6=秒。
+static int sw_utc_field(int64_t seconds, int field) {
+#if defined(_WIN32)
+    extern int FileTimeToSystemTime(const void* file_time, void* system_time);
+    uint64_t since_1601 = ((uint64_t)seconds + 11644473600ULL) * 10000000ULL;
+    unsigned char ft[8];
+    unsigned char st[16];
+    *(unsigned int*)ft = (unsigned int)since_1601;
+    *(unsigned int*)(ft + 4) = (unsigned int)(since_1601 >> 32);
+    if (!FileTimeToSystemTime(ft, st)) {
+        return -1;
+    }
+    static const int offsets[] = {0, 2, 4, 6, 8, 10, 12};
+    return *(unsigned short*)(st + offsets[field]);
+#else
+    extern void* gmtime_r(const void* time, void* tm);
+    unsigned char tm[64];
+    unsigned char t[8];
+    *(int64_t*)t = seconds;
+    if (gmtime_r(t, tm) == NULL) {
+        return -1;
+    }
+    static const int offsets[] = {20, 16, 24, 12, 8, 4, 0};
+    int value = *(int*)(tm + offsets[field]);
+    if (field == 0) {
+        return value + 1900;
+    }
+    if (field == 1) {
+        return value + 1;
+    }
+    return value;
+#endif
+}
+
+int64_t utc_year_of(int64_t seconds) {
+    return sw_utc_field(seconds, 0);
+}
+
+int64_t utc_month_of(int64_t seconds) {
+    return sw_utc_field(seconds, 1);
+}
+
+int64_t utc_day_of(int64_t seconds) {
+    return sw_utc_field(seconds, 3);
+}
+
+int64_t utc_hour_of(int64_t seconds) {
+    return sw_utc_field(seconds, 4);
+}
+
+int64_t utc_minute_of(int64_t seconds) {
+    return sw_utc_field(seconds, 5);
+}
+
+int64_t utc_second_of(int64_t seconds) {
+    return sw_utc_field(seconds, 6);
+}
+
+int64_t utc_weekday_of(int64_t seconds) {
+    return sw_utc_field(seconds, 2);
+}
+
+// 把本地时间戳的日历字段加 months/years（月末自动收敛，如 1-31 +1月 → 2-28）。
+static int64_t sw_calendar_add(int64_t seconds, int64_t months) {
+    int year = sw_time_field(seconds, 0);
+    int month = sw_time_field(seconds, 1);
+    int day = sw_time_field(seconds, 3);
+    int hour = sw_time_field(seconds, 4);
+    int minute = sw_time_field(seconds, 5);
+    int second = sw_time_field(seconds, 6);
+    if (year < 0 || month < 0) {
+        return -1;
+    }
+    int64_t total_months = (int64_t)year * 12 + (month - 1) + months;
+    int new_year = (int)(total_months / 12);
+    int new_month = (int)(total_months % 12) + 1;
+    if (new_month <= 0) {
+        new_month += 12;
+        new_year -= 1;
+    }
+    int max_day = days_in_month(new_year, new_month);
+    if (day > max_day) {
+        day = max_day;
+    }
+    return sw_time_from_parts(new_year, new_month, day, hour, minute, second);
+}
+
+int64_t add_months(int64_t seconds, int64_t months) {
+    return sw_calendar_add(seconds, months);
+}
+
+int64_t add_years(int64_t seconds, int64_t years) {
+    return sw_calendar_add(seconds, years * 12);
+}
+
+// 按 PATH 查找可执行文件完整路径；未找到返回空串。
+sw_string* os_which(sw_string* name) {
+    if (name == NULL || name->len == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_string* path_env = sw_getenv(sw_string_from_literal("PATH", 4));
+    if (path_env == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* name_c = (char*)sw_gc_alloc((uint64_t)name->len + 1);
+    memcpy(name_c, name->data, (uint64_t)name->len);
+    name_c[name->len] = 0;
+#if defined(_WIN32)
+    const char sep = ';';
+#else
+    const char sep = ':';
+#endif
+    int64_t i = 0;
+    while (i <= path_env->len) {
+        int64_t seg_end = i;
+        while (seg_end < path_env->len && path_env->data[seg_end] != sep) {
+            seg_end++;
+        }
+        int64_t seg_len = seg_end - i;
+        char* dir = (char*)sw_gc_alloc((uint64_t)seg_len + 2);
+        for (int64_t k = 0; k < seg_len; k++) {
+            dir[k] = path_env->data[i + k];
+        }
+        dir[seg_len] = 0;
+        char* candidate = (char*)sw_gc_alloc((uint64_t)seg_len + (uint64_t)name->len + 4);
+        int64_t used = 0;
+        for (int64_t k = 0; dir[k]; k++) {
+            candidate[used++] = dir[k];
+        }
+        if (used > 0 && candidate[used - 1] != '/' && candidate[used - 1] != '\\') {
+            candidate[used++] = '/';
+        }
+        for (int64_t k = 0; k < name->len; k++) {
+            candidate[used++] = name->data[k];
+        }
+        candidate[used] = 0;
+#if defined(_WIN32)
+        // Windows 还要尝试常见可执行扩展名。
+        const char* exts[] = {"", ".exe", ".bat", ".cmd", ".com"};
+        for (int e = 0; e < 5; e++) {
+            int ex = (int)strlen(exts[e]);
+            char* full = (char*)sw_gc_alloc((uint64_t)used + (uint64_t)ex + 1);
+            for (int64_t k = 0; k < used; k++) {
+                full[k] = candidate[k];
+            }
+            for (int k = 0; k < ex; k++) {
+                full[used + k] = exts[e][k];
+            }
+            full[used + ex] = 0;
+            sw_file_handle* f = fopen(full, "rb");
+            if (f != NULL) {
+                fclose(f);
+                return sw_string_from_literal(full, used + ex);
+            }
+        }
+#else
+        sw_file_handle* f = fopen(candidate, "rb");
+        if (f != NULL) {
+            fclose(f);
+            return sw_string_from_literal(candidate, used);
+        }
+#endif
+        i = seg_end + 1;
+    }
+    return sw_string_from_literal("", 0);
+}
+
+// 创建唯一临时目录，返回完整路径；失败返回空串。
+sw_string* mkdtemp(sw_string* prefix) {
+    for (int attempt = 0; attempt < 10; attempt++) {
+        sw_string* base = temp_file_path(prefix);
+        int64_t cap = base->len + 4;
+        char* path = (char*)sw_gc_alloc((uint64_t)cap);
+        int64_t used = 0;
+        for (int64_t i = 0; i < base->len; i++) {
+            path[used++] = base->data[i];
+        }
+        // 去掉 .tmp 后缀，换成随机目录名
+        if (used >= 4 && path[used - 4] == '.' && path[used - 3] == 't' &&
+            path[used - 2] == 'm' && path[used - 1] == 'p') {
+            used -= 4;
+        }
+        used += snprintf(path + used, 16, "-%04lld", (long long)rand_int_range(0, 10000));
+        path[used] = 0;
+        if (sw_mkdir(sw_string_from_literal(path, used)) == 0) {
+            return sw_string_from_literal(path, used);
+        }
+    }
+    return sw_string_from_literal("", 0);
+}
+
+// UDP：创建数据报 socket（SOCK_DGRAM）。
+int64_t udp_socket(void) {
+#if defined(_WIN32)
+    extern int WSAStartup(unsigned short version, void* data);
+    static int started = 0;
+    if (!started) {
+        unsigned char data[408];
+        memset(data, 0, sizeof(data));
+        if (WSAStartup(0x0202, data) == 0) {
+            started = 1;
+        }
+    }
+    extern uintptr_t socket(int domain, int type, int protocol);
+    uintptr_t sock = socket(2, 2, 17);  // AF_INET / SOCK_DGRAM / UDP
+    return sock == (uintptr_t)~0 ? -1 : (int64_t)sock;
+#else
+    extern int socket(int domain, int type, int protocol);
+    int sock = socket(2, 2, 17);
+    return sock < 0 ? -1 : sock;
+#endif
+}
+
+// UDP 绑定本地端口（0 由系统分配）。
+int64_t udp_bind(int64_t fd, int64_t port) {
+    if (fd < 0 || port < 0 || port > 65535) {
+        return -1;
+    }
+    unsigned char addr[16];
+    memset(addr, 0, sizeof(addr));
+    *(unsigned short*)(addr + 0) = 2;  // AF_INET
+    *(unsigned short*)(addr + 2) = (unsigned short)sw_net_be16(port);
+#if defined(_WIN32)
+    extern int bind(uintptr_t s, const void* name, int namelen);
+    return bind((uintptr_t)fd, addr, 16) == 0 ? 0 : -1;
+#else
+    extern int bind(int s, const void* name, unsigned int namelen);
+    return bind((int)fd, addr, 16) == 0 ? 0 : -1;
+#endif
+}
+
+// UDP 发送数据报到 host:port；返回发送字节数，失败返回 -1。
+int64_t udp_send(int64_t fd, sw_string* host, int64_t port, sw_string* data) {
+    if (fd < 0 || host == NULL || data == NULL || port < 0 || port > 65535) {
+        return -1;
+    }
+    char* host_copy = (char*)sw_gc_alloc((uint64_t)host->len + 1);
+    memcpy(host_copy, host->data, (uint64_t)host->len);
+    host_copy[host->len] = 0;
+    char port_text[16];
+    snprintf(port_text, sizeof(port_text), "%lld", (long long)port);
+#if defined(_WIN32)
+    extern int getaddrinfo(const char* node, const char* service, const void* hints, void** result);
+    extern void freeaddrinfo(void* result);
+    extern int sendto(uintptr_t s, const char* buf, int len, int flags, const void* to, int tolen);
+#else
+    extern int getaddrinfo(const char* node, const char* service, const void* hints, void** result);
+    extern void freeaddrinfo(void* result);
+    extern long sendto(int s, const void* buf, uintptr_t len, int flags, const void* to, unsigned int tolen);
+#endif
+    sw_addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.family = 2;
+    hints.socktype = 2;  // SOCK_DGRAM
+    void* results = NULL;
+    if (getaddrinfo(host_copy, port_text, &hints, &results) != 0 || results == NULL) {
+        return -1;
+    }
+    sw_addrinfo* info = (sw_addrinfo*)results;
+    int64_t max = data->len > 65507 ? 65507 : data->len;
+#if defined(_WIN32)
+    int sent = sendto((uintptr_t)fd, data->data, (int)max, 0, info->addr, (int)info->addrlen);
+    int result = sent < 0 ? -1 : (int64_t)sent;
+#else
+    long sent = sendto((int)fd, data->data, (uintptr_t)max, 0, info->addr, (unsigned int)info->addrlen);
+    int64_t result = sent < 0 ? -1 : (int64_t)sent;
+#endif
+    freeaddrinfo(results);
+    return result;
+}
+
+// UDP 接收数据报；返回收到的文本，失败/超时返回空串。
+sw_string* udp_recv(int64_t fd, int64_t max_bytes) {
+    if (fd < 0 || max_bytes <= 0) {
+        return sw_string_from_literal("", 0);
+    }
+    if (max_bytes > 65507) {
+        max_bytes = 65507;
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)max_bytes + 1);
+#if defined(_WIN32)
+    extern int recvfrom(uintptr_t s, char* buf, int len, int flags, void* from, int* fromlen);
+    int got = recvfrom((uintptr_t)fd, buffer, (int)max_bytes, 0, NULL, NULL);
+#else
+    extern long recvfrom(int s, void* buf, uintptr_t len, int flags, void* from, unsigned int* fromlen);
+    long got = recvfrom((int)fd, buffer, (uintptr_t)max_bytes, 0, NULL, NULL);
+#endif
+    if (got <= 0) {
+        return sw_string_from_literal("", 0);
+    }
+    buffer[got] = 0;
+    return sw_string_from_literal(buffer, (int64_t)got);
+}
+
+int64_t udp_close(int64_t fd) {
+#if defined(_WIN32)
+    extern int closesocket(uintptr_t s);
+    return closesocket((uintptr_t)fd) == 0 ? 0 : -1;
+#else
+    extern int close(int s);
+    return close((int)fd) == 0 ? 0 : -1;
+#endif
 }

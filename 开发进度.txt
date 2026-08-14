@@ -1341,6 +1341,38 @@ Sw 编译器（swcc）开发进度
                          仍带图标；78 examples 全过；cargo test 52 全绿；
                          fmt 通过
 
+    2026-08-15 08:40  标准库第一+二批（INI/随机字符串/JSON美化/数组/
+                      UTC时间/日历加减/which/mkdtemp/UDP/regex捕获）：
+                       - 新增 std/ini：ini_parse（[section]、key=value、
+                         # 与 ; 注释）、ini_save（分组序列化）、ini_get/
+                         ini_set 包装 + 中文（解析配置文件/保存配置文件/
+                         取配置项/置配置项）
+                       - std/math 加 random_string（字母数字）/
+                         random_token（hex 令牌）+ 中文
+                       - std/json 加 json_stringify_pretty（2 空格缩进）
+                         + 中文 JSON美化输出
+                       - std/array 加 arr_range（正/负步长）/arr_fill/
+                         arr_count_int/arr_avg_int + 中文
+                       - std/time 加 UTC 字段（utc_year_of~utc_weekday_of，
+                         Windows FileTimeToSystemTime / POSIX gmtime_r
+                         双平台）、add_months/add_years（月末自动收敛，
+                         闰年 2-29→2-28）+ 中文
+                       - std/os 加 os_which（按 PATH 查找，Windows 尝试
+                         .exe/.bat/.cmd 扩展名）、mkdtemp（唯一临时目录）
+                         + 中文
+                       - std/net 加 UDP：udp_socket/bind/send/recv/close
+                         （AF_INET SOCK_DGRAM，双平台）+ 中文
+                       - regex_replace 补全 $1..$9 捕获组引用（原按字面
+                         输出），支持分组重排
+                       - 新增探针 probe-batch3.sw（30 断言）/
+                         probe-batch4.sw（30 断言）；demo 新增
+                         demo-batch3/demo-batch4
+                       - 修复：Windows 无 gmtime_r，UTC 字段改用
+                         FileTimeToSystemTime；join 不接受 int[]（demo
+                         改为打印长度）
+                       - 验证：80 examples 全过；cargo test 52 全绿；
+                         fmt 通过；runtime.c 三平台交叉编译通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

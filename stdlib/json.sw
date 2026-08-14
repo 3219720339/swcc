@@ -48,3 +48,14 @@ export extern c function json_object_keys(value: ptr<void>): string[];
 
 /// JSON 值类型名："null"/"bool"/"int"/"float"/"string"/"array"/"object"。
 export extern c function json_type_name(value: ptr<void>): string;
+
+/// 把 JSON 值序列化为缩进换行的美化文本（缩进 2 空格）。
+export extern c function json_stringify_pretty(value: ptr<void>): string;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function JSON美化输出(value: ptr<void>): string {
+    return json_stringify_pretty(value);
+}

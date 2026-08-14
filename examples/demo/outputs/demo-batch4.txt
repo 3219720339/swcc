@@ -1,0 +1,29 @@
+﻿swc.exe : 正在读取并检查语法...
+At line:5 char:1
++ & 'C:\Users\Administrator\Desktop\swcc\target\release\swc.exe' run "$ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (正在读取并检查语法...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+正在语义分析...
+正在生成目标代码...
+正在链接...
+编译成功：demo-batch4.exe（用时 1097 ms）
+2024
+1
+24
+1
+2024
+2024-02-29 10:00:00
+2023-12-31 10:00:00
+2026
+29
+C:\Windows\system32/cmd.exe
+true
+C:\Users\Administrator\AppData\Local\Temp\sw-tmp-1786744240648-4822
+1
+61019
+udp-hello
+x
+15/08/2026
+abc-123

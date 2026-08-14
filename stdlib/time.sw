@@ -190,3 +190,54 @@ export function 取日期时间毫秒(milliseconds: int): string {
 export function 取年份周数(seconds: int): int {
     return week_of_year(seconds);
 }
+
+/// UTC 年（不受本地时区影响）。
+export extern c function utc_year_of(seconds: int): int;
+
+/// UTC 月（1-12）。
+export extern c function utc_month_of(seconds: int): int;
+
+/// UTC 日（1-31）。
+export extern c function utc_day_of(seconds: int): int;
+
+/// UTC 小时（0-23）。
+export extern c function utc_hour_of(seconds: int): int;
+
+/// UTC 分钟（0-59）。
+export extern c function utc_minute_of(seconds: int): int;
+
+/// UTC 秒（0-59）。
+export extern c function utc_second_of(seconds: int): int;
+
+/// UTC 星期（0=周日 … 6=周六）。
+export extern c function utc_weekday_of(seconds: int): int;
+
+/// 本地日历时间加 months 个月（月末自动收敛，如 1-31 +1月 → 2-28）。
+export extern c function add_months(seconds: int, months: int): int;
+
+/// 本地日历时间加 years 年（月末自动收敛）。
+export extern c function add_years(seconds: int, years: int): int;
+
+export function 取UTC年份(seconds: int): int {
+    return utc_year_of(seconds);
+}
+
+export function 取UTC月份(seconds: int): int {
+    return utc_month_of(seconds);
+}
+
+export function 取UTC日(seconds: int): int {
+    return utc_day_of(seconds);
+}
+
+export function 取UTC小时(seconds: int): int {
+    return utc_hour_of(seconds);
+}
+
+export function 月份增减(seconds: int, months: int): int {
+    return add_months(seconds, months);
+}
+
+export function 年份增减(seconds: int, years: int): int {
+    return add_years(seconds, years);
+}

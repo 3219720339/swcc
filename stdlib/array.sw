@@ -105,3 +105,36 @@ export function 打乱数组整数(items: int[]): void {
 export function 打乱数组小数(items: float[]): void {
     shuffle_float(items);
 }
+
+/// 生成整数序列 [start, end)，步长 step（可负）；step=0 返回空数组。
+/// 示例：arr_range(1, 5, 1) == [1,2,3,4]；arr_range(5, 1, -2) == [5,3]。
+export extern c function arr_range(start: int, end: int, step: int): int[];
+
+/// 生成 count 个 value 的 int[]。示例：arr_fill(0, 3) == [0,0,0]。
+export extern c function arr_fill(value: int, count: int): int[];
+
+/// 统计 int[] 中等于 value 的元素个数。
+export extern c function arr_count_int(items: int[], value: int): int;
+
+/// int[] 平均值；空数组返回 0.0。
+export extern c function arr_avg_int(items: int[]): float;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 取整数序列(start: int, end: int, step: int): int[] {
+    return arr_range(start, end, step);
+}
+
+export function 填充数组(value: int, count: int): int[] {
+    return arr_fill(value, count);
+}
+
+export function 统计出现次数(items: int[], value: int): int {
+    return arr_count_int(items, value);
+}
+
+export function 取数组平均值(items: int[]): float {
+    return arr_avg_int(items);
+}
