@@ -406,6 +406,7 @@ impl<'a> Parser<'a> {
         Some(FunctionDecl {
             async_,
             extern_c,
+            static_: false,
             name,
             generics,
             params,
@@ -1284,7 +1285,10 @@ impl<'a> Parser<'a> {
                     || self.at_keyword(Keyword::Async)
                     || self.at_ident("extern");
                 if function_or_async {
-                    let function = self.parse_function(true)?;
+                    let mut function = self.parse_function(true)?;
+                    function.static_ = modifiers
+                        .iter()
+                        .any(|m| matches!(m, MemberModifier::Static));
                     Some(ClassMember::Method(function))
                 } else {
                     let name = self.expect_ident("类成员名").ok()?;
@@ -1303,6 +1307,9 @@ impl<'a> Parser<'a> {
                         Some(ClassMember::Method(FunctionDecl {
                             async_: false,
                             extern_c: false,
+                            static_: modifiers
+                                .iter()
+                                .any(|m| matches!(m, MemberModifier::Static)),
                             name,
                             generics: Vec::new(),
                             params,

@@ -121,6 +121,8 @@ struct CheckResult {
     enum_targets: HashMap<usize, u32>,
     /// 函数声明起始偏移 → 所属类（方法）。
     method_classes: HashMap<usize, u32>,
+    /// 类静态成员访问 `Class.field` / `Class.method`（表达式起始 → 目标）。
+    static_member_targets: HashMap<usize, StaticMemberTarget>,
 }
 
 #[derive(Clone, Debug)]
@@ -150,6 +152,11 @@ enum CallTarget {
         elem: Type,
         ret: Type,
     },
+    /// 类静态方法调用：`ClassName.staticMethod(...)`。
+    StaticMethod {
+        class: u32,
+        index: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,6 +176,12 @@ enum ArrayMethodKind {
 enum FieldTarget {
     Struct(u32, usize),
     Class(u32, usize),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StaticMemberTarget {
+    Field(u32, usize),
+    Method(u32, usize),
 }
 
 struct Analyzer {
@@ -342,6 +355,8 @@ impl Analyzer {
                                 base: None,
                                 fields: Vec::new(),
                                 methods: Vec::new(),
+                                static_fields: Vec::new(),
+                                static_methods: Vec::new(),
                                 final_: class.final_,
                                 implements: Vec::new(),
                             });
@@ -673,17 +688,15 @@ impl Analyzer {
                         Some(SymbolKind::Type(SymbolType::Class(id))) => Some(*id),
                         _ => None,
                     };
-                    let (fields, methods) = self.finalize_class_members(
-                        module_id,
-                        class,
-                        &generics,
-                        class_id.unwrap_or(0),
-                    );
+                    let (fields, methods, static_fields, static_methods) = self
+                        .finalize_class_members(module_id, class, &generics, class_id.unwrap_or(0));
                     if let Some(id) = class_id {
                         {
                             let info = &mut self.types.classes[id as usize];
                             info.fields = fields;
                             info.methods = methods;
+                            info.static_fields = static_fields;
+                            info.static_methods = static_methods;
                         }
                         // 接口实现：解析 implements 并校验方法覆盖。
                         let mut template_implements: Vec<(u32, Vec<Type>)> = Vec::new();
@@ -957,9 +970,16 @@ impl Analyzer {
         class: &ClassDecl,
         generics: &[String],
         class_id: u32,
-    ) -> (Vec<FieldInfo>, Vec<MethodInfo>) {
+    ) -> (
+        Vec<FieldInfo>,
+        Vec<MethodInfo>,
+        Vec<FieldInfo>,
+        Vec<MethodInfo>,
+    ) {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
+        let mut static_fields = Vec::new();
+        let mut static_methods = Vec::new();
         for member in &class.members {
             match member {
                 ClassMember::Field(field) => {
@@ -971,23 +991,37 @@ impl Analyzer {
                     );
                     let ty = resolver.lower(&field.ty, generics);
                     self.reject_complex_field(&ty, field.span, true);
-                    fields.push(FieldInfo {
+                    let info = FieldInfo {
                         name: field.name.name.clone(),
-                        ty,
+                        ty: ty.clone(),
                         mutable: !field.modifiers.contains(&MemberModifier::Final),
                         span: field.span,
-                    });
+                    };
+                    if field
+                        .modifiers
+                        .iter()
+                        .any(|m| matches!(m, MemberModifier::Static))
+                    {
+                        static_fields.push(info);
+                    } else {
+                        fields.push(info);
+                    }
                 }
                 ClassMember::Method(function) => {
                     let sig =
                         self.build_function_sig(module_id, function, generics, Some(class_id));
-                    methods.push(MethodInfo {
+                    let info = MethodInfo {
                         name: function.name.name.clone(),
-                        sig,
+                        sig: sig.clone(),
                         virtual_: false,
                         override_: false,
                         span: function.span,
-                    });
+                    };
+                    if function.static_ {
+                        static_methods.push(info);
+                    } else {
+                        methods.push(info);
+                    }
                     self.state_mut(module_id)
                         .result
                         .method_classes
@@ -1014,7 +1048,7 @@ impl Analyzer {
                 }
             }
         }
-        (fields, methods)
+        (fields, methods, static_fields, static_methods)
     }
 
     fn build_function_sig(
@@ -1271,9 +1305,14 @@ impl Analyzer {
                                 ClassMember::Constructor(_) => "constructor".to_owned(),
                                 _ => String::new(),
                             };
+                            let is_static = match member {
+                                ClassMember::Method(function) => function.static_,
+                                _ => false,
+                            };
                             let sig = class_info
                                 .methods
                                 .iter()
+                                .chain(class_info.static_methods.iter())
                                 .find(|method| method.name == method_name)
                                 .map(|method| method.sig.clone())
                                 .unwrap_or_else(|| FunctionSig {
@@ -1289,7 +1328,7 @@ impl Analyzer {
                             self.check_function_body(
                                 module_id,
                                 span,
-                                Some(class_id),
+                                if is_static { None } else { Some(class_id) },
                                 &sig,
                                 &generics,
                                 sig.bounds.clone(),
@@ -1412,6 +1451,7 @@ impl Analyzer {
                 hidden_functions: Vec::new(),
                 generic_instances: HashMap::new(),
                 generic_counter: 0,
+                static_field_globals: HashMap::new(),
             };
             lowerer.lower_module()
         };
@@ -1824,6 +1864,8 @@ impl<'a> TypeResolver<'a> {
             base: info.base,
             fields,
             methods,
+            static_fields: info.static_fields.clone(),
+            static_methods: info.static_methods.clone(),
             final_: info.final_,
             implements: info.implements.clone(),
         });
@@ -3246,6 +3288,43 @@ impl<'s> Checker<'s> {
     }
 
     fn check_member(&mut self, object: &Expr, name: &Ident, optional: bool, span: Span) -> Type {
+        // 类静态字段/方法访问：ClassName.member（类型名作为值解析为 Error）。
+        if let ExprKind::Ident(type_ident) = &object.kind {
+            if let Some(SymbolId(id)) = self.lookup(&type_ident.name) {
+                if let SymbolKind::Type(SymbolType::Class(class_id)) =
+                    &self.symbols[id as usize].kind
+                {
+                    let class_id = *class_id;
+                    let info = self.types.classes[class_id as usize].clone();
+                    if let Some(index) = info.static_fields.iter().position(|f| f.name == name.name)
+                    {
+                        self.state
+                            .result
+                            .static_member_targets
+                            .insert(span.start, StaticMemberTarget::Field(class_id, index));
+                        return info.static_fields[index].ty.clone();
+                    }
+                    if let Some(index) =
+                        info.static_methods.iter().position(|m| m.name == name.name)
+                    {
+                        let sig = &info.static_methods[index].sig;
+                        self.state
+                            .result
+                            .static_member_targets
+                            .insert(span.start, StaticMemberTarget::Method(class_id, index));
+                        return Type::Function {
+                            params: sig.params.iter().map(|p| p.ty.clone()).collect(),
+                            ret: Box::new(sig.ret.clone()),
+                        };
+                    }
+                    self.error(
+                        format!("类 {} 没有静态成员 `{}`", info.name, name.name),
+                        name.span,
+                    );
+                    return Type::Error;
+                }
+            }
+        }
         // ADT 枚举无参变体构造：EnumName.Variant（类型名作为值解析为 Error，
         // 这里直接识别枚举类型名）。
         if let ExprKind::Ident(type_ident) = &object.kind {
@@ -3568,6 +3647,37 @@ impl<'s> Checker<'s> {
                 name,
                 optional,
             } => {
+                // 类静态方法调用：ClassName.staticMethod(args)
+                if let ExprKind::Ident(type_ident) = &object.kind {
+                    if let Some(SymbolId(id)) = self.lookup(&type_ident.name) {
+                        if let SymbolKind::Type(SymbolType::Class(class_id)) =
+                            &self.symbols[id as usize].kind
+                        {
+                            let class_id = *class_id;
+                            let info = self.types.classes[class_id as usize].clone();
+                            let Some(index) =
+                                info.static_methods.iter().position(|m| m.name == name.name)
+                            else {
+                                self.error(
+                                    format!("类 {} 没有静态方法 `{}`", info.name, name.name),
+                                    name.span,
+                                );
+                                return Type::Error;
+                            };
+                            let sig = info.static_methods[index].sig.clone();
+                            let args_ty = self.call_args_ty(args);
+                            self.match_call_args(&sig, &args_ty, span, true);
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::StaticMethod {
+                                    class: class_id,
+                                    index,
+                                },
+                            );
+                            return sig.ret;
+                        }
+                    }
+                }
                 // ADT 枚举变体构造：EnumName.Variant(args)
                 if let ExprKind::Ident(type_ident) = &object.kind {
                     if let Some(SymbolId(id)) = self.lookup(&type_ident.name) {
@@ -4243,6 +4353,8 @@ struct MirLowerer<'m, 's> {
     /// 泛型实例缓存：key → (实例函数名, 实例签名)。
     generic_instances: HashMap<String, (String, FunctionSig)>,
     generic_counter: u32,
+    /// static 字段全局名 → 当前模块 MirGlobal 索引。
+    static_field_globals: HashMap<String, u32>,
 }
 
 struct FnLower<'a, 'm, 's> {
@@ -4519,10 +4631,66 @@ impl<'m, 's> MirLowerer<'m, 's> {
                 if !self.types.classes[class_id as usize].generics.is_empty() {
                     continue;
                 }
+                // static 字段 → 模块级全局变量。
+                let class_static_fields =
+                    self.types.classes[class_id as usize].static_fields.clone();
+                for (index, field) in class_static_fields.iter().enumerate() {
+                    let name = format!("sw_sfield_{class_id}_{index}");
+                    let gindex = module_mir.globals.len() as u32;
+                    module_mir.globals.push(MirGlobal {
+                        name: name.clone(),
+                        ty: field.ty.clone(),
+                        mutable: field.mutable,
+                        init: None,
+                        module: self.state.id.0,
+                    });
+                    self.static_field_globals.insert(name, gindex);
+                }
                 let mut method_index = 0usize;
                 for member in &class.members {
                     let (body, name, sig) = match member {
                         ClassMember::Method(function) => {
+                            if function.static_ {
+                                let static_index = self.types.classes[class_id as usize]
+                                    .static_methods
+                                    .iter()
+                                    .position(|m| m.name == function.name.name)
+                                    .unwrap_or(0);
+                                let name = format!(
+                                    "sw_smethod_{class_id}_{static_index}_{}",
+                                    function.name.name
+                                );
+                                let sig = self.types.classes[class_id as usize]
+                                    .static_methods
+                                    .get(static_index)
+                                    .map(|m| m.sig.clone())
+                                    .unwrap_or_else(placeholder_sig);
+                                let result_index = self.state.id.0 as usize;
+                                let mut lower = FnLower {
+                                    lowerer: self,
+                                    result_index,
+                                    name: name.clone(),
+                                    params: Vec::new(),
+                                    ret: sig.ret.clone(),
+                                    locals: Vec::new(),
+                                    name_scopes: Vec::new(),
+                                    global_by_symbol: global_by_symbol.clone(),
+                                    this_class: None,
+                                    captures: HashMap::new(),
+                                    type_args: HashMap::new(),
+                                };
+                                for param in &sig.params {
+                                    lower.params.push(MirParam {
+                                        name: param.name.clone(),
+                                        ty: param.ty.clone(),
+                                    });
+                                }
+                                if let Some(body) = &function.body {
+                                    let mir_function = lower.lower_function(Some(body), false);
+                                    module_mir.functions.push(mir_function);
+                                }
+                                continue;
+                            }
                             let name =
                                 format!("sw_m_{class_id}_{method_index}_{}", function.name.name);
                             let sig =
@@ -6494,6 +6662,21 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 let callee = match target {
                     Some(CallTarget::EnumConstruct { .. }) => unreachable!(),
                     Some(CallTarget::ArrayMethod { .. }) => unreachable!(),
+                    Some(CallTarget::StaticMethod { class, index }) => {
+                        let sig = self
+                            .lowerer
+                            .types
+                            .classes
+                            .get(class as usize)
+                            .and_then(|info| info.static_methods.get(index))
+                            .map(|m| m.sig.clone())
+                            .unwrap_or_else(placeholder_sig);
+                        MirCallee::Function {
+                            module: self.lowerer.state.id.0,
+                            name: format!("sw_smethod_{class}_{index}_{}", sig.name),
+                            sig,
+                        }
+                    }
                     Some(CallTarget::Function(symbol)) => {
                         let sig = match &self.lowerer.symbol(symbol).kind {
                             SymbolKind::Function(sig) => sig.clone(),
@@ -6640,6 +6823,19 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 name,
                 optional,
             } => {
+                // 类静态字段访问：ClassName.field → 模块级全局。
+                if let Some(StaticMemberTarget::Field(class, index)) = self
+                    .result()
+                    .static_member_targets
+                    .get(&expr.span.start)
+                    .copied()
+                {
+                    let gname = format!("sw_sfield_{class}_{index}");
+                    if let Some(&gindex) = self.lowerer.static_field_globals.get(&gname) {
+                        return MirExpr::Global(gindex);
+                    }
+                    return MirExpr::Int(0);
+                }
                 // ADT 无参变体构造（EnumName.Variant）：检查阶段已登记 EnumConstruct。
                 if let Some(CallTarget::EnumConstruct {
                     enum_id,

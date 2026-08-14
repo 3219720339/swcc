@@ -76,6 +76,8 @@ pub struct ImportSpecifier {
 pub struct FunctionDecl {
     pub async_: bool,
     pub extern_c: bool,
+    /// 类静态方法（`static` 修饰符）。
+    pub static_: bool,
     pub name: Ident,
     pub generics: Vec<Ident>,
     pub params: Vec<Param>,

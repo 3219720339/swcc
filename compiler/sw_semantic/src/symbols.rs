@@ -80,6 +80,10 @@ pub struct ClassInfo {
     pub base: Option<u32>,
     pub fields: Vec<FieldInfo>,
     pub methods: Vec<MethodInfo>,
+    /// static 字段：不占实例内存，按类级全局变量存储。
+    pub static_fields: Vec<FieldInfo>,
+    /// static 方法：不绑定 this，按类级全局函数生成。
+    pub static_methods: Vec<MethodInfo>,
     pub final_: bool,
     /// implements 的接口（模板 id + 类型实参，实参可含类泛型参数 T）；
     /// 泛型类实例化时据此生成实例接口并注册 vtable。

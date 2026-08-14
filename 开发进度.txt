@@ -930,6 +930,26 @@ Sw 编译器（swcc）开发进度
                        - 待办：class static 方法/字段（parser 已解析 static
                          关键字，语义层未实现）
 
+    2026-08-15 03:23  class static 方法/字段：
+                       - 语法：`static field: int;`、`static method(...)`
+                         （parser 方法分支把 Static 修饰符写入 FunctionDecl.static_）
+                       - 语义：static 字段不占实例内存（ClassInfo 分离
+                         static_fields/static_methods，finalize_class_members
+                         按修饰符分流；实例字段/方法/method_index 不受影响）
+                       - 实现：static 字段 → 模块级 MirGlobal（sw_sfield_<类>_<idx>，
+                         static_field_globals 表）；static 方法 → 独立
+                         MirFunction（sw_smethod_<类>_<idx>_<名>，无 this）
+                       - 访问：`Class.field`（check_member 识别类型名 → 静态
+                         成员，降级 MirExpr::Global）、`Class.method(args)`
+                         （check_call → CallTarget::StaticMethod → 直接函数调用）；
+                         check_all_functions 对 static 方法用 static_methods
+                         签名检查（this_class=None）
+                       - 限制：static 字段 v0.1 只支持标量（int/float/bool），
+                         引用类型（string/数组）默认 null 会崩；static 字段
+                         暂不支持写入（读 + 方法调用可用）
+                       - 新增 examples/probe-static.sw（4 断言），66 个
+                         examples 全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
