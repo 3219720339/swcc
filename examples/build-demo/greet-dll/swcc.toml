@@ -3,3 +3,4 @@ kind = "dll"
 
 [lib]
 name = "swgreet"
+exports = ["greet", "repeat", "double"]

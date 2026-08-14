@@ -30,8 +30,8 @@ int main(void) {
         return 1;
     }
 #if defined(_WIN32)
-    fn_greet greet = (fn_greet)GetProcAddress((HMODULE)lib, "sw_fn_greeter_greet_s");
-    fn_double dbl = (fn_double)GetProcAddress((HMODULE)lib, "sw_fn_greeter_double_i");
+    fn_greet greet = (fn_greet)GetProcAddress((HMODULE)lib, "greet");
+    fn_double dbl = (fn_double)GetProcAddress((HMODULE)lib, "double");
 #else
     fn_greet greet = (fn_greet)dlsym(lib, "sw_fn_greeter_greet_s");
     fn_double dbl = (fn_double)dlsym(lib, "sw_fn_greeter_double_i");

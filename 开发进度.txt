@@ -1002,6 +1002,17 @@ Sw 编译器（swcc）开发进度
                        - 验证：lib/dll 重构建符号固定、C 动态加载与头文件调用
                          通过；66 个 examples 全过；cargo test 52 全绿；fmt 通过
 
+    2026-08-15 03:45  dll 自定义导出名（[lib] exports）：
+                       - swcc.toml `[lib] exports = ["greet", "double"]`：
+                         用户函数名白名单
+                       - Windows dll 构建时生成 .def（`EXPORTS 名 = stable 符号`），
+                         lld 按 .def 生成导出别名；去掉 --export-all-symbols
+                         （改为白名单导出）
+                       - 外部调用按自定义名 GetProcAddress（greet/double/
+                         repeat），dynamic-load.c 实测 Hello, Dynamic! / 42
+                       - Linux/macOS 暂用 stable 名（.def 别名仅 PE）
+                       - 66 个 examples 全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
