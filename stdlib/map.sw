@@ -2,7 +2,7 @@
 // std/map —— 字符串键字典（句柄风格，键值均为 string）
 //
 // 用法：
-//   import { map_new, map_set, map_get, map_has, map_remove, map_len, map_keys, map_values } from "std/map";
+//   import { map_new, map_set, map_get, map_has, map_remove, map_len, map_keys, map_values, map_clear } from "std/map";
 //   const m = map_new();
 //   map_set(m, "name", "sw");
 //   const v = map_get(m, "name");   // string?，键不存在返回 null
@@ -10,6 +10,7 @@
 //   map_len(m);                     // 1
 //   const keys = map_keys(m);       // ["name"]（插入顺序）
 //   const vals = map_values(m);     // ["sw"]（插入顺序）
+//   map_clear(m);                   // 清空所有键值
 //
 // 说明：
 //   - map 由 GC 管理，无需手动释放；值类型为 string（v0.1）。
@@ -33,6 +34,9 @@ export extern c function map_remove(map: ptr<void>, key: string): int;
 
 /// 键数量。
 export extern c function map_len(map: ptr<void>): int;
+
+/// 清空所有键值；成功返回 0，map 无效返回 -1。
+export extern c function map_clear(map: ptr<void>): int;
 
 /// 全部键（string[]，插入顺序）。
 export extern c function map_keys(map: ptr<void>): string[];

@@ -838,6 +838,13 @@ Sw 编译器（swcc）开发进度
                        - 新增 examples/probe-array-desc.sw（5 项断言）注册进 run-examples.py
                        - 验证：cargo test 51 全绿、probe-array-desc 通过
 
+    2026-08-15 03:40  标准库扩充：std/map 新增 map_clear（8→9）：
+                       - map_clear(map)：清空所有键值（重置 head/tail/count，节点由 GC 回收）
+                       - runtime.c 加 sw_map_clear；codegen extern_c_symbol 映射 1 项
+                       - 新增 examples/probe-map-clear.sw（5 项断言：清空/复用/再 set/keys）
+                         注册进 run-examples.py
+                       - 验证：cargo test 51 全绿、probe-map-clear 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充（io 6 个函数、regex/hash 新模块）

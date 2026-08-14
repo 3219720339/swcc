@@ -964,6 +964,7 @@ fn extern_c_symbol(name: &str) -> &str {
         "map_has" => "sw_map_has",
         "map_remove" => "sw_map_remove",
         "map_len" => "sw_map_len",
+        "map_clear" => "sw_map_clear",
         "map_keys" => "sw_map_keys",
         "map_values" => "sw_map_values",
         "net_connect" => "sw_net_connect",

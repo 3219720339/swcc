@@ -5506,6 +5506,18 @@ int64_t sw_map_len(void* handle) {
     return map != NULL ? map->count : 0;
 }
 
+int64_t sw_map_clear(void* handle) {
+    sw_map* map = (sw_map*)handle;
+    if (map == NULL) {
+        return -1;
+    }
+    map->head = NULL;
+    map->tail = NULL;
+    map->count = 0;
+    // 节点由 GC 管理，出链后下次回收自动释放。
+    return 0;
+}
+
 sw_array* sw_map_keys(void* handle) {
     sw_map* map = (sw_map*)handle;
     sw_array* array = sw_array_new(8, map != NULL ? map->count : 0);
