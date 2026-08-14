@@ -152,3 +152,33 @@ export function 查找可执行文件(name: string): string {
 export function 创建临时目录(prefix: string): string {
     return mkdtemp(prefix);
 }
+
+/// 带环境变量执行命令并等待结束，返回 stdout+stderr 合并文本。
+/// env 为 map（字符串键值，string 值）；启动失败返回空字符串。
+export extern c function run_with_env(cmd: string, args: string[], env: ptr<void>): string;
+
+/// 在指定工作目录执行命令并等待结束，返回 stdout+stderr 合并文本。
+export extern c function run_in_dir(cmd: string, args: string[], dir: string): string;
+
+/// 执行命令并分别捕获 stdout 与 stderr，返回 string[2]（[stdout, stderr]）。
+/// 注意：输出超过管道缓冲（Windows 4KB / POSIX 64KB）时可能阻塞。
+export extern c function run_stdout_stderr(cmd: string, args: string[]): string[];
+
+/// pid 对应进程是否仍在运行（自身权限范围内）。
+export extern c function is_process_running(pid: int): bool;
+
+export function 带环境运行(cmd: string, args: string[], env: ptr<void>): string {
+    return run_with_env(cmd, args, env);
+}
+
+export function 在目录运行(cmd: string, args: string[], dir: string): string {
+    return run_in_dir(cmd, args, dir);
+}
+
+export function 分开捕获输出(cmd: string, args: string[]): string[] {
+    return run_stdout_stderr(cmd, args);
+}
+
+export function 进程是否运行(pid: int): bool {
+    return is_process_running(pid);
+}

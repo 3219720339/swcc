@@ -391,3 +391,130 @@ export extern c function slugify(text: string): string;
 export function 转网址别名(text: string): string {
     return slugify(text);
 }
+
+/// 只替换首次出现的 from（未找到原样返回）。字节语义同 replace。
+export function replace_first(text: string, from: string, to: string): string {
+    const idx = index_of(text, from);
+    if (idx < 0) {
+        return text;
+    }
+    return before(text, from) + to + after(text, from);
+}
+
+/// 只替换最后一次出现的 from（未找到原样返回）。
+export function replace_last(text: string, from: string, to: string): string {
+    const idx = last_index_of(text, from);
+    if (idx < 0) {
+        return text;
+    }
+    return before_last(text, from) + to + after_last(text, from);
+}
+
+/// 按首个 separator 拆成两段，返回 string[2]（[左侧, 右侧]）；
+/// 未找到返回 [text, ""]。
+export function split_once(text: string, separator: string): string[] {
+    if (index_of(text, separator) < 0) {
+        return [text, ""];
+    }
+    return [before(text, separator), after(text, separator)];
+}
+
+/// 按空白分词计数：count_words("hello  world") == 2。
+export function count_words(text: string): int {
+    return split_whitespace(text).length;
+}
+
+/// 居中填充到指定字符宽度（pad 取首个字符；width 不足时不填充）。
+export function pad_center(text: string, width: int, pad: string): string {
+    const total = width - text.length;
+    if (total <= 0) {
+        return text;
+    }
+    const left = total / 2;
+    const right = total - left;
+    return pad_right(pad_left(text, text.length + left, pad), width, pad);
+}
+
+/// 最长公共前缀（按字符比较，UTF-8 安全）。
+export function common_prefix(a: string, b: string): string {
+    const n = a.length < b.length ? a.length : b.length;
+    let result = "";
+    let i = 0;
+    while (i < n && char_code(a, i) == char_code(b, i)) {
+        result = result + from_code_point(char_code(a, i));
+        i++;
+    }
+    return result;
+}
+
+/// 最长公共后缀（按字符比较，UTF-8 安全）。
+export function common_suffix(a: string, b: string): string {
+    const n = a.length < b.length ? a.length : b.length;
+    let result = "";
+    let i = 0;
+    while (i < n && char_code(a, a.length - 1 - i) == char_code(b, b.length - 1 - i)) {
+        result = from_code_point(char_code(a, a.length - 1 - i)) + result;
+        i++;
+    }
+    return result;
+}
+
+/// 大小写互换：swap_case("Hello123") == "hELLO123"。
+export function swap_case(text: string): string {
+    let result = "";
+    const arr = chars(text);
+    for (const c of arr) {
+        if (is_upper(c)) {
+            result = result + to_lower(c);
+        } else if (is_lower(c)) {
+            result = result + to_upper(c);
+        } else {
+            result = result + c;
+        }
+    }
+    return result;
+}
+
+/// 数字字符串前补零到指定宽度：zfill("42", 5) == "00042"。
+export function zfill(text: string, width: int): string {
+    if (text.length >= width) {
+        return text;
+    }
+    return repeat("0", width - text.length) + text;
+}
+
+export function 替换首次出现(text: string, from: string, to: string): string {
+    return replace_first(text, from, to);
+}
+
+export function 替换最后出现(text: string, from: string, to: string): string {
+    return replace_last(text, from, to);
+}
+
+export function 拆分一次(text: string, separator: string): string[] {
+    return split_once(text, separator);
+}
+
+export function 取单词数(text: string): int {
+    return count_words(text);
+}
+
+export function 居中填充(text: string, width: int, pad: string): string {
+    return pad_center(text, width, pad);
+}
+
+export function 取公共前缀(a: string, b: string): string {
+    return common_prefix(a, b);
+}
+
+export function 取公共后缀(a: string, b: string): string {
+    return common_suffix(a, b);
+}
+
+export function 大小写互换(text: string): string {
+    return swap_case(text);
+}
+
+export function 前补零(text: string, width: int): string {
+    return zfill(text, width);
+}

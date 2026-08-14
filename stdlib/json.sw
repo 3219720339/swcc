@@ -13,6 +13,8 @@
 // 注意：当前不支持转义序列里的 \uXXXX（其余 \n \t \" 等支持）。
 // ===========================================================================
 
+import { split } from "std/string";
+
 /// 解析 JSON 文本；语法错误返回 null。结果由 GC 管理，无需手动释放。
 export extern c function json_parse(text: string): ptr<void>;
 
@@ -125,4 +127,58 @@ export function JSON对象置值(object: ptr<void>, key: string, value: ptr<void
 
 export function JSON数组追加(array: ptr<void>, value: ptr<void>): int {
     return json_array_append(array, value);
+}
+
+/// 按点路径访问嵌套对象：json_get_path(obj, "a.b.c")。
+/// 任一层不是对象/键不存在返回 null；仅支持对象路径（不含数组下标）。
+export function json_get_path(value: ptr<void>, path: string): ptr<void> {
+    let current = value;
+    const parts = split(path, ".");
+    for (const part of parts) {
+        if (current == null) {
+            return null;
+        }
+        current = json_object_get(current, part);
+    }
+    return current;
+}
+
+/// 对象是否包含指定键（值为 null 也算包含）；非对象返回 false。
+export function json_has(value: ptr<void>, key: string): bool {
+    return json_object_get(value, key) != null;
+}
+
+/// 对象的键数量；非对象返回 0。
+export function json_object_len(value: ptr<void>): int {
+    return json_object_keys(value).length;
+}
+
+/// 合并两个 JSON 对象，返回新对象（b 的同名键覆盖 a）；非对象按空对象处理。
+export function json_merge(a: ptr<void>, b: ptr<void>): ptr<void> {
+    const result = json_object_new();
+    const keys_a = json_object_keys(a);
+    for (const key of keys_a) {
+        json_object_set(result, key, json_object_get(a, key));
+    }
+    const keys_b = json_object_keys(b);
+    for (const key of keys_b) {
+        json_object_set(result, key, json_object_get(b, key));
+    }
+    return result;
+}
+
+export function 取JSON路径(value: ptr<void>, path: string): ptr<void> {
+    return json_get_path(value, path);
+}
+
+export function JSON是否含键(value: ptr<void>, key: string): bool {
+    return json_has(value, key);
+}
+
+export function 取JSON对象长度(value: ptr<void>): int {
+    return json_object_len(value);
+}
+
+export function JSON合并(a: ptr<void>, b: ptr<void>): ptr<void> {
+    return json_merge(a, b);
 }

@@ -1,0 +1,20 @@
+正在读取并检查语法...
+正在语义分析...
+正在生成目标代码...
+正在链接...
+编译成功：demo-batch7.exe（用时 54 ms）
+== string 实用 ==
+baXna
+00042
+hELLO wORLD
+swcc-
+left=host right=8080/path
+== array 实用 ==
+insert=1,2,3
+concat=1,2,3 dedupe=1,2
+== 进程增强 ==
+run_with_env=from-env
+stdout=[to-stdout] stderr=[to-stderr]
+== json 读路径 ==
+host=localhost port=8080
+merged len=2

@@ -180,3 +180,94 @@ export function 取最大值位置(items: int[]): int {
 export function 数组配对(a: string[], b: string[]): string[][] {
     return zip_strings(a, b);
 }
+
+/// 合并两个 int[]，返回新数组（不修改原数组）。
+export extern c function concat_int(a: int[], b: int[]): int[];
+
+/// 合并两个 float[]，返回新数组。
+export extern c function concat_float(a: float[], b: float[]): float[];
+
+/// 合并两个 string[]，返回新数组。
+export extern c function concat_string(a: string[], b: string[]): string[];
+
+/// 在 index 处插入元素（越界钳制到 [0, len]），返回新数组。
+export extern c function insert_int(items: int[], index: int, value: int): int[];
+
+/// 在 index 处插入元素（越界钳制到 [0, len]），返回新数组。
+export extern c function insert_float(items: float[], index: int, value: float): float[];
+
+/// 在 index 处插入元素（越界钳制到 [0, len]），返回新数组。
+export extern c function insert_string(items: string[], index: int, value: string): string[];
+
+/// 删除 index 处元素，返回新数组；越界返回原样复制。
+export extern c function remove_at_int(items: int[], index: int): int[];
+
+/// 删除 index 处元素，返回新数组；越界返回原样复制。
+export extern c function remove_at_float(items: float[], index: int): float[];
+
+/// 删除 index 处元素，返回新数组；越界返回原样复制。
+export extern c function remove_at_string(items: string[], index: int): string[];
+
+/// 去重 int[]，返回新数组（保持首次出现顺序）。
+export extern c function unique_int(items: int[]): int[];
+
+/// 去重 float[]，返回新数组（保持首次出现顺序）。
+export extern c function unique_float(items: float[]): float[];
+
+/// float[] 最小值所在位置；空数组返回 -1。
+export extern c function min_index_float(items: float[]): int;
+
+/// float[] 最大值所在位置；空数组返回 -1。
+export extern c function max_index_float(items: float[]): int;
+
+export function 合并数组整数(a: int[], b: int[]): int[] {
+    return concat_int(a, b);
+}
+
+export function 合并数组小数(a: float[], b: float[]): float[] {
+    return concat_float(a, b);
+}
+
+export function 合并数组文本(a: string[], b: string[]): string[] {
+    return concat_string(a, b);
+}
+
+export function 插入元素整数(items: int[], index: int, value: int): int[] {
+    return insert_int(items, index, value);
+}
+
+export function 插入元素小数(items: float[], index: int, value: float): float[] {
+    return insert_float(items, index, value);
+}
+
+export function 插入元素文本(items: string[], index: int, value: string): string[] {
+    return insert_string(items, index, value);
+}
+
+export function 删除元素整数(items: int[], index: int): int[] {
+    return remove_at_int(items, index);
+}
+
+export function 删除元素小数(items: float[], index: int): float[] {
+    return remove_at_float(items, index);
+}
+
+export function 删除元素文本(items: string[], index: int): string[] {
+    return remove_at_string(items, index);
+}
+
+export function 数组去重整数(items: int[]): int[] {
+    return unique_int(items);
+}
+
+export function 数组去重小数(items: float[]): float[] {
+    return unique_float(items);
+}
+
+export function 取最小值位置小数(items: float[]): int {
+    return min_index_float(items);
+}
+
+export function 取最大值位置小数(items: float[]): int {
+    return max_index_float(items);
+}

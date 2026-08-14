@@ -14,6 +14,8 @@
 // 注意：write 写入的是字节（UTF-8），返回实际写入字节数。
 // ===========================================================================
 
+import { now_sec } from "std/time";
+
 /// 打开文件，返回文件描述符（0~63）；失败返回 -1。
 /// mode： "r" / "w" / "a" / "r+" / "rb" 等。
 export extern c function open(path: string, mode: string): int;
@@ -168,4 +170,46 @@ export function 按行写文件(path: string, lines: string[]): int {
 
 export function 取临时文件路径(prefix: string): string {
     return temp_file_path(prefix);
+}
+
+/// 路径是否可写：Windows 看只读属性，POSIX 用 access(W_OK)。
+export extern c function is_writable(path: string): bool;
+
+/// 文件最后修改时间距现在的秒数（>= 0）；文件不存在返回 -1。
+export function file_age_sec(path: string): int {
+    const mtime = file_mtime(path);
+    if (mtime < 0) {
+        return -1;
+    }
+    const age = now_sec() - mtime;
+    return age < 0 ? 0 : age;
+}
+
+/// 目录递归总字节数（含全部子文件）；路径不存在或不可读返回 -1。
+export function dir_size(path: string): int {
+    const files = walk_files(path);
+    if (files.length == 0) {
+        return -1;
+    }
+    let total = 0;
+    for (const file of files) {
+        const size = file_size_path(file);
+        if (size < 0) {
+            return -1;
+        }
+        total += size;
+    }
+    return total;
+}
+
+export function 是否可写(path: string): bool {
+    return is_writable(path);
+}
+
+export function 取文件年龄(path: string): int {
+    return file_age_sec(path);
+}
+
+export function 取目录大小(path: string): int {
+    return dir_size(path);
 }

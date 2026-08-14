@@ -4412,6 +4412,21 @@ int64_t sw_touch(sw_string* path) {
     return 0;
 }
 
+// 是否可写：Windows 看只读属性，POSIX 用 access(W_OK)。
+int64_t sw_is_writable(sw_string* path) {
+#if defined(_WIN32)
+    extern unsigned int GetFileAttributesA(const char* path);
+    unsigned int attrs = GetFileAttributesA(path->data);
+    if (attrs == 0xFFFFFFFFu) {  // INVALID_FILE_ATTRIBUTES
+        return 0;
+    }
+    return (attrs & 0x1u) ? 0 : 1;  // FILE_ATTRIBUTE_READONLY
+#else
+    extern int access(const char* path, int mode);
+    return access(path->data, 2 /*W_OK*/) == 0 ? 1 : 0;
+#endif
+}
+
 int64_t sw_copy_dir(sw_string* src, sw_string* dst) {
     if (!is_dir(src)) {
         return -1;
@@ -5737,6 +5752,194 @@ sw_array* sw_unique_string(sw_array* items) {
 }
 
 // ---------------------------------------------------------------------------
+// array 实用：concat / insert / remove_at / unique / 极值位置（返回新数组，
+// 不修改原数组；elem_size 1=u8、其余 8 字节槽）。
+// ---------------------------------------------------------------------------
+
+static sw_array* sw_array_concat_impl(sw_array* a, sw_array* b, int64_t elem_size) {
+    int64_t alen = a != NULL ? a->len : 0;
+    int64_t blen = b != NULL ? b->len : 0;
+    sw_array* result = sw_array_new(elem_size, alen + blen);
+    if (alen > 0) {
+        memcpy(result->data, a->data, (sw_size)((uint64_t)alen * elem_size));
+    }
+    if (blen > 0) {
+        memcpy(
+            (char*)result->data + (uintptr_t)(alen * elem_size),
+            b->data,
+            (sw_size)((uint64_t)blen * elem_size)
+        );
+    }
+    return result;
+}
+
+sw_array* sw_array_concat_int(sw_array* a, sw_array* b) {
+    return sw_array_concat_impl(a, b, 8);
+}
+
+sw_array* sw_array_concat_float(sw_array* a, sw_array* b) {
+    return sw_array_concat_impl(a, b, 8);
+}
+
+sw_array* sw_array_concat_str(sw_array* a, sw_array* b) {
+    return sw_array_concat_impl(a, b, 8);
+}
+
+// 在 index 处插入元素（index 越界钳制到 [0, len]），返回新数组。
+static sw_array* sw_array_insert_impl(sw_array* items, int64_t index, int64_t value, int64_t elem_size) {
+    int64_t len = items != NULL ? items->len : 0;
+    if (index < 0) {
+        index = 0;
+    }
+    if (index > len) {
+        index = len;
+    }
+    sw_array* result = sw_array_new(elem_size, len + 1);
+    if (index > 0) {
+        memcpy(result->data, items->data, (sw_size)((uint64_t)index * elem_size));
+    }
+    if (elem_size == 1) {
+        ((unsigned char*)result->data)[index] = (unsigned char)value;
+    } else {
+        ((int64_t*)result->data)[index] = value;
+    }
+    if (len > index) {
+        memcpy(
+            (char*)result->data + (uintptr_t)((index + 1) * elem_size),
+            (char*)items->data + (uintptr_t)(index * elem_size),
+            (sw_size)((uint64_t)(len - index) * elem_size)
+        );
+    }
+    return result;
+}
+
+sw_array* sw_array_insert_int(sw_array* items, int64_t index, int64_t value) {
+    return sw_array_insert_impl(items, index, value, 8);
+}
+
+sw_array* sw_array_insert_float(sw_array* items, int64_t index, double value) {
+    int64_t bits = 0;
+    memcpy(&bits, &value, 8);
+    return sw_array_insert_impl(items, index, bits, 8);
+}
+
+sw_array* sw_array_insert_str(sw_array* items, int64_t index, sw_string* value) {
+    return sw_array_insert_impl(items, index, (int64_t)value, 8);
+}
+
+// 删除 index 处元素，返回新数组；越界返回原样复制。
+static sw_array* sw_array_remove_at_impl(sw_array* items, int64_t index, int64_t elem_size) {
+    int64_t len = items != NULL ? items->len : 0;
+    if (len == 0) {
+        return sw_array_new(elem_size, 0);
+    }
+    if (index < 0 || index >= len) {
+        return sw_array_concat_impl(items, NULL, elem_size);
+    }
+    sw_array* result = sw_array_new(elem_size, len - 1);
+    if (index > 0) {
+        memcpy(result->data, items->data, (sw_size)((uint64_t)index * elem_size));
+    }
+    if (len - index - 1 > 0) {
+        memcpy(
+            (char*)result->data + (uintptr_t)(index * elem_size),
+            (char*)items->data + (uintptr_t)((index + 1) * elem_size),
+            (sw_size)((uint64_t)(len - index - 1) * elem_size)
+        );
+    }
+    return result;
+}
+
+sw_array* sw_array_remove_at_int(sw_array* items, int64_t index) {
+    return sw_array_remove_at_impl(items, index, 8);
+}
+
+sw_array* sw_array_remove_at_float(sw_array* items, int64_t index) {
+    return sw_array_remove_at_impl(items, index, 8);
+}
+
+sw_array* sw_array_remove_at_str(sw_array* items, int64_t index) {
+    return sw_array_remove_at_impl(items, index, 8);
+}
+
+// 去重（保持首次出现顺序），返回新数组。
+sw_array* sw_array_unique_int(sw_array* items) {
+    if (items == NULL) {
+        return sw_array_new(8, 0);
+    }
+    sw_array* result = sw_array_new(8, items->len);
+    int64_t slot = 0;
+    int64_t* data = (int64_t*)items->data;
+    for (int64_t i = 0; i < items->len; i++) {
+        int64_t seen = 0;
+        for (int64_t k = 0; k < slot; k++) {
+            if (((int64_t*)result->data)[k] == data[i]) {
+                seen = 1;
+                break;
+            }
+        }
+        if (!seen) {
+            ((int64_t*)result->data)[slot++] = data[i];
+        }
+    }
+    result->len = slot;
+    result->cap = slot;
+    return result;
+}
+
+sw_array* sw_array_unique_float(sw_array* items) {
+    if (items == NULL) {
+        return sw_array_new(8, 0);
+    }
+    sw_array* result = sw_array_new(8, items->len);
+    int64_t slot = 0;
+    double* data = (double*)items->data;
+    for (int64_t i = 0; i < items->len; i++) {
+        int64_t seen = 0;
+        for (int64_t k = 0; k < slot; k++) {
+            if (((double*)result->data)[k] == data[i]) {
+                seen = 1;
+                break;
+            }
+        }
+        if (!seen) {
+            ((double*)result->data)[slot++] = data[i];
+        }
+    }
+    result->len = slot;
+    result->cap = slot;
+    return result;
+}
+
+int64_t sw_min_index_float(sw_array* items) {
+    if (items == NULL || items->len == 0) {
+        return -1;
+    }
+    double* data = (double*)items->data;
+    int64_t best = 0;
+    for (int64_t i = 1; i < items->len; i++) {
+        if (data[i] < data[best]) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+int64_t sw_max_index_float(sw_array* items) {
+    if (items == NULL || items->len == 0) {
+        return -1;
+    }
+    double* data = (double*)items->data;
+    int64_t best = 0;
+    for (int64_t i = 1; i < items->len; i++) {
+        if (data[i] > data[best]) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+// ---------------------------------------------------------------------------
 // map：字符串键字典（GC 管理，保持插入顺序）
 // ---------------------------------------------------------------------------
 
@@ -6012,6 +6215,297 @@ sw_array* sw_map_values(void* handle) {
     }
     return array;
 }
+
+// ---------------------------------------------------------------------------
+// 进程增强（std/os）：环境变量 / 工作目录 / 分离 stdout+stderr / 存活检测。
+// 注意：run_stdout_stderr 顺序读取两管道，任一输出超过管道缓冲（Windows
+// 4KB / POSIX 64KB）时可能阻塞——建议用于小输出。
+// ---------------------------------------------------------------------------
+
+#if defined(_WIN32)
+
+// 把 map 构造成 CreateProcessA 环境块（"K=V\0K=V\0\0"；仅 string 值）。
+static char* sw_build_env_block(sw_map* map) {
+    if (map == NULL || map->count == 0) {
+        return NULL;
+    }
+    int64_t total = 1;
+    for (sw_map_node* node = map->head; node != NULL; node = node->next) {
+        if (node->tag != SW_TAG_STR) {
+            continue;
+        }
+        sw_string* key = node->key;
+        sw_string* value = (sw_string*)node->value;
+        total += key->len + 1 + value->len + 1;
+    }
+    char* block = (char*)sw_gc_alloc((uint64_t)total);
+    int64_t out = 0;
+    for (sw_map_node* node = map->head; node != NULL; node = node->next) {
+        if (node->tag != SW_TAG_STR) {
+            continue;
+        }
+        sw_string* key = node->key;
+        sw_string* value = (sw_string*)node->value;
+        memcpy(block + out, key->data, (sw_size)key->len);
+        out += key->len;
+        block[out++] = '=';
+        memcpy(block + out, value->data, (sw_size)value->len);
+        out += value->len;
+        block[out++] = 0;
+    }
+    block[out] = 0;
+    return block;
+}
+
+// 读取管道到 EOF，返回 sw_string。
+static sw_string* sw_read_pipe_all(void* read_handle) {
+    char chunk[4096];
+    char* buffer = (char*)malloc(4096);
+    int64_t capacity = 4096;
+    int64_t length = 0;
+    while (1) {
+        unsigned int got = 0;
+        if (!ReadFile(read_handle, chunk, sizeof(chunk), &got, NULL) || got == 0) {
+            break;
+        }
+        if (length + (int64_t)got > capacity) {
+            capacity = (length + (int64_t)got) * 2;
+            buffer = (char*)realloc(buffer, (sw_size)capacity);
+        }
+        memcpy(buffer + length, chunk, got);
+        length += (int64_t)got;
+    }
+    sw_string* result = sw_string_from_literal(buffer, length);
+    free(buffer);
+    return result;
+}
+
+// 通用启动：env_block/cwd 可为 NULL；err_mode 1 时 stderr 走单独管道。
+static sw_string* sw_run_impl_env(
+    sw_string* cmd, sw_array* args, char* env_block, sw_string* dir,
+    void** err_read_out
+) {
+    void* out_read = NULL;
+    void* out_write = NULL;
+    void* err_read = NULL;
+    void* err_write = NULL;
+    if (!CreatePipe(&out_read, &out_write, NULL, 0)) {
+        return sw_string_from_literal("", 0);
+    }
+    SetHandleInformation(out_write, 1, 1);
+    if (err_read_out != NULL) {
+        if (!CreatePipe(&err_read, &err_write, NULL, 0)) {
+            CloseHandle(out_read);
+            CloseHandle(out_write);
+            return sw_string_from_literal("", 0);
+        }
+        SetHandleInformation(err_write, 1, 1);
+    }
+    char* cmdline = sw_build_cmdline(cmd, args);
+    sw_startup_info startup;
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    startup.flags = 0x00000100u;  // STARTF_USESTDHANDLES
+    startup.h_std_output = out_write;
+    startup.h_std_error = err_write != NULL ? err_write : out_write;
+    sw_proc_info info;
+    memset(&info, 0, sizeof(info));
+    int ok = CreateProcessA(
+        NULL, cmdline, NULL, NULL, 1, 0, env_block,
+        dir != NULL ? dir->data : NULL, &startup, &info
+    );
+    CloseHandle(out_write);
+    if (err_write != NULL) {
+        CloseHandle(err_write);
+    }
+    if (!ok) {
+        CloseHandle(out_read);
+        if (err_read != NULL) {
+            CloseHandle(err_read);
+        }
+        return sw_string_from_literal("", 0);
+    }
+    CloseHandle(info.h_thread);
+    sw_string* result = sw_read_pipe_all(out_read);
+    CloseHandle(out_read);
+    if (err_read_out != NULL) {
+        *err_read_out = err_read;
+    }
+    WaitForSingleObject(info.h_process, 0xFFFFFFFFu);
+    CloseHandle(info.h_process);
+    return result;
+}
+
+sw_string* sw_run_with_env(sw_string* cmd, sw_array* args, void* env_handle) {
+    return sw_run_impl_env(cmd, args, sw_build_env_block((sw_map*)env_handle), NULL, NULL);
+}
+
+sw_string* sw_run_in_dir(sw_string* cmd, sw_array* args, sw_string* dir) {
+    return sw_run_impl_env(cmd, args, NULL, dir, NULL);
+}
+
+sw_array* sw_run_stdout_stderr(sw_string* cmd, sw_array* args) {
+    void* err_read = NULL;
+    sw_string* out = sw_run_impl_env(cmd, args, NULL, NULL, &err_read);
+    sw_string* err = err_read != NULL ? sw_read_pipe_all(err_read) : sw_string_from_literal("", 0);
+    if (err_read != NULL) {
+        CloseHandle(err_read);
+    }
+    sw_array* result = sw_array_new(8, 2);
+    ((int64_t*)result->data)[0] = (int64_t)out;
+    ((int64_t*)result->data)[1] = (int64_t)err;
+    return result;
+}
+
+int64_t sw_is_process_running(int64_t pid) {
+    extern void* OpenProcess(unsigned int access, int inherit, unsigned int pid);
+    extern int GetExitCodeProcess(void* handle, unsigned int* code);
+    extern int CloseHandle(void* handle);
+    void* handle = OpenProcess(0x1000u /*PROCESS_QUERY_LIMITED_INFORMATION*/, 0, (unsigned int)pid);
+    if (handle == NULL) {
+        return 0;
+    }
+    unsigned int code = 0;
+    GetExitCodeProcess(handle, &code);
+    CloseHandle(handle);
+    return code == 259u /*STILL_ACTIVE*/ ? 1 : 0;
+}
+
+#else  // POSIX（Linux / macOS）
+
+// 构建 exec 用 envp（"K=V" 数组，NULL 结尾；仅 string 值）。
+static char** sw_build_envp(sw_map* map) {
+    if (map == NULL || map->count == 0) {
+        return NULL;
+    }
+    char** envp = (char**)sw_gc_alloc((uint64_t)(map->count + 1) * sizeof(char*));
+    int64_t slot = 0;
+    for (sw_map_node* node = map->head; node != NULL; node = node->next) {
+        if (node->tag != SW_TAG_STR) {
+            continue;
+        }
+        sw_string* key = node->key;
+        sw_string* value = (sw_string*)node->value;
+        char* entry = (char*)sw_gc_alloc((uint64_t)key->len + 1 + value->len + 1);
+        memcpy(entry, key->data, (sw_size)key->len);
+        entry[key->len] = '=';
+        memcpy(entry + key->len + 1, value->data, (sw_size)value->len);
+        entry[key->len + 1 + value->len] = 0;
+        envp[slot++] = entry;
+    }
+    envp[slot] = NULL;
+    return envp;
+}
+
+static sw_string* sw_read_fd_all(int fd) {
+    char chunk[4096];
+    char* buffer = (char*)malloc(4096);
+    int64_t capacity = 4096;
+    int64_t length = 0;
+    while (1) {
+        long got = read(fd, chunk, sizeof(chunk));
+        if (got <= 0) {
+            break;
+        }
+        if (length + got > capacity) {
+            capacity = (length + got) * 2;
+            buffer = (char*)realloc(buffer, (sw_size)capacity);
+        }
+        memcpy(buffer + length, chunk, (uint64_t)got);
+        length += got;
+    }
+    sw_string* result = sw_string_from_literal(buffer, length);
+    free(buffer);
+    return result;
+}
+
+// 通用启动：envp/cwd 可为 NULL；err_fd_out 非空时 stderr 走单独管道。
+static sw_string* sw_run_impl_env(
+    sw_string* cmd, sw_array* args, char** envp, sw_string* dir, int* err_fd_out
+) {
+    int out_pipe[2];
+    int err_pipe[2] = {-1, -1};
+    if (pipe(out_pipe) != 0) {
+        return sw_string_from_literal("", 0);
+    }
+    if (err_fd_out != NULL && pipe(err_pipe) != 0) {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        return sw_string_from_literal("", 0);
+    }
+    char** argv = sw_build_argv(cmd, args);
+    int pid = fork();
+    if (pid < 0) {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        if (err_fd_out != NULL) {
+            close(err_pipe[0]);
+            close(err_pipe[1]);
+        }
+        return sw_string_from_literal("", 0);
+    }
+    if (pid == 0) {
+        if (dir != NULL) {
+            extern int chdir(const char* path);
+            chdir(dir->data);
+        }
+        dup2(out_pipe[1], 1);
+        dup2(err_fd_out != NULL ? err_pipe[1] : out_pipe[1], 2);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        if (err_fd_out != NULL) {
+            close(err_pipe[0]);
+            close(err_pipe[1]);
+        }
+        if (envp != NULL) {
+            extern int execve(const char* file, char* const argv[], char* const envp[]);
+            execve(argv[0], argv, envp);
+        } else {
+            execvp(argv[0], argv);
+        }
+        _exit(127);
+    }
+    close(out_pipe[1]);
+    if (err_fd_out != NULL) {
+        close(err_pipe[1]);
+    }
+    sw_string* result = sw_read_fd_all(out_pipe[0]);
+    close(out_pipe[0]);
+    if (err_fd_out != NULL) {
+        *err_fd_out = err_pipe[0];
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return result;
+}
+
+sw_string* sw_run_with_env(sw_string* cmd, sw_array* args, void* env_handle) {
+    return sw_run_impl_env(cmd, args, sw_build_envp((sw_map*)env_handle), NULL, NULL);
+}
+
+sw_string* sw_run_in_dir(sw_string* cmd, sw_array* args, sw_string* dir) {
+    return sw_run_impl_env(cmd, args, NULL, dir, NULL);
+}
+
+sw_array* sw_run_stdout_stderr(sw_string* cmd, sw_array* args) {
+    int err_fd = -1;
+    sw_string* out = sw_run_impl_env(cmd, args, NULL, NULL, &err_fd);
+    sw_string* err = err_fd >= 0 ? sw_read_fd_all(err_fd) : sw_string_from_literal("", 0);
+    if (err_fd >= 0) {
+        close(err_fd);
+    }
+    sw_array* result = sw_array_new(8, 2);
+    ((int64_t*)result->data)[0] = (int64_t)out;
+    ((int64_t*)result->data)[1] = (int64_t)err;
+    return result;
+}
+
+int64_t sw_is_process_running(int64_t pid) {
+    extern int kill(int pid, int signal);
+    return kill((int)pid, 0) == 0 ? 1 : 0;
+}
+
+#endif
 
 // ---------------------------------------------------------------------------
 // 网络：TCP 阻塞式（Windows WinSock2 / POSIX socket）

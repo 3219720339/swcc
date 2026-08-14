@@ -1582,10 +1582,47 @@ Sw 编译器（swcc）开发进度
                           Python subprocess utf-8 无 BOM 无此问题）；
                           fmt 通过；runtime.c 无新外部依赖
 
+    2026-08-15 11:40  标准库实用批（string+array 实用 / process+fs 增强 /
+                        json 读路径增强，共 32 个新函数，全中英文）：
+                        - std/string +9（全部纯 Sw 组合现有函数，零 C）：
+                          replace_first/replace_last（before/after 组合）、
+                          split_once（→string[2]）、count_words、
+                          pad_center、common_prefix/common_suffix
+                          （按字符比较，UTF-8 安全）、swap_case
+                          （chars()+is_upper/is_lower）、zfill
+                        - std/array +13（runtime C，返回新数组不原地改）：
+                          concat_int/float/string、insert_int/float/string
+                          （越界钳制）、remove_at_int/float/string（越界
+                          原样复制）、unique_int/float（保持首次出现顺序）、
+                          min/max_index_float（空数组 -1）
+                        - std/os 进程 +4（runtime C，Windows/POSIX 双分支）：
+                          run_with_env（map→环境块/execvpe）、run_in_dir
+                          （CreateProcessA cwd / 子进程 chdir）、
+                          run_stdout_stderr（→string[2] 分开捕获；顺序读取
+                          两管道，输出超缓冲可能阻塞，已文档注明）、
+                          is_process_running（OpenProcess STILL_ACTIVE /
+                          kill(pid,0)）
+                        - std/fs +3：is_writable（extern c：只读属性/
+                          access(W_OK)）、file_age_sec/dir_size（纯 Sw：
+                          now_sec()-file_mtime / walk_files+file_size_path）
+                        - std/json +5（全部纯 Sw 组合）：
+                          json_get_path（点路径 a.b.c）、json_has、
+                          json_object_len、json_merge（b 覆盖 a 返回新对象）
+                        - codegen extern_c_symbol 追加 18 个映射
+                        - 新增探针 probe-batch7.sw（41 断言，含中文 UTF-8
+                          公共前缀、进程环境/目录/分流/存活、目录大小、
+                          JSON 路径/合并），登记 run-examples.py；demo 新增
+                          demo-batch7.sw 输出存 outputs/demo-batch7.txt
+                        - 验证：cargo test 56 全绿；88 examples 全过；
+                          fmt 通过；runtime.c 无新外部依赖
+                        - 注：std/string 字符串 for-of 元素类型为 char
+                          （is_upper 等需 string），swap_case 用 chars() 转
+                          单字符数组实现
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
-       2. 标准库继续扩充：std/string + std/array 实用函数、
-          或 std/process/fs 增强、或 json 读路径增强
+       2. 标准库继续扩充：std/net 增强（TCP 超时/HTTP keep-alive）、
+          或 std/hash 补 crc32/sha1/hmac、或 std/time 人性化时间
 
 二、已知限制
 
