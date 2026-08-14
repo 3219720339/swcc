@@ -693,6 +693,26 @@ Sw 编译器（swcc）开发进度
                          改用断言库（3 测试）、tmp-test-assert-fail.sw 验证
                          断言失败路径；51 个 examples 全过；cargo test 51 全绿
 
+    2026-08-15 01:53  expect_eq 数组/struct 比较 + 跨模块泛型实例化 + CI 接入：
+                       - std/test 的 expect_eq 改为泛型 expect_eq<T>（标量/
+                         struct/可空按值比较，struct 走逐字段值比较）+ 3 个
+                         数组重载（int[]/float[]/string[] 长度+逐元素比较）
+                       - 跨模块泛型函数实例化解锁：instantiate_generic 不再
+                         限制本模块，模板函数体从 all_modules 按模块+span 取；
+                         关键修复：
+                         a) FnLower 增加 result_index，检查结果表（ident_
+                            symbols/expr_types/call_targets 等）按模板所属
+                            模块取，跨模块实例化时模板 body 的 span 能查到
+                            参数/类型信息；
+                         b) expr_type 对 TypeParam 用 type_args 替换
+                            （实例化后的具体类型）；
+                         c) analyze 顺序拆成 finalize 全部 → check 全部 →
+                            lower 全部（此前 check/lower 逐模块，调用点模块
+                            降级时模板模块的检查结果还是空的）
+                       - CI 三平台 Smoke 增加 `swc test examples/probe-test.sw`
+                       - probe-test 扩为 5 个测试（数组/struct 比较），
+                         51 个 examples 全过；cargo test 51 全绿
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 

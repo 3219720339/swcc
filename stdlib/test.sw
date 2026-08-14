@@ -23,33 +23,44 @@ export function assert(condition: bool, message: string): void {
     }
 }
 
-export function expect_eq(actual: int, expected: int): void {
+// 标量 / struct / 可空值：按值比较（struct 为逐字段值比较）。
+export function expect_eq<T>(actual: T, expected: T): void {
     if (actual != expected) {
-        throw "expected " + expected + ", got " + actual;
+        throw "values not equal";
     }
 }
 
-export function expect_eq(actual: float, expected: float): void {
-    if (actual != expected) {
-        throw "expected " + expected + ", got " + actual;
+// 数组按长度 + 逐元素比较。
+export function expect_eq(actual: int[], expected: int[]): void {
+    if (actual.length != expected.length) {
+        throw "array length mismatch: expected " + expected.length + ", got " + actual.length;
+    }
+    for (let i = 0; i < actual.length; i++) {
+        if (actual[i] != expected[i]) {
+            throw "arrays differ at index " + i;
+        }
     }
 }
 
-export function expect_eq(actual: string, expected: string): void {
-    if (actual != expected) {
-        throw "expected '" + expected + "', got '" + actual + "'";
+export function expect_eq(actual: float[], expected: float[]): void {
+    if (actual.length != expected.length) {
+        throw "array length mismatch: expected " + expected.length + ", got " + actual.length;
+    }
+    for (let i = 0; i < actual.length; i++) {
+        if (actual[i] != expected[i]) {
+            throw "arrays differ at index " + i;
+        }
     }
 }
 
-export function expect_eq(actual: bool, expected: bool): void {
-    if (actual != expected) {
-        throw "expected " + expected + ", got " + actual;
+export function expect_eq(actual: string[], expected: string[]): void {
+    if (actual.length != expected.length) {
+        throw "array length mismatch: expected " + expected.length + ", got " + actual.length;
     }
-}
-
-export function expect_eq(actual: char, expected: char): void {
-    if (actual != expected) {
-        throw "expected '" + expected + "', got '" + actual + "'";
+    for (let i = 0; i < actual.length; i++) {
+        if (actual[i] != expected[i]) {
+            throw "arrays differ at index " + i;
+        }
     }
 }
 

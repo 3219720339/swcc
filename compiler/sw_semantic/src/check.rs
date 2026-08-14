@@ -36,9 +36,11 @@ pub fn analyze(entry: &Path, stdlib_dir: Option<&Path>) -> AnalysisResult {
             break;
         }
     }
+    for id in &module_ids {
+        analyzer.check_globals(*id);
+        analyzer.check_all_functions(*id);
+    }
     for id in module_ids {
-        analyzer.check_globals(id);
-        analyzer.check_all_functions(id);
         analyzer.lower_mir(id);
     }
     let modules = analyzer
@@ -107,7 +109,7 @@ struct ModuleState {
     mir_strings: Vec<String>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct CheckResult {
     expr_types: HashMap<(usize, usize), Type>,
     ident_symbols: HashMap<usize, SymbolId>,
@@ -1354,10 +1356,17 @@ impl Analyzer {
                 }
             }
         }
+        let all_results: Vec<CheckResult> = self
+            .states
+            .iter()
+            .map(|state| state.result.clone())
+            .collect();
         let state = &mut self.states[module_id.0 as usize];
         let mir = {
             let mut lowerer = MirLowerer {
                 module,
+                all_modules: &self.modules,
+                all_results,
                 symbols,
                 types,
                 registry,
@@ -3858,6 +3867,10 @@ fn binary_op_name(op: &BinaryOp) -> &'static str {
 
 struct MirLowerer<'m, 's> {
     module: &'m Module,
+    /// 全部已加载模块（跨模块泛型实例化时取模板函数体）。
+    all_modules: &'m [Module],
+    /// 各模块的检查结果表（跨模块泛型实例化时模板 body 的 span 查模板模块）。
+    all_results: Vec<CheckResult>,
     symbols: &'s [Symbol],
     types: &'s mut TypeTable,
     registry: &'s HashMap<String, Type>,
@@ -3874,6 +3887,8 @@ struct MirLowerer<'m, 's> {
 
 struct FnLower<'a, 'm, 's> {
     lowerer: &'a mut MirLowerer<'m, 's>,
+    /// 检查结果表所属模块（跨模块泛型实例化时指向模板模块）。
+    result_index: usize,
     name: String,
     params: Vec<MirParam>,
     ret: Type,
@@ -4094,8 +4109,10 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         continue;
                     }
                     let name = stable_function_name(&sig);
+                    let result_index = self.state.id.0 as usize;
                     let mut lower = FnLower {
                         lowerer: self,
+                        result_index,
                         name: name.clone(),
                         params: Vec::new(),
                         ret: sig.ret.clone(),
@@ -4161,8 +4178,10 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         _ => continue,
                     };
                     let Some(body) = body else { continue };
+                    let result_index = self.state.id.0 as usize;
                     let mut lower = FnLower {
                         lowerer: self,
+                        result_index,
                         name: name.clone(),
                         params: vec![MirParam {
                             name: "self".to_owned(),
@@ -4229,8 +4248,10 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     _ => continue,
                 };
                 let Some(body) = body else { continue };
+                let result_index = self.state.id.0 as usize;
                 let mut lower = FnLower {
                     lowerer: self,
+                    result_index,
                     name: name.clone(),
                     params: vec![MirParam {
                         name: "self".to_owned(),
@@ -4589,6 +4610,11 @@ impl<'m, 's> MirLowerer<'m, 's> {
 }
 
 impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
+    /// 当前降级函数所属模块的检查结果表（跨模块泛型实例化时指向模板模块）。
+    fn result(&self) -> &CheckResult {
+        &self.lowerer.all_results[self.result_index]
+    }
+
     fn error(&mut self, message: impl Into<String>, span: Span) {
         self.lowerer.error(message, span);
     }
@@ -5051,9 +5077,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             StmtKind::Throw(expr) => {
                 let value = self.lower_expr(expr);
                 let ty = self
-                    .lowerer
-                    .state
-                    .result
+                    .result()
                     .expr_types
                     .get(&(expr.span.start, expr.span.end))
                     .cloned()
@@ -5239,10 +5263,6 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         ast_args: &[Expr],
         span: Span,
     ) -> (String, FunctionSig) {
-        if template.module.0 != self.lowerer.state.id.0 {
-            self.error("v0.1 泛型仅支持本模块函数实例化", span);
-            return (stable_function_name(template), template.clone());
-        }
         let mut type_args = HashMap::new();
         for (index, param) in template.params.iter().enumerate() {
             if let Some(arg_ty) = ast_args.get(index) {
@@ -5332,14 +5352,17 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
 
         let body = self
             .lowerer
-            .module
-            .items
-            .iter()
-            .find_map(|item| match &item.kind {
-                ItemKind::Function(function) if function.name.name == template.name => {
-                    function.body.clone()
-                }
-                _ => None,
+            .all_modules
+            .get(template.module.0 as usize)
+            .and_then(|module| {
+                module.items.iter().find_map(|item| match &item.kind {
+                    ItemKind::Function(function)
+                        if function.name.name == template.name && item.span == template.span =>
+                    {
+                        function.body.clone()
+                    }
+                    _ => None,
+                })
             });
         let Some(body) = body else {
             self.error("泛型函数体未找到", span);
@@ -5349,6 +5372,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         let lowerer = &mut *self.lowerer;
         let mut nested = FnLower {
             lowerer,
+            result_index: template.module.0 as usize,
             name: instance_name.clone(),
             params: instance_params,
             ret: instance_ret,
@@ -5370,14 +5394,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 if let Some(local) = self.lookup_local(&ident.name) {
                     return Some(MirTarget::Local(local));
                 }
-                if let Some(symbol) = self
-                    .lowerer
-                    .state
-                    .result
-                    .ident_symbols
-                    .get(&expr.span.start)
-                    .copied()
-                {
+                if let Some(symbol) = self.result().ident_symbols.get(&expr.span.start).copied() {
                     if let Some(global) = self.global_by_symbol.get(&symbol.0) {
                         return Some(MirTarget::Global(*global as u32));
                     }
@@ -5504,14 +5521,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 if let Some(local) = self.lookup_local(&ident.name) {
                     return MirExpr::Local(local);
                 }
-                if let Some(symbol) = self
-                    .lowerer
-                    .state
-                    .result
-                    .ident_symbols
-                    .get(&expr.span.start)
-                    .copied()
-                {
+                if let Some(symbol) = self.result().ident_symbols.get(&expr.span.start).copied() {
                     if let Some(slot) = self.captures.get(&symbol.0) {
                         return MirExpr::EnvGet { slot: *slot };
                     }
@@ -5685,9 +5695,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     ExprKind::Lambda { .. } => self.expr_type(callee),
                     ExprKind::Ident(_) => {
                         let symbol = self
-                            .lowerer
-                            .state
-                            .result
+                            .result()
                             .ident_symbols
                             .get(&callee.span.start)
                             .copied()
@@ -5742,9 +5750,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     };
                 }
                 let target = self
-                    .lowerer
-                    .state
-                    .result
+                    .result()
                     .call_targets
                     .get(&(expr.span.start, expr.span.end))
                     .cloned();
@@ -5982,9 +5988,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     enum_id,
                     variant_index,
                 }) = self
-                    .lowerer
-                    .state
-                    .result
+                    .result()
                     .call_targets
                     .get(&(expr.span.start, expr.span.end))
                     .cloned()
@@ -6183,9 +6187,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             }
             ExprKind::Array(items) => {
                 let elem = self
-                    .lowerer
-                    .state
-                    .result
+                    .result()
                     .expr_types
                     .get(&(expr.span.start, expr.span.end))
                     .cloned()
@@ -6202,9 +6204,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             }
             ExprKind::Object(fields) => {
                 let target = self
-                    .lowerer
-                    .state
-                    .result
+                    .result()
                     .object_types
                     .get(&expr.span.start)
                     .cloned()
@@ -6244,9 +6244,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             }
             ExprKind::New { args, .. } => {
                 let class = self
-                    .lowerer
-                    .state
-                    .result
+                    .result()
                     .new_types
                     .get(&expr.span.start)
                     .cloned()
@@ -6405,6 +6403,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 let lowerer = &mut *self.lowerer;
                 let mut nested = FnLower {
                     lowerer,
+                    result_index: self.result_index,
                     name: hidden_name.clone(),
                     params: hidden_params,
                     ret: lambda_ret,
@@ -6443,13 +6442,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 if lambda_params.iter().any(|name| name == &ident.name) {
                     return;
                 }
-                let Some(symbol) = self
-                    .lowerer
-                    .state
-                    .result
-                    .ident_symbols
-                    .get(&expr.span.start)
-                    .copied()
+                let Some(symbol) = self.result().ident_symbols.get(&expr.span.start).copied()
                 else {
                     return;
                 };
@@ -6673,14 +6666,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
             }
             ExprKind::Ident(_) => {
-                if let Some(id) = self
-                    .lowerer
-                    .state
-                    .result
-                    .ident_symbols
-                    .get(&expr.span.start)
-                    .copied()
-                {
+                if let Some(id) = self.result().ident_symbols.get(&expr.span.start).copied() {
                     if let Some(kind) = self.lowerer.symbols.get(id.0 as usize).map(|s| &s.kind) {
                         let ty = match kind {
                             SymbolKind::Local { ty, .. }
@@ -6693,7 +6679,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             _ => None,
                         };
                         if let Some(ty) = ty {
-                            return ty;
+                            let resolved = substitute_type(&ty, &self.type_args);
+                            return resolved;
                         }
                     }
                 }
@@ -6738,9 +6725,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             }
             _ => {}
         }
-        self.lowerer
-            .state
-            .result
+        self.result()
             .expr_types
             .get(&(expr.span.start, expr.span.end))
             .cloned()

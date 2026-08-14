@@ -35,3 +35,32 @@ function add(a: int, b: int): int {
         }
     }
 }
+
+struct Point {
+    x: int;
+    y: int;
+}
+
+@test function test_array_compare(): int {
+    const a = [1, 2, 3];
+    const b = [1, 2, 3];
+    const c = [1, 2, 4];
+    expect_eq(a, b);
+    expect_eq(["x", "y"], ["x", "y"]);
+    expect_eq([1.5, 2.5], [1.5, 2.5]);
+    if (a.length == 3 && b[2] == 3 && c[2] == 4) {
+        return 0;
+    }
+    return 1;
+}
+
+@test function test_struct_compare(): int {
+    const p1: Point = { x: 1, y: 2 };
+    const p2: Point = { x: 1, y: 2 };
+    const p3: Point = { x: 1, y: 3 };
+    expect_eq(p1, p2);
+    if (p3.y == 3 && p1.x == 1) {
+        return 0;
+    }
+    return 1;
+}

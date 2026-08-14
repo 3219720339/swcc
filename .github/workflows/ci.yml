@@ -70,6 +70,7 @@ jobs:
           ./target/release/swc.exe run examples/fib.sw
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/run-examples.py ./target/release/swc.exe
+          ./target/release/swc.exe test examples/probe-test.sw
           ./target/release/swc.exe build examples/fib.sw --emit-object build-check/aarch64-linux.o --target aarch64-unknown-linux-gnu
           python tools/check-object.py build-check/aarch64-linux.o elf-aarch64
 
@@ -82,6 +83,7 @@ jobs:
           mkdir -p build-check
           ./target/release/swc run examples/fib.sw
           python3 tools/run-examples.py ./target/release/swc
+          ./target/release/swc test examples/probe-test.sw
           ./target/release/swc build examples/fib.sw --target aarch64-unknown-linux-musl -o build-check/fib-aarch64
           python3 tools/check-object.py build-check/fib-aarch64 elf-aarch64
           ./target/release/swc build examples/hello.sw --target x86_64-unknown-linux-musl -o build-check/hello-x64
@@ -94,6 +96,7 @@ jobs:
           mkdir -p build-check
           ./target/release/swc run examples/fib.sw
           python3 tools/run-examples.py ./target/release/swc
+          ./target/release/swc test examples/probe-test.sw
           ./target/release/swc build examples/fib.sw --emit-object build-check/fib-macos.o --target aarch64-apple-darwin
           python3 tools/check-object.py build-check/fib-macos.o macho
 
