@@ -33,6 +33,7 @@ import {
     spawn,
     wait,
     platform,
+    mkdtemp,
 } from "std/os";
 import { map_new, map_set } from "std/map";
 import {
@@ -125,11 +126,13 @@ function main(): int {
     passed = passed & check(env_out.contains("hello_env"), "run_with_env passes env");
 
     // run_in_dir：子进程输出所在目录
-    const tmp = temp_dir();
+    // 用唯一临时目录名断言（避免 macOS /var→/private/var 符号链接差异）。
+    const work_dir = mkdtemp("swc-cwd-");
+    const tmp = work_dir;
     const dir_out = win
         ? run_in_dir("cmd", ["/c", "cd"], tmp)
         : run_in_dir("pwd", [], tmp);
-    passed = passed & check(dir_out.contains(tmp) || tmp.contains(dir_out.trim()), "run_in_dir cwd");
+    passed = passed & check(dir_out.contains("swc-cwd-"), "run_in_dir cwd");
 
     // run_stdout_stderr：分开捕获
     const parts = win

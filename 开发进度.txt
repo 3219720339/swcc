@@ -1673,6 +1673,19 @@ Sw 编译器（swcc）开发进度
                        - 验证：cargo test 56 全绿；89 examples 全过；
                          fmt 通过；runtime.c 三平台交叉编译通过
 
+    2026-08-15 12:40  修复 CI batch7/batch8 剩余失败（macOS/Linux）：
+                       - batch7 run_in_dir cwd：断言用 contains(tmp) 太脆，
+                         macOS TMPDIR 是 /var/folders/... 而 pwd 输出解析后
+                         物理路径 /private/var/folders/...（/var 是符号
+                         链接）导致不匹配；改为 mkdtemp 创建唯一目录
+                         （swc-cwd-*）后断言输出包含唯一名
+                       - batch8 超时（120s）：net_connect_timeout 失败
+                         返回 -1 后探针仍执行 net_accept，无连接可收时
+                         accept 永久阻塞；改为 client>=0 才执行 accept
+                         及后续网络用例（失败则跳过不挂死）
+                       - 验证：本机两探针 PASS；89 examples 全过；
+                         cargo test 56 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、

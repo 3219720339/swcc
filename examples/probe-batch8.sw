@@ -52,25 +52,27 @@ function main(): int {
 
     const client = net_connect_timeout("127.0.0.1", port, 2000);
     passed = passed & check(client >= 0, "net_connect_timeout ok");
-    const peer = net_accept(server);
-    passed = passed & check(peer >= 0, "net_accept");
-    passed = passed & check(net_peer_ip(peer) == "127.0.0.1", "net_peer_ip");
-    passed = passed & check(net_peer_port(peer) > 0, "net_peer_port > 0");
-    passed = passed & check(net_set_keepalive(client, true) == 0, "net_set_keepalive");
+    if (client >= 0) {
+        const peer = net_accept(server);
+        passed = passed & check(peer >= 0, "net_accept");
+        passed = passed & check(net_peer_ip(peer) == "127.0.0.1", "net_peer_ip");
+        passed = passed & check(net_peer_port(peer) > 0, "net_peer_port > 0");
+        passed = passed & check(net_set_keepalive(client, true) == 0, "net_set_keepalive");
 
-    passed = passed & check(net_send_all(client, "hello") == 5, "net_send_all");
-    passed = passed & check(net_available(peer) == 5, "net_available");
-    passed = passed & check(net_recv(peer, 1024) == "hello", "net_recv echo");
+        passed = passed & check(net_send_all(client, "hello") == 5, "net_send_all");
+        passed = passed & check(net_available(peer) == 5, "net_available");
+        passed = passed & check(net_recv(peer, 1024) == "hello", "net_recv echo");
 
-    // 接收超时：服务器不发数据，客户端 300ms 后返回空串
-    passed = passed & check(net_set_recv_timeout(client, 300) == 0, "net_set_recv_timeout");
-    passed = passed & check(net_recv(client, 10) == "", "net_recv timeout returns empty");
+        // 接收超时：服务器不发数据，客户端 300ms 后返回空串
+        passed = passed & check(net_set_recv_timeout(client, 300) == 0, "net_set_recv_timeout");
+        passed = passed & check(net_recv(client, 10) == "", "net_recv timeout returns empty");
 
-    // 读到关闭：服务器发送后关闭，客户端读到全部
-    net_send_all(peer, "bye");
-    net_close(peer);
-    passed = passed & check(net_recv_until_close(client) == "bye", "net_recv_until_close");
-    net_close(client);
+        // 读到关闭：服务器发送后关闭，客户端读到全部
+        net_send_all(peer, "bye");
+        net_close(peer);
+        passed = passed & check(net_recv_until_close(client) == "bye", "net_recv_until_close");
+        net_close(client);
+    }
     net_close(server);
 
     // 已关闭端口：connect_timeout 立即失败
