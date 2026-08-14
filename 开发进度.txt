@@ -845,9 +845,19 @@ Sw 编译器（swcc）开发进度
                          注册进 run-examples.py
                        - 验证：cargo test 51 全绿、probe-map-clear 通过
 
+    2026-08-15 03:50  标准库扩充：新增 std/hash 模块（FNV-1a / DJB2）：
+                       - fnv1a_64(text)：64 位 FNV-1a
+                       - fnv1a_64_seed(text, seed)：带自定义种子
+                       - djb2(text)：DJB2 字符串哈希
+                       - runtime.c 加 fnv1a_64/fnv1a_64_seed/djb2，plain 链接
+                       - 新增 examples/probe-hash.sw（7 项断言：确定性/种子/大小写/空串）
+                         注册进 run-examples.py
+                       - 验证：cargo test 51 全绿、probe-hash 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
-       2. 标准库继续扩充（io 6 个函数、regex/hash 新模块）
+       2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
+          或 regex 模块
 
 二、已知限制
 

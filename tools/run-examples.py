@@ -33,6 +33,7 @@ EXPECTED = {
     "probe-exceptions.sw": 42,
     "probe-format.sw": 0,
     "probe-gc.sw": 0,
+    "probe-hash.sw": 0,
     "probe-bound-inherit.sw": 0,
     "probe-bound-reverse.sw": 0,
     "probe-generic.sw": 0,

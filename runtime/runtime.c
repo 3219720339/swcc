@@ -4860,6 +4860,44 @@ int64_t sw_utf8_is_valid(sw_string* text) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// std/hash：字符串哈希（FNV-1a 64 位 / DJB2）
+// ---------------------------------------------------------------------------
+int64_t fnv1a_64(sw_string* text) {
+    uint64_t hash = 14695981039346656037ULL;
+    if (text == NULL) {
+        return (int64_t)hash;
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        hash ^= (unsigned char)text->data[i];
+        hash *= 1099511628211ULL;
+    }
+    return (int64_t)hash;
+}
+
+int64_t fnv1a_64_seed(sw_string* text, uint64_t seed) {
+    uint64_t hash = seed;
+    if (text == NULL) {
+        return (int64_t)hash;
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        hash ^= (unsigned char)text->data[i];
+        hash *= 1099511628211ULL;
+    }
+    return (int64_t)hash;
+}
+
+int64_t djb2(sw_string* text) {
+    uint64_t hash = 5381;
+    if (text == NULL) {
+        return (int64_t)hash;
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        hash = ((hash << 5) + hash) + (unsigned char)text->data[i];
+    }
+    return (int64_t)hash;
+}
+
 sw_string* sw_truncate(sw_string* text, int64_t max_chars) {
     if (text == NULL || max_chars <= 0) {
         return sw_string_from_literal("", 0);
