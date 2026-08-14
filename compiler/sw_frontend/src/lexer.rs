@@ -773,6 +773,7 @@ impl<'a> Lexer<'a> {
     fn lex_template_text(&mut self) -> Token {
         let start = self.pos;
         let mut text = String::new();
+        let mut raw_bytes = Vec::new();
         loop {
             let Some(character) = self.peek_char() else {
                 self.error("模板字符串未闭合", Span::new(start, self.pos));
@@ -797,9 +798,33 @@ impl<'a> Lexer<'a> {
                 });
                 break;
             }
-            text.push(character);
-            self.bump();
+            if character == '\\' {
+                // 与普通字符串同一套转义规则（\n \t \u{...} \xNN ...）。
+                let escape_start = self.pos;
+                self.bump();
+                match self.parse_escape() {
+                    Ok(EscapeValue::Char(escaped)) => {
+                        if self.flush_raw_bytes(&mut raw_bytes, &mut text, start) {
+                            break;
+                        }
+                        text.push(escaped);
+                    }
+                    Ok(EscapeValue::Bytes(byte)) => {
+                        raw_bytes.push(byte);
+                    }
+                    Err(message) => {
+                        self.error(message, Span::new(escape_start, self.pos));
+                    }
+                }
+            } else {
+                if self.flush_raw_bytes(&mut raw_bytes, &mut text, start) {
+                    break;
+                }
+                text.push(character);
+                self.bump();
+            }
         }
+        let _ = self.flush_raw_bytes(&mut raw_bytes, &mut text, start);
         Token {
             kind: TokenKind::TemplateText(text),
             span: Span::new(start, self.pos),

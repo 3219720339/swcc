@@ -38,6 +38,7 @@ EXPECTED = {
     "probe-string.sw": 0,
     "probe-struct.sw": 0,
     "probe-template.sw": 0,
+    "probe-template-escape.sw": 0,
     "probe-ternary.sw": 43,
 }
 

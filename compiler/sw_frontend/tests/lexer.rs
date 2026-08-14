@@ -127,6 +127,73 @@ fn lexes_template_parts_with_interpolation() {
 }
 
 #[test]
+fn lexes_template_escapes_like_strings() {
+    // `a\nb\t\u{4E2D}\xE4\xB8\xAD\`c\\d`
+    let source = Source::new(
+        PathBuf::from("test.sw"),
+        "`a\\nb\\t\\u{4E2D}\\xE4\\xB8\\xAD\\`c\\\\d`".to_owned(),
+    );
+    let mut diagnostics = Diagnostics::new();
+    let mut lexer = Lexer::new(&source, &mut diagnostics);
+    let mut kinds = Vec::new();
+    loop {
+        let token = lexer.next_token();
+        match token.kind {
+            TokenKind::Eof => break,
+            kind => kinds.push(kind),
+        }
+    }
+    assert!(!diagnostics.has_errors(), "{:?}", diagnostics.items);
+    assert_eq!(
+        kinds,
+        vec![
+            TokenKind::TemplateStart,
+            TokenKind::TemplateText("a\nb\t中中`c\\d".to_owned()),
+            TokenKind::TemplateEnd,
+        ]
+    );
+}
+
+#[test]
+fn lexes_template_escapes_around_interpolation() {
+    // `a\nb${x}c\td`
+    let source = Source::new(PathBuf::from("test.sw"), "`a\\nb${x}c\\td`".to_owned());
+    let mut diagnostics = Diagnostics::new();
+    let mut lexer = Lexer::new(&source, &mut diagnostics);
+    let mut kinds = Vec::new();
+    loop {
+        let token = lexer.next_token();
+        match token.kind {
+            TokenKind::Eof => break,
+            TokenKind::RBrace => {
+                kinds.push(TokenKind::RBrace);
+                lexer.resume_template();
+            }
+            kind => kinds.push(kind),
+        }
+    }
+    assert!(!diagnostics.has_errors(), "{:?}", diagnostics.items);
+    assert_eq!(
+        kinds,
+        vec![
+            TokenKind::TemplateStart,
+            TokenKind::TemplateText("a\nb".to_owned()),
+            TokenKind::TemplateExprStart,
+            TokenKind::Ident("x".to_owned()),
+            TokenKind::RBrace,
+            TokenKind::TemplateText("c\td".to_owned()),
+            TokenKind::TemplateEnd,
+        ]
+    );
+}
+
+#[test]
+fn reports_unsupported_escape_in_template() {
+    let (_, diagnostics) = lex("`a\\qb`");
+    assert!(diagnostics.has_errors());
+}
+
+#[test]
 fn reports_unterminated_string() {
     let (_, diagnostics) = lex(r#""未闭合"#);
     assert!(diagnostics.has_errors());
