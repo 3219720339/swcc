@@ -15,6 +15,7 @@ EXPECTED = {
     "lambda-probe.sw": 42,
     "probe-argv.sw": 0,
     "probe-array.sw": 10,
+    "probe-chmod.sw": 0,
     "probe-closure.sw": 42,
     "probe-closure2.sw": 77,
     "probe-dir.sw": 0,

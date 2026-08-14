@@ -291,6 +291,15 @@ Sw 编译器（swcc）开发进度
                          编译通过；musl x86_64/aarch64 端到端链接通过，
                          nm 确认 libc chmod/chdir/setenv/stat/sin/log2 未被遮蔽
 
+    2026-08-14 20:40  测试整理：临时探针归入 examples（按约定，后续测试文件统一放 examples/）：
+                       - 新增 examples/probe-chmod.sw：chmod 0o644/0o400（只读）/
+                         0o777（恢复可写）/touch/remove/exists 跨平台断言，
+                         注册进 tools/run-examples.py（退出码 0）
+                       - 清理确认过的测试产物：build-check/、dir-demo/、walk-test/
+                       - 验证：Windows 本机通过且无残留；probe-chmod 与 probe-stdlib
+                         musl x86_64/aarch64 交叉链接通过，nm 确认 sw_chmod/sw_remove/
+                         sw_touch 无遮蔽
+
     待办（下一批，按推荐优先级）：
        1. 网络：TCP 连接/收发基础
        2. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、
