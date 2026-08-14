@@ -704,6 +704,19 @@ fn visit_expr(
         MirExpr::EnumTag { object } | MirExpr::EnumField { object, .. } => {
             visit_expr(object, generator, mir, exports, ctx, refs)?;
         }
+        MirExpr::TryPropagate { object, .. } => {
+            let object_new = generator.declare_import(
+                "sw_object_new",
+                &object_new_signature(generator.module.isa()),
+            )?;
+            refs.func_refs.insert(
+                "sw_object_new".to_owned(),
+                generator
+                    .module
+                    .declare_func_in_func(object_new, &mut ctx.func),
+            );
+            visit_expr(object, generator, mir, exports, ctx, refs)?;
+        }
         _ => {}
     }
     Ok(())
@@ -2404,6 +2417,57 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     self.builder
                         .ins()
                         .load(types::I64, MemFlagsData::new(), object, offset)
+                }
+            }
+            MirExpr::TryPropagate {
+                object,
+                err_tag,
+                ret_err_tag,
+                elem,
+            } => {
+                let value = self.expr(object)?;
+                let tag = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), value, 0);
+                let err_tag_value = self.builder.ins().iconst(types::I64, *err_tag);
+                let is_err = self.builder.ins().icmp(IntCC::Equal, tag, err_tag_value);
+                let err_block = self.builder.create_block();
+                let ok_block = self.builder.create_block();
+                self.builder
+                    .ins()
+                    .brif(is_err, err_block, &[], ok_block, &[]);
+                self.builder.switch_to_block(err_block);
+                let err_field = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), value, 8);
+                let size_value = self.builder.ins().iconst(types::I64, 16);
+                let err_obj = self.call_import(
+                    "sw_object_new",
+                    object_new_signature(self.module.isa()),
+                    &[size_value],
+                )?;
+                let ret_tag = self.builder.ins().iconst(types::I64, *ret_err_tag);
+                self.builder
+                    .ins()
+                    .store(MemFlagsData::new(), ret_tag, err_obj, 0);
+                self.builder
+                    .ins()
+                    .store(MemFlagsData::new(), err_field, err_obj, 8);
+                self.builder.ins().return_(&[err_obj]);
+                self.builder.switch_to_block(ok_block);
+                self.builder.seal_block(ok_block);
+                let ok_field = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), value, 8);
+                if elem.is_float() {
+                    self.builder
+                        .ins()
+                        .bitcast(types::F64, MemFlagsData::new(), ok_field)
+                } else {
+                    ok_field
                 }
             }
         })

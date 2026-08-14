@@ -610,6 +610,22 @@ Sw 编译器（swcc）开发进度
                          float 单字段、双字段、无字段变体），45 个 examples
                          全过；cargo test 51 全绿
 
+    2026-08-15 01:21  Result + `?` 运算符（第一档特性 C，Rust 风格错误处理）：
+                       - 标准库 std/result.sw：`enum Result<T, E> { Ok(T), Err(E) }`
+                       - 语法：后缀 `expr?`（parser 仅在 `?` 后是表达式边界时
+                         识别为 TryOp，避免与三元 `cond ? a : b` 冲突——修复
+                         模板插值里三元表达式被误解析的副作用）
+                       - 检查：`?` 目标必须含 Ok/Err 单字段变体；所在函数必须
+                         返回 Result，且 Err 字段类型兼容；结果为 Ok payload 类型；
+                         return/带注解声明的 Result 构造经 enum_targets 目标
+                         类型传播实例化（此前 return 会推断出错误类型实参）
+                       - 降级：MirExpr::TryPropagate——codegen 读 tag，Err 时
+                         sw_object_new 构造函数 Result 的 Err 并 return，Ok 时
+                         取出 payload（float 按位模式）
+                       - 新增 examples/probe-result.sw（2 项断言：Ok payload、
+                         Err 传播，含 match 消费），46 个 examples 全过；
+                         cargo test 51 全绿
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 

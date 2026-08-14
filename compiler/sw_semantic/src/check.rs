@@ -1775,6 +1775,26 @@ impl<'s> Checker<'s> {
         resolver.lower(ty, &self.generics)
     }
 
+    /// Result 枚举识别：返回 (Ok 变体索引, Ok payload 类型, Err payload 类型)。
+    fn result_variants(&self, enum_id: u32) -> Option<(usize, Type, Type)> {
+        let info = self.types.enums.get(enum_id as usize)?;
+        let ok = info
+            .members
+            .iter()
+            .position(|m| m.name == "Ok")
+            .filter(|&i| info.members[i].fields.len() == 1)?;
+        let err = info
+            .members
+            .iter()
+            .position(|m| m.name == "Err")
+            .filter(|&i| info.members[i].fields.len() == 1)?;
+        Some((
+            ok,
+            info.members[ok].fields[0].clone(),
+            info.members[err].fields[0].clone(),
+        ))
+    }
+
     fn is_assignable(&self, from: &Type, to: &Type) -> bool {
         if matches!(from, Type::Error | Type::Unknown) {
             return true;
@@ -2087,6 +2107,22 @@ impl<'s> Checker<'s> {
             }
             StmtKind::Return(expr) => match expr {
                 Some(expr) => {
+                    // return 的目标类型传播：Result 枚举构造按函数返回类型实例化。
+                    if let Type::Enum(ret_enum) = self.ret.without_nullable() {
+                        let is_enum_ctor = match &expr.kind {
+                            ExprKind::Call { callee, .. } => {
+                                matches!(callee.kind, ExprKind::Member { .. })
+                            }
+                            ExprKind::Member { .. } => true,
+                            _ => false,
+                        };
+                        if is_enum_ctor {
+                            self.state
+                                .result
+                                .enum_targets
+                                .insert(expr.span.start, *ret_enum);
+                        }
+                    }
                     let ty = self.check_expr(expr);
                     self.saw_return_value = true;
                     if self.ret == Type::Unknown {
@@ -2408,6 +2444,40 @@ impl<'s> Checker<'s> {
                     self.error("`++`/`--` 需要可赋值的数值目标", inner.span);
                 }
                 ty
+            }
+            ExprKind::TryOp(inner) => {
+                let inner_ty = self.check_expr(inner);
+                let Type::Enum(enum_id) = inner_ty.without_nullable() else {
+                    self.error("`?` 只能用于 Result 枚举（含 Ok/Err 变体）", expr.span);
+                    return Type::Error;
+                };
+                let Some((_, ok_ty, err_ty)) = self.result_variants(*enum_id) else {
+                    self.error("`?` 目标必须是含 Ok/Err 变体的 Result 枚举", expr.span);
+                    return Type::Error;
+                };
+                match self.ret.without_nullable() {
+                    Type::Enum(ret_id) => {
+                        let Some((_, _, ret_err_ty)) = self.result_variants(*ret_id) else {
+                            self.error("`?` 所在函数必须返回 Result 类型", expr.span);
+                            return Type::Error;
+                        };
+                        if !self.is_assignable(&err_ty, &ret_err_ty) {
+                            self.error(
+                                format!(
+                                    "`?` 的错误类型 {} 与函数返回的 Err 类型 {} 不兼容",
+                                    err_ty.display(),
+                                    ret_err_ty.display()
+                                ),
+                                expr.span,
+                            );
+                        }
+                    }
+                    _ => {
+                        self.error("`?` 所在函数必须返回 Result 类型", expr.span);
+                        return Type::Error;
+                    }
+                }
+                ok_ty
             }
             ExprKind::Array(items) => {
                 let mut element = None;
@@ -5555,6 +5625,46 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 self.error("`++`/`--` 需要可赋值的数值目标", inner.span);
                 MirExpr::Int(0)
             }
+            ExprKind::TryOp(inner) => {
+                let inner_ty = self.expr_type(inner);
+                let Type::Enum(enum_id) = inner_ty.without_nullable() else {
+                    return MirExpr::Int(0);
+                };
+                let info = self.lowerer.types.enums[*enum_id as usize].clone();
+                let (ok_idx, _, err_idx, _) = match (
+                    info.members
+                        .iter()
+                        .position(|m| m.name == "Ok" && m.fields.len() == 1),
+                    info.members
+                        .iter()
+                        .position(|m| m.name == "Err" && m.fields.len() == 1),
+                ) {
+                    (Some(ok), Some(err)) => (
+                        ok,
+                        info.members[ok].fields[0].clone(),
+                        err,
+                        info.members[err].fields[0].clone(),
+                    ),
+                    _ => return MirExpr::Int(0),
+                };
+                let ret_enum = match self.ret.without_nullable() {
+                    Type::Enum(ret_id) => *ret_id,
+                    _ => *enum_id,
+                };
+                let ret_info = self.lowerer.types.enums[ret_enum as usize].clone();
+                let ret_err_tag = ret_info
+                    .members
+                    .iter()
+                    .find(|m| m.name == "Err")
+                    .map(|m| m.discriminant)
+                    .unwrap_or(0);
+                MirExpr::TryPropagate {
+                    object: Box::new(self.lower_expr(inner)),
+                    err_tag: info.members[err_idx].discriminant,
+                    ret_err_tag,
+                    elem: info.members[ok_idx].fields[0].clone(),
+                }
+            }
             ExprKind::Array(items) => {
                 let elem = self
                     .lowerer
@@ -5867,6 +5977,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 for item in items {
                     self.collect_captures_expr(item, lambda_params, out, seen);
                 }
+            }
+            ExprKind::TryOp(inner) => {
+                self.collect_captures_expr(inner, lambda_params, out, seen);
             }
             ExprKind::Object(fields) => {
                 for field in fields {

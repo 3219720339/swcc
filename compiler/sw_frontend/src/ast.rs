@@ -410,6 +410,8 @@ pub enum ExprKind {
         expr: Box<Expr>,
         op: PostfixOp,
     },
+    /// `expr?`：Result 错误传播（Rust 风格）。
+    TryOp(Box<Expr>),
     Array(Vec<Expr>),
     Object(Vec<ObjectField>),
     New {

@@ -206,6 +206,13 @@ pub enum MirExpr {
         /// 字段类型（浮点字段按 f64 位模式存取）。
         elem: Type,
     },
+    /// `expr?` 错误传播：Err 时构造并返回函数 Result 的 Err，Ok 时取出 payload。
+    TryPropagate {
+        object: Box<MirExpr>,
+        err_tag: i64,
+        ret_err_tag: i64,
+        elem: Type,
+    },
 }
 
 #[derive(Clone, Debug)]

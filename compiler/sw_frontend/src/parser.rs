@@ -1631,6 +1631,28 @@ impl<'a> Parser<'a> {
                         span: Span::new(start, self.peek().span.start),
                     };
                 }
+                TokenKind::Question => {
+                    // `expr?`：Result 错误传播（Rust 风格）。
+                    // 三元 `cond ? a : b` 的 `?` 后是表达式，不能当 TryOp。
+                    let is_try_operator = matches!(
+                        &self.peek_n(2).kind,
+                        TokenKind::Semicolon
+                            | TokenKind::RParen
+                            | TokenKind::Comma
+                            | TokenKind::RBrace
+                            | TokenKind::RBracket
+                            | TokenKind::Eof
+                    );
+                    if is_try_operator {
+                        self.advance();
+                        expr = Expr {
+                            kind: ExprKind::TryOp(Box::new(expr)),
+                            span: Span::new(start, self.peek().span.start),
+                        };
+                    } else {
+                        break;
+                    }
+                }
                 TokenKind::Ident(name) if name == "as" => {
                     self.advance();
                     let ty = self.parse_type()?;
