@@ -143,3 +143,21 @@ export extern c function truncate(text: string, max_chars: int): string;
 
 /// 截断并追加 "..."（最多 max_chars 个字符）；不足则原样返回。
 export extern c function ellipsis(text: string, max_chars: int): string;
+
+/// 去掉前缀；不以该前缀开头则原样返回。
+export extern c function remove_prefix(text: string, prefix: string): string;
+
+/// 去掉后缀；不以该后缀结尾则原样返回。
+export extern c function remove_suffix(text: string, suffix: string): string;
+
+/// 是否全部为大写字母（非字母字符忽略）。
+export extern c function is_upper(text: string): bool;
+
+/// 是否全部为小写字母（非字母字符忽略）。
+export extern c function is_lower(text: string): bool;
+
+/// 是否全部为数字。
+export extern c function is_digit(text: string): bool;
+
+/// 首字母大写，其余不变。
+export extern c function capitalize(text: string): string;

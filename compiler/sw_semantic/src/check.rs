@@ -25,6 +25,22 @@ pub fn analyze(entry: &Path, stdlib_dir: Option<&Path>) -> AnalysisResult {
     if analyzer.load_module(&entry_path, true).is_err() {
         // 加载失败的诊断已记录。
     }
+    // 两阶段：先加载/绑定所有模块（含循环 import），再统一 finalize/检查/降级，
+    // 保证循环依赖下被引用模块的符号签名已完整。
+    // 逆序 finalize：被依赖模块（import 链上的 std/用户库）后加载，
+    // 先完成其类型解析，再 finalize 使用者；循环依赖下 finalize 只解析
+    // 本模块声明，不依赖对方的 finalize 状态，因此安全。
+    let module_ids: Vec<ModuleId> = analyzer.states.iter().map(|state| state.id).collect();
+    for id in module_ids.iter().rev() {
+        if analyzer.finalize(*id).is_err() {
+            break;
+        }
+    }
+    for id in module_ids {
+        analyzer.check_globals(id);
+        analyzer.check_all_functions(id);
+        analyzer.lower_mir(id);
+    }
     let modules = analyzer
         .states
         .iter()
@@ -258,11 +274,7 @@ impl Analyzer {
 
         self.predeclare(id)?;
         self.resolve_imports(id)?;
-        self.finalize(id)?;
         self.module_names.insert(id, self.state(id).names.clone());
-        self.check_globals(id);
-        self.check_all_functions(id);
-        self.lower_mir(id);
 
         self.loading.remove(path);
         let _ = is_entry;
@@ -3967,6 +3979,9 @@ fn string_method(method: &str) -> Option<(String, Vec<Type>, Type)> {
             vec![Type::Int, Type::Str],
             Type::Str,
         ),
+        "remove_prefix" | "remove_suffix" => (method.to_owned(), vec![Type::Str], Type::Str),
+        "is_upper" | "is_lower" | "is_digit" => (method.to_owned(), vec![], Type::Bool),
+        "capitalize" => ("capitalize".to_owned(), vec![], Type::Str),
         _ => return None,
     })
 }
@@ -4294,6 +4309,16 @@ impl<'m, 's> MirLowerer<'m, 's> {
                 ty: Type::Int,
                 mutable: true,
             },
+            MirLocal {
+                name: "$frame".to_owned(),
+                ty: Type::Ptr(Box::new(Type::I8)),
+                mutable: true,
+            },
+            MirLocal {
+                name: "$exc".to_owned(),
+                ty: Type::Ptr(Box::new(Type::I8)),
+                mutable: false,
+            },
         ];
         let mut body = vec![MirStmt::new(MirStmtKind::VarDecl {
             local: 0,
@@ -4301,6 +4326,36 @@ impl<'m, 's> MirLowerer<'m, 's> {
         })];
         let ok_prefix = self.intern_string("[ok] ");
         let fail_prefix = self.intern_string("[FAIL] ");
+        let println_sig = || FunctionSig {
+            module: ModuleId(0),
+            name: "println".to_owned(),
+            generics: Vec::new(),
+            bounds: HashMap::new(),
+            params: vec![ParamSig {
+                name: "text".to_owned(),
+                ty: Type::Str,
+                has_default: false,
+                rest: false,
+            }],
+            ret: Type::Void,
+            extern_c: true,
+            span: Span::empty(0),
+        };
+        let setjmp_sig = || FunctionSig {
+            module: ModuleId(0),
+            name: "sw_setjmp".to_owned(),
+            generics: Vec::new(),
+            bounds: HashMap::new(),
+            params: vec![ParamSig {
+                name: "buf".to_owned(),
+                ty: Type::Ptr(Box::new(Type::I8)),
+                has_default: false,
+                rest: false,
+            }],
+            ret: Type::Int,
+            extern_c: true,
+            span: Span::empty(0),
+        };
         for (name, sig) in test_fns {
             let ret_void = sig.ret == Type::Void || sig.ret == Type::Unknown;
             let call = MirExpr::Call {
@@ -4311,33 +4366,11 @@ impl<'m, 's> MirLowerer<'m, 's> {
                 },
                 args: vec![],
             };
-            if ret_void {
-                body.push(MirStmt::new(MirStmtKind::Expr(call)));
-            } else {
-                body.push(MirStmt::new(MirStmtKind::VarDecl {
-                    local: 1,
-                    init: Some(call),
-                }));
-            }
             let name_str = self.intern_string(&sig.name);
             let ok_print = MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
                 callee: MirCallee::Extern {
                     name: "println".to_owned(),
-                    sig: FunctionSig {
-                        module: ModuleId(0),
-                        name: "println".to_owned(),
-                        generics: Vec::new(),
-                        bounds: HashMap::new(),
-                        params: vec![ParamSig {
-                            name: "text".to_owned(),
-                            ty: Type::Str,
-                            has_default: false,
-                            rest: false,
-                        }],
-                        ret: Type::Void,
-                        extern_c: true,
-                        span: Span::empty(0),
-                    },
+                    sig: println_sig(),
                 },
                 args: vec![MirExpr::Call {
                     callee: MirCallee::Intrinsic {
@@ -4357,21 +4390,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
             let fail_print = MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
                 callee: MirCallee::Extern {
                     name: "println".to_owned(),
-                    sig: FunctionSig {
-                        module: ModuleId(0),
-                        name: "println".to_owned(),
-                        generics: Vec::new(),
-                        bounds: HashMap::new(),
-                        params: vec![ParamSig {
-                            name: "text".to_owned(),
-                            ty: Type::Str,
-                            has_default: false,
-                            rest: false,
-                        }],
-                        ret: Type::Void,
-                        extern_c: true,
-                        span: Span::empty(0),
-                    },
+                    sig: println_sig(),
                 },
                 args: vec![MirExpr::Call {
                     callee: MirCallee::Intrinsic {
@@ -4389,10 +4408,72 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     right: Box::new(MirExpr::Int(0)),
                 }
             };
-            body.push(MirStmt::new(MirStmtKind::If {
+            // 正常路径：调用测试 + 按返回码判断 + 弹出异常框架。
+            let mut else_stmts = Vec::new();
+            if ret_void {
+                else_stmts.push(MirStmt::new(MirStmtKind::Expr(call)));
+            } else {
+                else_stmts.push(MirStmt::new(MirStmtKind::VarDecl {
+                    local: 1,
+                    init: Some(call),
+                }));
+            }
+            else_stmts.push(MirStmt::new(MirStmtKind::If {
                 cond,
-                then: vec![fail_inc, fail_print],
+                then: vec![fail_inc.clone(), fail_print.clone()],
                 else_: vec![ok_print],
+            }));
+            let frame = MirExpr::Local(2);
+            else_stmts.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                callee: MirCallee::Intrinsic {
+                    name: "sw_try_leave".to_owned(),
+                },
+                args: vec![frame.clone()],
+            })));
+            // 异常路径：断言抛出的异常记为失败。
+            let then_stmts = vec![
+                MirStmt::new(MirStmtKind::VarDecl {
+                    local: 3,
+                    init: Some(MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "sw_try_value".to_owned(),
+                        },
+                        args: vec![frame.clone()],
+                    }),
+                }),
+                MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "sw_try_leave".to_owned(),
+                    },
+                    args: vec![frame.clone()],
+                })),
+                fail_inc,
+                fail_print,
+            ];
+            // frame = sw_try_begin()，再用 setjmp 分派正常/异常路径。
+            body.push(MirStmt::new(MirStmtKind::VarDecl {
+                local: 2,
+                init: Some(MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "sw_try_begin".to_owned(),
+                    },
+                    args: vec![],
+                }),
+            }));
+            body.push(MirStmt::new(MirStmtKind::If {
+                cond: MirExpr::Binary {
+                    op: MirBinary::Ne,
+                    left: Box::new(MirExpr::Call {
+                        callee: MirCallee::Extern {
+                            name: "sw_setjmp".to_owned(),
+                            sig: setjmp_sig(),
+                        },
+                        args: vec![frame],
+                    }),
+                    right: Box::new(MirExpr::Int(0)),
+                },
+                then: then_stmts,
+                else_: else_stmts,
             }));
         }
         body.push(MirStmt::new(MirStmtKind::Return(Some(MirExpr::Local(0)))));

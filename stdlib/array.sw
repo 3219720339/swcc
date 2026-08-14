@@ -52,3 +52,21 @@ export extern c function sum_float(items: float[]): float;
 
 /// 去重 string[]，返回新数组（保持首次出现顺序）。
 export extern c function unique_string(items: string[]): string[];
+
+/// int[] 是否包含指定值。
+export extern c function contains_int(items: int[], value: int): bool;
+
+/// float[] 是否包含指定值。
+export extern c function contains_float(items: float[], value: float): bool;
+
+/// string[] 是否包含指定值（按内容）。
+export extern c function contains_string(items: string[], value: string): bool;
+
+/// int[] 中首次出现的位置；不存在返回 -1。
+export extern c function index_of_int(items: int[], value: int): int;
+
+/// float[] 中首次出现的位置；不存在返回 -1。
+export extern c function index_of_float(items: float[], value: float): int;
+
+/// string[] 中首次出现的位置；不存在返回 -1。
+export extern c function index_of_string(items: string[], value: string): int;

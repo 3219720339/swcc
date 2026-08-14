@@ -671,6 +671,28 @@ Sw 编译器（swcc）开发进度
                          具体/泛型类实现泛型接口、约束调用、vtable get/set），
                          49 个 examples 全过；cargo test 51 全绿
 
+    2026-08-15 01:44  @test 断言库 + 标准库扩充 + 循环 import 支持：
+                       - std/test.sw：assert(cond[, msg])（重载）、
+                         expect_eq（int/float/string/bool/char 重载）、
+                         expect_true/expect_false/fail；失败抛异常
+                       - 测试 runner 加 try/catch（sw_setjmp/sw_try_begin/
+                         sw_try_value/sw_try_leave 每测试一个异常框架）：
+                         断言抛出的异常被捕获并记为 [FAIL]，不再崩溃整个进程
+                       - 标准库扩充：std/string +6（remove_prefix/remove_suffix/
+                         is_upper/is_lower/is_digit/capitalize，全部注册链式
+                         方法）；std/array +6（contains_int/float/string、
+                         index_of_int/float/string）
+                       - 修复循环 import：模块加载/绑定与 finalize/检查/降级
+                         拆成两阶段（先全量加载绑定，再逆序 finalize——被依赖
+                         模块后加载先解析类型——最后统一检查降级）；此前循环
+                         依赖下被引用函数签名停留在占位导致调用解析失败
+                       - 双向调用演示：examples/lib-a.sw ↔ lib-b.sw
+                         （循环 import 互调）+ probe-circular.sw（a 调 b、
+                         b 调 a、跨文件函数）
+                       - 新增 probe-stdlib4.sw（17 项断言）、probe-test.sw
+                         改用断言库（3 测试）、tmp-test-assert-fail.sw 验证
+                         断言失败路径；51 个 examples 全过；cargo test 51 全绿
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 

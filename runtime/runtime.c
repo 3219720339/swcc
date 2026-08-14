@@ -5626,3 +5626,176 @@ int64_t sw_net_port(int64_t fd) {
     unsigned short net_port = *(unsigned short*)(name + 2);
     return ((net_port & 0xFF) << 8) | (net_port >> 8);
 }
+
+// ---------------------------------------------------------------------------
+// 标准库扩充：字符串工具（remove_prefix/remove_suffix/大小写判定/capitalize）
+// ---------------------------------------------------------------------------
+
+sw_string* remove_prefix(sw_string* text, sw_string* prefix) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    if (prefix == NULL || prefix->len == 0 || text->len < prefix->len) {
+        return sw_string_from_literal(text->data, text->len);
+    }
+    if (memcmp(text->data, prefix->data, (uint64_t)prefix->len) == 0) {
+        return sw_string_from_literal(text->data + prefix->len, text->len - prefix->len);
+    }
+    return sw_string_from_literal(text->data, text->len);
+}
+
+sw_string* remove_suffix(sw_string* text, sw_string* suffix) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    if (suffix == NULL || suffix->len == 0 || text->len < suffix->len) {
+        return sw_string_from_literal(text->data, text->len);
+    }
+    int64_t offset = text->len - suffix->len;
+    if (memcmp(text->data + offset, suffix->data, (uint64_t)suffix->len) == 0) {
+        return sw_string_from_literal(text->data, offset);
+    }
+    return sw_string_from_literal(text->data, text->len);
+}
+
+int64_t is_upper(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return 0;
+    }
+    int has_upper = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char c = (unsigned char)text->data[i];
+        if (c >= 'a' && c <= 'z') {
+            return 0;
+        }
+        if (c >= 'A' && c <= 'Z') {
+            has_upper = 1;
+        }
+    }
+    return has_upper ? 1 : 0;
+}
+
+int64_t is_lower(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return 0;
+    }
+    int has_lower = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char c = (unsigned char)text->data[i];
+        if (c >= 'A' && c <= 'Z') {
+            return 0;
+        }
+        if (c >= 'a' && c <= 'z') {
+            has_lower = 1;
+        }
+    }
+    return has_lower ? 1 : 0;
+}
+
+int64_t is_digit(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return 0;
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char c = (unsigned char)text->data[i];
+        if (c < '0' || c > '9') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+sw_string* capitalize(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    memcpy(buffer, text->data, (uint64_t)text->len);
+    buffer[text->len] = 0;
+    if (buffer[0] >= 'a' && buffer[0] <= 'z') {
+        buffer[0] = buffer[0] - 'a' + 'A';
+    }
+    return sw_string_from_literal(buffer, text->len);
+}
+
+// ---------------------------------------------------------------------------
+// 标准库扩充：数组 contains / index_of
+// ---------------------------------------------------------------------------
+
+int64_t contains_int(sw_array* items, int64_t value) {
+    if (items == NULL) {
+        return 0;
+    }
+    int64_t* data = (int64_t*)items->data;
+    for (int64_t i = 0; i < items->len; i++) {
+        if (data[i] == value) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int64_t contains_float(sw_array* items, double value) {
+    if (items == NULL) {
+        return 0;
+    }
+    double* data = (double*)items->data;
+    for (int64_t i = 0; i < items->len; i++) {
+        if (data[i] == value) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int64_t contains_string(sw_array* items, sw_string* value) {
+    if (items == NULL || value == NULL) {
+        return 0;
+    }
+    sw_string** data = (sw_string**)items->data;
+    for (int64_t i = 0; i < items->len; i++) {
+        if (string_eq(data[i], value)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int64_t index_of_int(sw_array* items, int64_t value) {
+    if (items == NULL) {
+        return -1;
+    }
+    int64_t* data = (int64_t*)items->data;
+    for (int64_t i = 0; i < items->len; i++) {
+        if (data[i] == value) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int64_t index_of_float(sw_array* items, double value) {
+    if (items == NULL) {
+        return -1;
+    }
+    double* data = (double*)items->data;
+    for (int64_t i = 0; i < items->len; i++) {
+        if (data[i] == value) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int64_t index_of_string(sw_array* items, sw_string* value) {
+    if (items == NULL || value == NULL) {
+        return -1;
+    }
+    sw_string** data = (sw_string**)items->data;
+    for (int64_t i = 0; i < items->len; i++) {
+        if (string_eq(data[i], value)) {
+            return i;
+        }
+    }
+    return -1;
+}
