@@ -4542,6 +4542,34 @@ fn string_method(method: &str) -> Option<(String, Vec<Type>, Type)> {
             (method.to_owned(), vec![Type::Str], Type::Str)
         }
         "char_code" => ("char_code".to_owned(), vec![Type::Int], Type::Int),
+        // 中文别名（火山风格，转发到英文实现）。
+        "是否空白" => ("is_blank".to_owned(), vec![], Type::Bool),
+        "删全部空白" => ("strip_whitespace".to_owned(), vec![], Type::Str),
+        "取文本中间" | "取文本中间反向" => (
+            if method == "取文本中间" {
+                "substring_between"
+            } else {
+                "substring_between_last"
+            }
+            .to_owned(),
+            vec![Type::Str, Type::Str],
+            Type::Str,
+        ),
+        "取文本左边" => ("before".to_owned(), vec![Type::Str], Type::Str),
+        "取文本右边" => ("after".to_owned(), vec![Type::Str], Type::Str),
+        "取文本左边反向" => ("before_last".to_owned(), vec![Type::Str], Type::Str),
+        "取文本右边反向" => ("after_last".to_owned(), vec![Type::Str], Type::Str),
+        "取字符代码" => ("char_code".to_owned(), vec![Type::Int], Type::Int),
+        "转大写" => ("to_upper".to_owned(), vec![], Type::Str),
+        "转小写" => ("to_lower".to_owned(), vec![], Type::Str),
+        "首字母大写" => ("capitalize".to_owned(), vec![], Type::Str),
+        "反转文本" => ("reverse".to_owned(), vec![], Type::Str),
+        "替换文本" => ("replace".to_owned(), vec![Type::Str, Type::Str], Type::Str),
+        "删除前缀" => ("remove_prefix".to_owned(), vec![Type::Str], Type::Str),
+        "删除后缀" => ("remove_suffix".to_owned(), vec![Type::Str], Type::Str),
+        "是否包含" => ("contains".to_owned(), vec![Type::Str], Type::Bool),
+        "开头为" => ("starts_with".to_owned(), vec![Type::Str], Type::Bool),
+        "结尾为" => ("ends_with".to_owned(), vec![Type::Str], Type::Bool),
         _ => return None,
     })
 }

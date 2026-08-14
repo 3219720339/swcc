@@ -949,6 +949,7 @@ fn extern_c_symbol(name: &str) -> &str {
         "mkdir_p" => "sw_mkdir_p",
         "disk_free" => "sw_disk_free",
         "disk_total" => "sw_disk_total",
+        "连续子文本替换" => "replace_pairs",
         "is_symlink" => "sw_is_symlink",
         "read_symlink" => "sw_read_symlink",
         "file_mode" => "sw_file_mode",

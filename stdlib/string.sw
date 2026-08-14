@@ -199,3 +199,101 @@ export extern c function char_code(text: string, index: int): int;
 /// 例：replace_pairs("你好，火山", "你好", "Hello", "火山", "火山中文编程")
 ///     → "Hello，火山中文编程"
 export extern c function replace_pairs(text: string, ...pairs: any): string;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名；实际符号仍是英文函数）
+// ---------------------------------------------------------------------------
+
+export function 反转文本(text: string): string {
+    return reverse(text);
+}
+
+export function 替换文本(text: string, from: string, to: string): string {
+    return replace(text, from, to);
+}
+
+export function 分割文本(text: string, separator: string): string[] {
+    return split(text, separator);
+}
+
+export function 是否为空(text: string): bool {
+    return is_empty(text);
+}
+
+export function 是否空白(text: string): bool {
+    return is_blank(text);
+}
+
+export function 删全部空白(text: string): string {
+    return strip_whitespace(text);
+}
+
+export function 取文本中间(text: string, start: string, end: string): string {
+    return substring_between(text, start, end);
+}
+
+export function 取文本中间反向(text: string, start: string, end: string): string {
+    return substring_between_last(text, start, end);
+}
+
+export function 批量取文本中间(text: string, start: string, end: string): string[] {
+    return extract_between(text, start, end);
+}
+
+export function 取文本左边(text: string, marker: string): string {
+    return before(text, marker);
+}
+
+export function 取文本右边(text: string, marker: string): string {
+    return after(text, marker);
+}
+
+export function 取文本左边反向(text: string, marker: string): string {
+    return before_last(text, marker);
+}
+
+export function 取文本右边反向(text: string, marker: string): string {
+    return after_last(text, marker);
+}
+
+export function 取字符代码(text: string, index: int): int {
+    return char_code(text, index);
+}
+
+export extern c function 连续子文本替换(text: string, ...pairs: any): string;
+
+export function 转大写(text: string): string {
+    return to_upper(text);
+}
+
+export function 转小写(text: string): string {
+    return to_lower(text);
+}
+
+export function 首字母大写(text: string): string {
+    return capitalize(text);
+}
+
+export function 出现次数(text: string, needle: string): int {
+    return count(text, needle);
+}
+
+export function 是否包含(text: string, needle: string): bool {
+    return contains(text, needle);
+}
+
+export function 开头为(text: string, prefix: string): bool {
+    return starts_with(text, prefix);
+}
+
+export function 结尾为(text: string, suffix: string): bool {
+    return ends_with(text, suffix);
+}
+
+export function 删除前缀(text: string, prefix: string): string {
+    return remove_prefix(text, prefix);
+}
+
+export function 删除后缀(text: string, suffix: string): string {
+    return remove_suffix(text, suffix);
+}

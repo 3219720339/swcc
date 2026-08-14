@@ -22,6 +22,7 @@ EXPECTED = {
     "probe-circular.sw": 0,
     "probe-closure.sw": 42,
     "probe-closure2.sw": 77,
+    "probe-cn.sw": 0,
     "probe-dir.sw": 0,
     "probe-destructure.sw": 0,
     "probe-exc-2.sw": 1,
