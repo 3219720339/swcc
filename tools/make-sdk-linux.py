@@ -74,7 +74,8 @@ def main():
     # 预编译运行时（x86_64 + aarch64）
     for arch, asm in (("x86_64", "runtime_x64.S"), ("aarch64", "runtime_aarch64.s")):
         target = f"{arch}-unknown-linux-musl"
-        run([clang, "-target", target, "-O2", "-c", os.path.join(ROOT, "runtime", "runtime.c"),
+        run([clang, "-target", target, "-O2", "-ffunction-sections", "-fdata-sections",
+             "-c", os.path.join(ROOT, "runtime", "runtime.c"),
              "-o", os.path.join(sdk, "lib", f"runtime_{arch}.o")])
         run([clang, "-target", target, "-c", os.path.join(ROOT, "runtime", asm),
              "-o", os.path.join(sdk, "lib", f"runtime_asm_{arch}.o")])

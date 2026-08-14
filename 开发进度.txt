@@ -358,6 +358,22 @@ Sw 编译器（swcc）开发进度
                          全过；cargo test 51 全绿；runtime.c 六目标交叉编译通过；
                          musl x86_64/aarch64 端到端链接通过，nm 确认 qsort 等无遮蔽
 
+    2026-08-14 21:55  函数级裁剪（gc-sections）：
+                       - runtime.c 编译加 -ffunction-sections -fdata-sections；
+                         Windows/Linux（lld）链接加 --gc-sections、
+                         macOS（cc/ld64）加 -Wl,-dead_strip；
+                         make-sdk.py / make-sdk.ps1 / make-sdk-linux.py 同步编译标志
+                       - 顺手修哈希缓存缺口：mtime 新鲜时未校验编译参数（本轮只改
+                         编译标志、runtime.c 内容未变，导致对象不重编）；
+                         现在 mtime 新鲜也会比对 sidecar（内容哈希+编译参数），
+                         参数变更同样触发重编
+                       - 效果：fib musl 288→177KB（运行时符号 160→10）；
+                         probe-stdlib3 musl 297→192KB（符号 160→38）；
+                         Windows probe-stdlib3.exe 约 30KB
+                       - 验证：35 个 examples 全过（COFF 裁剪后入口/异常/闭包/
+                         varargs 均正常）、51 测试全绿、六目标带新标志交叉编译通过、
+                         aarch64 musl 链接通过
+
     待办（下一批，按推荐优先级）：
        1. 网络：TCP 连接/收发基础
        2. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、

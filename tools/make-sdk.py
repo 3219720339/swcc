@@ -78,7 +78,18 @@ def main():
     ):
         src = os.path.join(ROOT, "runtime", source)
         dst = os.path.join(sdk, "lib", output)
-        command = [clang, "-target", target, "-O2", "-c", src, "-o", dst]
+        command = [
+            clang,
+            "-target",
+            target,
+            "-O2",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-c",
+            src,
+            "-o",
+            dst,
+        ]
         if source != "runtime.c":
             command = [clang, "-target", target, "-c", src, "-o", dst]
         run(command)

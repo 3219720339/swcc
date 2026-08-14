@@ -279,7 +279,11 @@ fn link_windows(target: &str, objects: &[PathBuf], output: &Path) {
     let lld = sdk.lld.as_path();
     let lib_dir = sdk.mingw_lib.as_path();
     let builtins = sdk.builtins.as_ref().expect("缺少 compiler-rt");
-    let mut args: Vec<std::ffi::OsString> = vec!["-m".into(), pe_emulation(arch_of(target)).into()];
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "-m".into(),
+        pe_emulation(arch_of(target)).into(),
+        "--gc-sections".into(),
+    ];
     for object in objects {
         args.push(object.as_os_str().to_os_string());
     }
@@ -325,6 +329,7 @@ fn link_linux(target: &str, objects: &[PathBuf], output: &Path) {
         "-m".into(),
         elf_emulation(arch_of(target)).into(),
         "-static".into(),
+        "--gc-sections".into(),
     ];
     for object in objects {
         args.push(object.as_os_str().to_os_string());
@@ -353,7 +358,8 @@ fn link_linux(target: &str, objects: &[PathBuf], output: &Path) {
 fn link_macos(target: &str, objects: &[PathBuf], output: &Path) {
     let cc = Path::new("cc");
     let runtime_objects = compile_runtime_objects(cc, target, "macos");
-    let mut args: Vec<std::ffi::OsString> = vec!["-target".into(), target.into()];
+    let mut args: Vec<std::ffi::OsString> =
+        vec!["-target".into(), target.into(), "-Wl,-dead_strip".into()];
     for object in objects {
         args.push(object.as_os_str().to_os_string());
     }
@@ -403,6 +409,8 @@ fn compile_runtime_objects(clang: &Path, target: &str, family: &str) -> Vec<Path
                 "-target".to_owned(),
                 target.to_owned(),
                 "-O2".to_owned(),
+                "-ffunction-sections".to_owned(),
+                "-fdata-sections".to_owned(),
                 "-c".to_owned(),
             ],
         ),
@@ -472,19 +480,18 @@ fn compile_if_stale(
             .zip(object_mtime)
             .map(|(source, object)| source > object)
             .unwrap_or(true);
-        if !mtime_stale {
-            return Ok(());
-        }
-        // mtime 判定为旧但内容没变（如 git 检出只改时间戳）时不重编：
-        // 侧车文件记录「源文件内容哈希 + 编译参数」，两者都一致则复用。
+        // 侧车文件记录「源文件内容哈希 + 编译参数」。
+        // 内容与参数都一致才复用：mtime 旧但内容没变（git 检出只改时间戳）
+        // 时不重编；编译参数变更（如 -ffunction-sections）也会触发重编。
         let current = file_hash(source)
             .map(|hash| format!("{hash}\n{}", prefix.join(" ")))
             .unwrap_or_default();
-        if !current.is_empty()
+        let same = !current.is_empty()
             && fs::read_to_string(&sidecar)
                 .map(|saved| saved == current)
-                .unwrap_or(false)
-        {
+                .unwrap_or(false);
+        // 旧对象没有 sidecar（升级前编译）时按 mtime 判断。
+        if same || !mtime_stale && current.is_empty() {
             return Ok(());
         }
     }

@@ -55,7 +55,7 @@ Copy-Item $builtins (Join-Path $sdk "lib\libclang_rt.builtins-x86_64.a") -Force
 
 $target = "x86_64-w64-windows-gnu"
 $runtimeDir = Join-Path $Root "runtime"
-& $clang -target $target -O2 -c (Join-Path $runtimeDir "runtime.c") -o (Join-Path $sdk "lib\runtime.obj")
+& $clang -target $target -O2 -ffunction-sections -fdata-sections -c (Join-Path $runtimeDir "runtime.c") -o (Join-Path $sdk "lib\runtime.obj")
 if ($LASTEXITCODE -ne 0) { throw "compile runtime.c failed" }
 & $clang -target $target -c (Join-Path $runtimeDir "runtime_x64.S") -o (Join-Path $sdk "lib\runtime_asm.obj")
 if ($LASTEXITCODE -ne 0) { throw "compile runtime_x64.S failed" }
