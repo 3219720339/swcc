@@ -59,3 +59,70 @@ export extern c function json_stringify_pretty(value: ptr<void>): string;
 export function JSON美化输出(value: ptr<void>): string {
     return json_stringify_pretty(value);
 }
+
+/// 创建空 JSON 对象（配合 json_object_set 构建）。
+export extern c function json_object_new(): ptr<void>;
+
+/// 创建空 JSON 数组（配合 json_array_append 构建）。
+export extern c function json_array_new(): ptr<void>;
+
+/// 创建 JSON 字符串节点。
+export extern c function json_string_new(text: string): ptr<void>;
+
+/// 创建 JSON 整数节点。
+export extern c function json_int_new(value: int): ptr<void>;
+
+/// 创建 JSON 浮点节点。
+export extern c function json_float_new(value: float): ptr<void>;
+
+/// 创建 JSON 布尔节点。
+export extern c function json_bool_new(value: bool): ptr<void>;
+
+/// 创建 JSON null 节点。
+export extern c function json_null_new(): ptr<void>;
+
+/// 给 JSON 对象设置键值（覆盖同名键）；成功返回 0，失败返回 -1。
+export extern c function json_object_set(object: ptr<void>, key: string, value: ptr<void>): int;
+
+/// 给 JSON 数组追加元素；成功返回 0，失败返回 -1。
+export extern c function json_array_append(array: ptr<void>, value: ptr<void>): int;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 创建JSON对象(): ptr<void> {
+    return json_object_new();
+}
+
+export function 创建JSON数组(): ptr<void> {
+    return json_array_new();
+}
+
+export function 创建JSON文本(text: string): ptr<void> {
+    return json_string_new(text);
+}
+
+export function 创建JSON整数(value: int): ptr<void> {
+    return json_int_new(value);
+}
+
+export function 创建JSON小数(value: float): ptr<void> {
+    return json_float_new(value);
+}
+
+export function 创建JSON逻辑(value: bool): ptr<void> {
+    return json_bool_new(value);
+}
+
+export function 创建JSON空值(): ptr<void> {
+    return json_null_new();
+}
+
+export function JSON对象置值(object: ptr<void>, key: string, value: ptr<void>): int {
+    return json_object_set(object, key, value);
+}
+
+export function JSON数组追加(array: ptr<void>, value: ptr<void>): int {
+    return json_array_append(array, value);
+}

@@ -25,6 +25,7 @@ swc run examples/demo/demo-os.sw       # 系统/进程
 | demo-util2 | 随机/UUID/洗牌/格式化/进制/命名/CSV/Set/时间/文件补充 | `1.5 KB` `1,234,567` `b5bb49b7-...` |
 | demo-batch3 | INI 配置/随机字符串/JSON 美化/数组实用 | `8080` `zKuA16E2igpf` `{...}` |
 | demo-batch4 | UTC 时间/日历加减/which/mkdtemp/UDP/regex 捕获 | `2024-02-29` `15/08/2026` `udp-hello` |
+| demo-batch5 | JSON 构建/模板渲染/表格格式化 | `{"name":"sw",...}` `Hi sw, n=42` `名字 数量 状态` |
 | demo-string | 链式方法/格式化/解析/中文字符/中文函数名 | `reverse=wS好你` `format=score: 42 (3.14)` `format_float=3.14` |
 | demo-math | 取整/三角/对数/随机/常量 | `sqrt(16)=4.0000` `hypot(3,4)=5.0000` `pi=3.1416` |
 | demo-array | 排序/反转/极值/求和/去重/查找 | `sort_int=[1,2,3,4,5]` `sum_int=15` `unique=[a,b,c]` |

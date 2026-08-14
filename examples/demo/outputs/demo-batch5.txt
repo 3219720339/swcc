@@ -1,0 +1,33 @@
+﻿swc.exe : 正在读取并检查语法...
+At line:2 char:1
++ & 'C:\Users\Administrator\Desktop\swcc\target\release\swc.exe' run 'C ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (正在读取并检查语法...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+正在语义分析...
+正在生成目标代码...
+正在链接...
+编译成功：demo-batch5.exe（用时 1190 ms）
+{"name":"sw","year":2026,"pi":3.1400000000000001,"ok":true,"tags":["gc","vtable"]}
+{
+    "name": "sw",
+    "year": 2026,
+    "pi": 3.1400000000000001,
+    "ok": true,
+    "tags": [
+      "gc",
+      "vtable"
+  ]
+}
+{"k":"v"}
+Hi sw, n=42
+{name} 原样
+sw-42
+名字 数量 状态
+------ ------ ------
+sw     1      ok    
+gc     2      ok    
+error  3      fail  
+
+true

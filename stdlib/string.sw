@@ -374,3 +374,12 @@ export function 是否字母数字(text: string): bool {
 export function 是否标点(text: string): bool {
     return is_punct(text);
 }
+
+/// 模板渲染：把 text 中的 {key} 占位符替换为 map 中对应值；
+/// {{ 转义为字面 {；未知键替换为空串。
+/// 示例：render_template("Hi {name}, n={n}", map)。
+export extern c function render_template(text: string, map: ptr<void>): string;
+
+export function 模板渲染(text: string, map: ptr<void>): string {
+    return render_template(text, map);
+}

@@ -1373,6 +1373,27 @@ Sw 编译器（swcc）开发进度
                        - 验证：80 examples 全过；cargo test 52 全绿；
                          fmt 通过；runtime.c 三平台交叉编译通过
 
+    2026-08-15 09:00  标准库：JSON 构建 + 模板渲染 + 表格格式化：
+                       - std/json 补构建能力（原先只能读不能写）：
+                         json_object_new/json_array_new/json_string_new/
+                         json_int_new/json_float_new/json_bool_new/
+                         json_null_new/json_object_set（同名覆盖）/
+                         json_array_append + 中文（创建JSON对象/数组/文本/
+                         整数/小数/逻辑/空值、JSON对象置值/JSON数组追加）
+                       - std/string 加 render_template：{key} 占位符替换
+                         map 值，{{ }} 转义字面括号，未知键空串 + 中文
+                         模板渲染
+                       - 新增 std/table：format_table（string[] 表头 +
+                         string[][] 行，按内容最大宽度左对齐，表头下自动
+                         分隔线）+ 中文 格式化表格
+                       - 新增探针 probe-batch5.sw（30 断言：JSON 构建/
+                         覆盖/回读/中文名、模板转义、表格对齐）；demo 新增
+                         demo-batch5.sw
+                       - 修复：模板 }} 未转义（补充）；表格断言空格数
+                         与实际输出对齐
+                       - 验证：81 examples 全过；cargo test 52 全绿；
+                         fmt 通过；runtime.c 三平台交叉编译通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

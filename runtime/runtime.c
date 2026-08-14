@@ -9712,3 +9712,261 @@ int64_t udp_close(int64_t fd) {
     return close((int)fd) == 0 ? 0 : -1;
 #endif
 }
+
+// ---------------------------------------------------------------------------
+// 基础库：JSON 构建 / 模板渲染 / 表格格式化
+// ---------------------------------------------------------------------------
+
+// 创建空 JSON 对象（可继续 json_object_set）。
+void* json_object_new(void) {
+    return sw_json_make(6);
+}
+
+// 创建空 JSON 数组（可继续 json_array_append）。
+void* json_array_new(void) {
+    return sw_json_make(5);
+}
+
+// 创建 JSON 字符串节点。
+void* json_string_new(sw_string* text) {
+    sw_json* value = sw_json_make(4);
+    if (text == NULL) {
+        value->string_value = (char*)sw_gc_alloc(1);
+        value->string_value[0] = 0;
+        value->length = 0;
+        return value;
+    }
+    value->string_value = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    memcpy(value->string_value, text->data, (uint64_t)text->len);
+    value->string_value[text->len] = 0;
+    value->length = text->len;
+    return value;
+}
+
+// 创建 JSON 整数节点。
+void* json_int_new(int64_t value) {
+    sw_json* node = sw_json_make(2);
+    node->int_value = value;
+    return node;
+}
+
+// 创建 JSON 浮点节点。
+void* json_float_new(double value) {
+    sw_json* node = sw_json_make(3);
+    node->float_value = value;
+    return node;
+}
+
+// 创建 JSON 布尔节点。
+void* json_bool_new(int64_t value) {
+    sw_json* node = sw_json_make(1);
+    node->int_value = value ? 1 : 0;
+    return node;
+}
+
+// 创建 JSON null 节点。
+void* json_null_new(void) {
+    return sw_json_make(0);
+}
+
+// 给 JSON 对象设置键值（覆盖同名键）；成功返回 0，失败返回 -1。
+int64_t json_object_set(void* object, sw_string* key, void* value) {
+    sw_json* obj = (sw_json*)object;
+    if (obj == NULL || obj->kind != 6 || key == NULL) {
+        return -1;
+    }
+    // 同名键覆盖
+    for (int64_t i = 0; i < obj->length; i++) {
+        int64_t key_len = (int64_t)strlen(obj->keys[i]);
+        if (key_len == key->len && memcmp(obj->keys[i], key->data, (uint64_t)key->len) == 0) {
+            obj->items[i] = (sw_json*)value;
+            return 0;
+        }
+    }
+    int64_t new_len = obj->length + 1;
+    sw_json** new_items = (sw_json**)sw_gc_alloc((uint64_t)new_len * sizeof(sw_json*));
+    char** new_keys = (char**)sw_gc_alloc((uint64_t)new_len * sizeof(char*));
+    for (int64_t i = 0; i < obj->length; i++) {
+        new_items[i] = obj->items[i];
+        new_keys[i] = obj->keys[i];
+    }
+    char* key_copy = (char*)sw_gc_alloc((uint64_t)key->len + 1);
+    memcpy(key_copy, key->data, (uint64_t)key->len);
+    key_copy[key->len] = 0;
+    new_keys[obj->length] = key_copy;
+    new_items[obj->length] = (sw_json*)value;
+    obj->items = new_items;
+    obj->keys = new_keys;
+    obj->length = new_len;
+    return 0;
+}
+
+// 给 JSON 数组追加元素；成功返回 0，失败返回 -1。
+int64_t json_array_append(void* array, void* value) {
+    sw_json* arr = (sw_json*)array;
+    if (arr == NULL || arr->kind != 5) {
+        return -1;
+    }
+    int64_t new_len = arr->length + 1;
+    sw_json** new_items = (sw_json**)sw_gc_alloc((uint64_t)new_len * sizeof(sw_json*));
+    for (int64_t i = 0; i < arr->length; i++) {
+        new_items[i] = arr->items[i];
+    }
+    new_items[arr->length] = (sw_json*)value;
+    arr->items = new_items;
+    arr->length = new_len;
+    return 0;
+}
+
+// 模板渲染：把 text 中的 {key} 占位符替换为 map 中对应值；
+// {{ 转义为字面 {；未知键替换为空串。
+sw_string* render_template(sw_string* text, void* map) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t cap = text->len * 2 + 64;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    int64_t i = 0;
+    while (i < text->len) {
+        if (text->data[i] == '{' && i + 1 < text->len && text->data[i + 1] == '{') {
+            if (used + 1 < cap) {
+                buffer[used++] = '{';
+            }
+            i += 2;
+            continue;
+        }
+        if (text->data[i] == '}' && i + 1 < text->len && text->data[i + 1] == '}') {
+            if (used + 1 < cap) {
+                buffer[used++] = '}';
+            }
+            i += 2;
+            continue;
+        }
+        if (text->data[i] == '{') {
+            int64_t close = i + 1;
+            while (close < text->len && text->data[close] != '}') {
+                close++;
+            }
+            if (close < text->len) {
+                sw_string* key =
+                    sw_string_from_literal(text->data + i + 1, close - i - 1);
+                sw_string* value = sw_map_get(map, key);
+                if (value != NULL) {
+                    for (int64_t k = 0; k < value->len && used + 1 < cap; k++) {
+                        buffer[used++] = value->data[k];
+                    }
+                }
+                i = close + 1;
+                continue;
+            }
+        }
+        if (used + 1 < cap) {
+            buffer[used++] = text->data[i];
+        }
+        i++;
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
+}
+
+// 表格格式化：headers 为 string[]，rows 为 string[][]（每行元素个数与列数
+// 不必一致，缺失按空串补）。列按内容最大宽度左对齐，用空格分隔。
+sw_string* format_table(sw_array* headers, sw_array* rows) {
+    int64_t* hdata = headers != NULL ? (int64_t*)headers->data : NULL;
+    int64_t col_count = headers != NULL ? headers->len : 0;
+    // 计算列数（取所有行最大宽度）
+    int64_t* row_data = rows != NULL ? (int64_t*)rows->data : NULL;
+    for (int64_t r = 0; rows != NULL && r < rows->len; r++) {
+        sw_array* row = (sw_array*)row_data[r];
+        if (row != NULL && row->len > col_count) {
+            col_count = row->len;
+        }
+    }
+    if (col_count <= 0) {
+        return sw_string_from_literal("", 0);
+    }
+    // 每列最大宽度
+    int64_t* widths = (int64_t*)sw_gc_alloc((uint64_t)col_count * 8);
+    for (int64_t c = 0; c < col_count; c++) {
+        widths[c] = 0;
+    }
+    for (int64_t c = 0; c < col_count && headers != NULL && c < headers->len; c++) {
+        sw_string* cell = (sw_string*)hdata[c];
+        if (cell != NULL && cell->len > widths[c]) {
+            widths[c] = cell->len;
+        }
+    }
+    for (int64_t r = 0; rows != NULL && r < rows->len; r++) {
+        sw_array* row = (sw_array*)row_data[r];
+        int64_t* cdata = row != NULL ? (int64_t*)row->data : NULL;
+        for (int64_t c = 0; row != NULL && c < row->len && c < col_count; c++) {
+            sw_string* cell = (sw_string*)cdata[c];
+            if (cell != NULL && cell->len > widths[c]) {
+                widths[c] = cell->len;
+            }
+        }
+    }
+    // 估算容量并逐行输出
+    int64_t cap = 64;
+    for (int64_t c = 0; c < col_count; c++) {
+        cap += widths[c] + 2;
+    }
+    cap *= (headers != NULL ? headers->len : 0) + (rows != NULL ? rows->len : 0) + 2;
+    if (cap < 256) {
+        cap = 256;
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    // 表头
+    if (headers != NULL && headers->len > 0) {
+        for (int64_t c = 0; c < col_count; c++) {
+            sw_string* cell = c < headers->len ? (sw_string*)hdata[c] : NULL;
+            int64_t len = cell != NULL ? cell->len : 0;
+            for (int64_t k = 0; k < len && used + 1 < cap; k++) {
+                buffer[used++] = cell->data[k];
+            }
+            for (int64_t k = len; k < widths[c] && used + 1 < cap; k++) {
+                buffer[used++] = ' ';
+            }
+            if (c + 1 < col_count && used + 1 < cap) {
+                buffer[used++] = ' ';
+            }
+        }
+        buffer[used++] = '\n';
+        // 分隔线
+        for (int64_t c = 0; c < col_count; c++) {
+            for (int64_t k = 0; k < widths[c] && used + 1 < cap; k++) {
+                buffer[used++] = '-';
+            }
+            if (c + 1 < col_count && used + 1 < cap) {
+                buffer[used++] = ' ';
+            }
+        }
+        buffer[used++] = '\n';
+    }
+    // 数据行
+    for (int64_t r = 0; rows != NULL && r < rows->len; r++) {
+        sw_array* row = (sw_array*)row_data[r];
+        int64_t* cdata = row != NULL ? (int64_t*)row->data : NULL;
+        for (int64_t c = 0; c < col_count; c++) {
+            sw_string* cell =
+                (row != NULL && c < row->len) ? (sw_string*)cdata[c] : NULL;
+            int64_t len = cell != NULL ? cell->len : 0;
+            for (int64_t k = 0; k < len && used + 1 < cap; k++) {
+                buffer[used++] = cell->data[k];
+            }
+            for (int64_t k = len; k < widths[c] && used + 1 < cap; k++) {
+                buffer[used++] = ' ';
+            }
+            if (c + 1 < col_count && used + 1 < cap) {
+                buffer[used++] = ' ';
+            }
+        }
+        if (used + 1 < cap) {
+            buffer[used++] = '\n';
+        }
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
+}
