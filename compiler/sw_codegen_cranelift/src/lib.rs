@@ -913,6 +913,7 @@ fn extern_c_symbol(name: &str) -> &str {
         "eprintln" => "sw_eprintln",
         "eprint" => "sw_eprint",
         "read_all_stdin" => "sw_read_all_stdin",
+        "pause" => "sw_pause",
         "cwd" => "sw_cwd",
         "chdir" => "sw_chdir",
         "temp_dir" => "sw_temp_dir",

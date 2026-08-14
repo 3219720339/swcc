@@ -31,3 +31,15 @@ export extern c function eprint(text: string): void;
 
 /// 读取标准输入全部内容直到 EOF；无输入返回空字符串。
 export extern c function read_all_stdin(): string;
+
+/// 暂停并等待按键后继续（提示"请按任意键继续..."）。
+/// 用于双击运行时让控制台窗口停留，便于查看输出。
+export extern c function pause(): void;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 暂停(): void {
+    pause();
+}

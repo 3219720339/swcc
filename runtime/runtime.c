@@ -26,6 +26,8 @@ extern int memcmp(const void* a, const void* b, sw_size count);
 extern int snprintf(char* buffer, sw_size size, const char* format, ...);
 extern uint64_t fwrite(const void* data, sw_size size, sw_size count, void* stream);
 extern int fputc(int character, void* stream);
+extern int fgetc(void* stream);
+extern int fflush(void* stream);
 extern uint64_t strlen(const char* text);
 extern void exit(int code);
 #if defined(_WIN32)
@@ -510,6 +512,19 @@ void println(sw_array* args) {
 
 void print(sw_array* args) {
     sw_print_any(args);
+}
+
+// 等待按键后继续（防止控制台窗口运行完立刻关闭）。
+void sw_pause(void) {
+    const char* msg = "请按任意键继续...";
+    fwrite(msg, 1, strlen(msg), stdout);
+    fflush(stdout);
+#if defined(_WIN32)
+    extern int _getch(void);
+    _getch();
+#else
+    fgetc(stdin);
+#endif
 }
 
 // 测试 runner 专用：按单个字符串输出一行（@test 的 [ok]/[FAIL] 打印）。
@@ -2641,6 +2656,11 @@ extern char** environ;
 #if !defined(SW_NO_MAIN)
 int main(int argc, char** argv) {
 #if defined(_WIN32)
+    // 控制台代码页切到 UTF-8：否则中文输出在 GBK 控制台显示乱码。
+    extern int SetConsoleOutputCP(unsigned int cp);
+    extern int SetConsoleCP(unsigned int cp);
+    SetConsoleOutputCP(65001);
+    SetConsoleCP(65001);
     // ucrt 不导出 __argc/__argv，用 CommandLineToArgvW + UTF-8 转换。
     extern void* GetCommandLineW(void);
     extern void** CommandLineToArgvW(void* cmdline, int* out_argc);

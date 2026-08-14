@@ -38,6 +38,24 @@ swc run examples/demo/demo-os.sw       # 系统/进程
 > demo-time / demo-print 展示新能力：`println(任意类型)` 直接输出结果，
 > 多参数之间用空格分隔，无需标签、拼接或模板字符串。
 
+## 中文乱码与控制台停留
+
+- Windows 控制台默认代码页是 GBK，直接双击 exe / cmd 窗口运行含中文的程序
+  会乱码。编译器已在程序启动时自动调用 `SetConsoleOutputCP(65001)`，
+  控制台按 UTF-8 显示，中文正常。
+- 程序运行完窗口会一闪而过：在末尾调用 `pause()`（或中文 `暂停()`）
+  可停留等待按键。见 demo-pause.sw：
+
+```sw
+import { println, pause } from "std/io";
+
+function main(): int {
+    println("你好，Sw");
+    pause();          // 等待按键后继续
+    return 0;
+}
+```
+
 ## 完整输出
 
 `outputs/demo-*.txt` 保存每个演示的完整运行结果（含编译耗时）。

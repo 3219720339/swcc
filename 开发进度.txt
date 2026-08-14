@@ -1222,6 +1222,22 @@ Sw 编译器（swcc）开发进度
                          cargo test 52 全绿；fmt 通过；runtime.c 交叉编译
                          x86_64/aarch64 Linux + aarch64 macOS 通过
 
+    2026-08-15 06:20  控制台修复：中文乱码 + 窗口闪退：
+                       - 根因：Windows 控制台默认代码页 936（GBK），
+                         程序输出 UTF-8 中文时显示乱码（源码与输出文件
+                         均为合法 UTF-8，非编码损坏）
+                       - 修复：程序启动时自动 SetConsoleOutputCP(65001) +
+                         SetConsoleCP(65001)，控制台按 UTF-8 显示中文；
+                         PowerShell/管道/CI 不受影响（仍按字节输出）
+                       - std/io 新增 pause()（等待按键后继续，提示
+                         "请按任意键继续..."）+ 中文 暂停()，解决双击
+                         exe 运行完窗口一闪而过的问题；codegen 映射
+                         pause → sw_pause（避免与 C pause 冲突）
+                       - 新增 examples/demo/demo-pause.sw 演示；
+                         README 补充乱码与暂停说明
+                       - 验证：76 examples 全过、cargo test 52 全绿、
+                         fmt 通过、三平台交叉编译通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
