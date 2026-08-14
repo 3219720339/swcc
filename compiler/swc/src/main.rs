@@ -35,6 +35,7 @@ struct SwConfig {
     author: String,
     copyright: String,
     icon: String,
+    language: String,
     config_dir: Option<PathBuf>,
 }
 
@@ -82,6 +83,9 @@ fn load_config(entry: &Path) -> SwConfig {
                             }
                             ("project", "icon") => {
                                 config.icon = value.to_string();
+                            }
+                            ("project", "language") => {
+                                config.language = value.to_string();
                             }
                             _ => {}
                         }
@@ -140,6 +144,7 @@ fn main() {
             std::process::exit(2);
         }
     };
+    eprintln!("正在读取并检查语法...");
     let source = Source::new(PathBuf::from(path), text);
     let mut diagnostics = Diagnostics::new();
     let mut parser = Parser::new(&source, &mut diagnostics);
@@ -180,6 +185,7 @@ fn main() {
             let candidate = env::current_dir().ok()?.join("stdlib");
             candidate.is_dir().then_some(candidate)
         });
+    eprintln!("正在语义分析...");
     let result = analyze(Path::new(path), stdlib_dir.as_deref());
 
     let mut sources: HashMap<PathBuf, Source> = result
@@ -245,6 +251,7 @@ fn main() {
     }
 
     // ---- 代码生成（Cranelift，按目标 triple） ----
+    eprintln!("正在生成目标代码...");
     let cache_dir = PathBuf::from(".swcache").join("obj");
     if let Err(error) = fs::create_dir_all(&cache_dir) {
         eprintln!("无法创建缓存目录：{error}");
@@ -312,6 +319,7 @@ fn main() {
         PathBuf::from(format!("{base}{suffix}"))
     });
 
+    eprintln!("正在链接...");
     match config.kind {
         BuildKind::Lib => build_lib(&options.target, &objects, &output, &result.modules),
         _ => {
@@ -340,7 +348,7 @@ fn main() {
     }
 
     println!(
-        "构建成功：{}（用时 {} ms）",
+        "编译成功：{}（用时 {} ms）",
         output.display(),
         started.elapsed().as_millis()
     );
@@ -404,6 +412,7 @@ description = "Sw 语言应用程序"
 author = ""
 copyright = ""
 icon = ""
+language = "zh-CN"   # Windows 版本信息语言：zh-CN / en-US
 
 [build]
 kind = "console"   # console | dll | lib
@@ -482,6 +491,13 @@ fn windows_resource_object(target: &str, config: &SwConfig, output: &Path) -> Op
     } else {
         config.description.clone()
     };
+    // 版本信息的语言：zh-CN → 0x0804（简体中文）、en-US → 0x0409（英语美国），
+    // 默认简体中文；块名 = 语言 ID + "04b0"（Unicode 代码页 1200）。
+    let (lang_id, lang_block) = match config.language.to_ascii_lowercase().as_str() {
+        "en-us" | "en" | "english" => ("0x0409", "040904b0"),
+        "zh-cn" | "zh" | "chinese" | "" => ("0x0804", "080404b0"),
+        _ => ("0x0804", "080404b0"),
+    };
     rc.push_str("#pragma code_page(65001)\n");
     rc.push_str("1 VERSIONINFO\n");
     rc.push_str(&format!(" FILEVERSION {v1},{v2},{v3},{v4}\n"));
@@ -494,7 +510,7 @@ fn windows_resource_object(target: &str, config: &SwConfig, output: &Path) -> Op
     rc.push_str("BEGIN\n");
     rc.push_str(" BLOCK \"StringFileInfo\"\n");
     rc.push_str(" BEGIN\n");
-    rc.push_str("  BLOCK \"040904b0\"\n");
+    rc.push_str(&format!("  BLOCK \"{lang_block}\"\n"));
     rc.push_str("  BEGIN\n");
     rc.push_str(&format!(
         "   VALUE \"CompanyName\", \"{}\"\n",
@@ -537,7 +553,7 @@ fn windows_resource_object(target: &str, config: &SwConfig, output: &Path) -> Op
     rc.push_str(" END\n");
     rc.push_str(" BLOCK \"VarFileInfo\"\n");
     rc.push_str(" BEGIN\n");
-    rc.push_str("  VALUE \"Translation\", 0x0409, 1200\n");
+    rc.push_str(&format!("  VALUE \"Translation\", {lang_id}, 1200\n"));
     rc.push_str(" END\n");
     rc.push_str("END\n");
     if let Some(icon) = &icon_path {

@@ -1308,6 +1308,21 @@ Sw 编译器（swcc）开发进度
                          （用户放入的 1.ico）成功嵌入；78 examples 全过；
                          cargo test 52 全绿；fmt 通过
 
+    2026-08-15 07:50  版本信息语言设置 + 编译阶段提示：
+                       - swcc.toml [project] 新增 language（zh-CN/en-US，
+                         默认简体中文）：映射 VERSIONINFO Translation 与
+                         StringFileInfo 块名（zh-CN→0x0804/080404b0，
+                         en-US→0x0409/040904b0），exe/dll 属性页语言字段
+                         随之显示中文(简体，中国)
+                       - 编译过程阶段提示（stderr，不污染程序 stdout）：
+                         正在读取并检查语法... → 正在语义分析... →
+                         正在生成目标代码... → 正在链接... →
+                         编译成功：<产物>（用时 xx ms）
+                       - swc init 模板补充 language 字段
+                       - 验证：hello-app.exe 属性页 Language=中文(简体，中国)
+                         正常；78 examples 全过；cargo test 52 全绿；
+                         fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
