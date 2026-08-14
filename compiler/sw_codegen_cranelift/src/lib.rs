@@ -19,8 +19,8 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use sw_semantic::symbols::FunctionSig;
 use sw_semantic::types::Type;
 use sw_semantic::{
-    MatchArmMir, MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule, MirParam,
-    MirStmt, MirStmtKind, MirTarget, MirUnary, TypeTable,
+    IterateMode, MatchArmMir, MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule,
+    MirParam, MirStmt, MirStmtKind, MirTarget, MirUnary, TypeTable,
 };
 use target_lexicon::Triple;
 
@@ -308,6 +308,7 @@ impl Generator {
             builder,
             refs,
             slots: Vec::new(),
+            temp_slots: Vec::new(),
             loops: Vec::new(),
             module: &self.module,
             types,
@@ -620,6 +621,9 @@ fn visit_expr(
                 visit_expr(item, generator, mir, exports, ctx, refs)?;
             }
         }
+        MirExpr::ArraySpread(inner) => {
+            visit_expr(inner, generator, mir, exports, ctx, refs)?;
+        }
         MirExpr::VarArgs(items) => {
             let array_new = generator
                 .declare_import("sw_array_new", &array_new_signature(generator.module.isa()))?;
@@ -747,6 +751,19 @@ fn visit_expr(
                         .declare_func_in_func(func_id, &mut ctx.func),
                 );
             }
+            let key = format!("{:?}", sig);
+            let cranelift_sig = signature_of_sig(sig, generator.module.isa())?;
+            let sig_ref = ctx.func.import_signature(cranelift_sig);
+            refs.closure_sig_refs.insert(key, sig_ref);
+            visit_expr(object, generator, mir, exports, ctx, refs)?;
+            visit_expr(closure, generator, mir, exports, ctx, refs)?;
+        }
+        MirExpr::ArrayIterate {
+            object,
+            closure,
+            sig,
+            ..
+        } => {
             let key = format!("{:?}", sig);
             let cranelift_sig = signature_of_sig(sig, generator.module.isa())?;
             let sig_ref = ctx.func.import_signature(cranelift_sig);
@@ -1313,7 +1330,10 @@ fn interface_slot_bases(types: &TypeTable) -> (HashMap<u32, usize>, usize) {
 struct LowerCtx<'a, 'f> {
     builder: FunctionBuilder<'f>,
     refs: RefTable,
+    /// 局部变量槽（索引与 MIR 局部索引一致）。
     slots: Vec<StackSlot>,
+    /// 表达式求值用的临时槽（与局部槽分离，避免错位）。
+    temp_slots: Vec<StackSlot>,
     /// (循环头块, 循环出口块)
     loops: Vec<(Block, Block)>,
     module: &'a ObjectModule,
@@ -1346,7 +1366,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
             8,
             3,
         ));
-        self.slots.push(slot);
+        self.temp_slots.push(slot);
         slot
     }
 
@@ -1812,6 +1832,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
     fn expr(&mut self, expr: &MirExpr) -> Result<Value, CodegenError> {
         Ok(match expr {
             MirExpr::Int(value) => self.builder.ins().iconst(types::I64, *value),
+            MirExpr::ArraySpread(inner) => self.expr(inner)?,
             MirExpr::UInt(value) => self.builder.ins().iconst(types::I64, *value as i64),
             MirExpr::Float(value) => self.builder.ins().f64const(*value),
             MirExpr::Bool(value) => self.builder.ins().iconst(types::I64, i64::from(*value)),
@@ -2142,50 +2163,193 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     8
                 };
                 let is_struct = matches!(&**elem, Type::Struct(_));
-                let count = self.builder.ins().iconst(types::I64, items.len() as i64);
+                let mut fixed_count = 0usize;
+                let mut spread_objects: Vec<Value> = Vec::new();
+                for item in items {
+                    match item {
+                        MirExpr::ArraySpread(inner) => {
+                            let spread_array = self.expr(inner)?;
+                            spread_objects.push(spread_array);
+                        }
+                        _ => fixed_count += 1,
+                    }
+                }
+                let mut total = self.builder.ins().iconst(types::I64, fixed_count as i64);
+                for spread in &spread_objects {
+                    let spread_len =
+                        self.builder
+                            .ins()
+                            .load(types::I64, MemFlagsData::new(), *spread, 0);
+                    total = self.builder.ins().iadd(total, spread_len);
+                }
                 let elem_size_value = self.builder.ins().iconst(types::I64, elem_size as i64);
                 let array = self.call_import(
                     "sw_array_new",
                     array_new_signature(self.module.isa()),
-                    &[elem_size_value, count],
+                    &[elem_size_value, total],
                 )?;
                 let slot = self.new_slot();
                 self.builder.ins().stack_store(types::I64, array, slot, 0);
-                for (index, item) in items.iter().enumerate() {
-                    let item = self.expr(item)?;
-                    let index_value = self.builder.ins().iconst(types::I64, index as i64);
-                    let array = self
-                        .builder
-                        .ins()
-                        .stack_load(types::I64, types::I64, slot, 0);
-                    if elem_size == 1 {
-                        self.call_import(
-                            "sw_array_set_u8",
-                            array_set_signature(self.module.isa()),
-                            &[array, index_value, item],
-                        )?;
-                    } else if is_struct {
-                        let data =
+                let cursor_slot = self.new_slot();
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, zero, cursor_slot, 0);
+                let mut spread_index = 0usize;
+                for item in items {
+                    match item {
+                        MirExpr::ArraySpread(_) => {
+                            let spread = spread_objects[spread_index];
+                            spread_index += 1;
+                            let spread_len =
+                                self.builder
+                                    .ins()
+                                    .load(types::I64, MemFlagsData::new(), spread, 0);
+                            let spread_data = self.builder.ins().load(
+                                types::I64,
+                                MemFlagsData::new(),
+                                spread,
+                                16,
+                            );
+                            let index_slot = self.new_slot();
+                            let zero = self.builder.ins().iconst(types::I64, 0);
                             self.builder
                                 .ins()
-                                .load(types::I64, MemFlagsData::new(), array, 16);
-                        let stride = self.builder.ins().iconst(types::I64, elem_size as i64);
-                        let offset = self.builder.ins().imul(index_value, stride);
-                        let dst = self.builder.ins().iadd(data, offset);
-                        self.copy_struct(elem, item, dst)?;
-                    } else {
-                        let item = if elem.is_float() {
+                                .stack_store(types::I64, zero, index_slot, 0);
+                            let header = self.builder.create_block();
+                            let body = self.builder.create_block();
+                            let exit = self.builder.create_block();
+                            self.builder.ins().jump(header, &[]);
+                            self.builder.switch_to_block(header);
+                            let i = self.builder.ins().stack_load(
+                                types::I64,
+                                types::I64,
+                                index_slot,
+                                0,
+                            );
+                            let cond =
+                                self.builder
+                                    .ins()
+                                    .icmp(IntCC::UnsignedLessThan, i, spread_len);
+                            self.builder.ins().brif(cond, body, &[], exit, &[]);
+                            self.builder.switch_to_block(body);
+                            let i = self.builder.ins().stack_load(
+                                types::I64,
+                                types::I64,
+                                index_slot,
+                                0,
+                            );
+                            let stride = self.builder.ins().iconst(types::I64, elem_size as i64);
+                            let offset = self.builder.ins().imul(i, stride);
+                            let src_addr = self.builder.ins().iadd(spread_data, offset);
+                            let array =
+                                self.builder
+                                    .ins()
+                                    .stack_load(types::I64, types::I64, slot, 0);
+                            let cursor = self.builder.ins().stack_load(
+                                types::I64,
+                                types::I64,
+                                cursor_slot,
+                                0,
+                            );
+                            let dst_index = self.builder.ins().iadd(cursor, i);
+                            if elem_size == 1 {
+                                let byte = self.builder.ins().load(
+                                    types::I8,
+                                    MemFlagsData::new(),
+                                    src_addr,
+                                    0,
+                                );
+                                let byte = self.builder.ins().uextend(types::I64, byte);
+                                self.call_import(
+                                    "sw_array_set_u8",
+                                    array_set_signature(self.module.isa()),
+                                    &[array, dst_index, byte],
+                                )?;
+                            } else {
+                                let value = self.builder.ins().load(
+                                    types::I64,
+                                    MemFlagsData::new(),
+                                    src_addr,
+                                    0,
+                                );
+                                self.call_import(
+                                    "sw_array_set",
+                                    array_set_signature(self.module.isa()),
+                                    &[array, dst_index, value],
+                                )?;
+                            }
+                            let next = self.builder.ins().iadd_imm(i, 1);
                             self.builder
                                 .ins()
-                                .bitcast(types::I64, MemFlagsData::new(), item)
-                        } else {
-                            item
-                        };
-                        self.call_import(
-                            "sw_array_set",
-                            array_set_signature(self.module.isa()),
-                            &[array, index_value, item],
-                        )?;
+                                .stack_store(types::I64, next, index_slot, 0);
+                            self.builder.ins().jump(header, &[]);
+                            self.builder.switch_to_block(exit);
+                            self.builder.seal_block(header);
+                            self.builder.seal_block(body);
+                            self.builder.seal_block(exit);
+                            let cursor = self.builder.ins().stack_load(
+                                types::I64,
+                                types::I64,
+                                cursor_slot,
+                                0,
+                            );
+                            let next_cursor = self.builder.ins().iadd(cursor, spread_len);
+                            self.builder
+                                .ins()
+                                .stack_store(types::I64, next_cursor, cursor_slot, 0);
+                        }
+                        _ => {
+                            let item = self.expr(item)?;
+                            let index_value = self.builder.ins().stack_load(
+                                types::I64,
+                                types::I64,
+                                cursor_slot,
+                                0,
+                            );
+                            let array =
+                                self.builder
+                                    .ins()
+                                    .stack_load(types::I64, types::I64, slot, 0);
+                            if elem_size == 1 {
+                                self.call_import(
+                                    "sw_array_set_u8",
+                                    array_set_signature(self.module.isa()),
+                                    &[array, index_value, item],
+                                )?;
+                            } else if is_struct {
+                                let data = self.builder.ins().load(
+                                    types::I64,
+                                    MemFlagsData::new(),
+                                    array,
+                                    16,
+                                );
+                                let stride =
+                                    self.builder.ins().iconst(types::I64, elem_size as i64);
+                                let offset = self.builder.ins().imul(index_value, stride);
+                                let dst = self.builder.ins().iadd(data, offset);
+                                self.copy_struct(elem, item, dst)?;
+                            } else {
+                                let item = if elem.is_float() {
+                                    self.builder.ins().bitcast(
+                                        types::I64,
+                                        MemFlagsData::new(),
+                                        item,
+                                    )
+                                } else {
+                                    item
+                                };
+                                self.call_import(
+                                    "sw_array_set",
+                                    array_set_signature(self.module.isa()),
+                                    &[array, index_value, item],
+                                )?;
+                            }
+                            let next = self.builder.ins().iadd_imm(index_value, 1);
+                            self.builder
+                                .ins()
+                                .stack_store(types::I64, next, cursor_slot, 0);
+                        }
                     }
                 }
                 self.builder
@@ -2696,7 +2860,12 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .builder
                     .ins()
                     .call_indirect(sig_ref, fn_ptr, &[env, item]);
-                let result = self.builder.inst_results(call)[0];
+                let result = self
+                    .builder
+                    .inst_results(call)
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| self.builder.ins().iconst(types::I64, 0));
                 if is_filter {
                     let zero_i64 = self.builder.ins().iconst(types::I64, 0);
                     let keep = self.builder.ins().icmp(IntCC::NotEqual, result, zero_i64);
@@ -2766,6 +2935,197 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                         .store(MemFlagsData::new(), written, new_array, 0);
                 }
                 new_array
+            }
+            MirExpr::ArrayIterate {
+                object,
+                closure,
+                sig,
+                elem,
+                mode,
+            } => {
+                let array = self.expr(object)?;
+                let closure_obj = self.expr(closure)?;
+                let len = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), array, 0);
+                let elem_size: i64 = if matches!(*elem, Type::U8) {
+                    1
+                } else if let Type::Struct(id) = *elem {
+                    self.struct_sizes.get(&id).copied().unwrap_or(8) as i64
+                } else {
+                    8
+                };
+                let data = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), array, 16);
+                let index_slot = self.new_slot();
+                let result_slot = self.new_slot();
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, zero, index_slot, 0);
+                let initial = match mode {
+                    IterateMode::Every => 1,
+                    _ => 0,
+                };
+                let initial = self.builder.ins().iconst(types::I64, initial);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, initial, result_slot, 0);
+                let key = format!("{:?}", sig);
+                let sig_ref = self
+                    .refs
+                    .closure_sig_refs
+                    .get(&key)
+                    .copied()
+                    .ok_or("闭包签名未导入")?;
+                let header = self.builder.create_block();
+                let body = self.builder.create_block();
+                let exit = self.builder.create_block();
+                self.builder.ins().jump(header, &[]);
+                self.builder.switch_to_block(header);
+                let i = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let cond = self.builder.ins().icmp(IntCC::UnsignedLessThan, i, len);
+                self.builder.ins().brif(cond, body, &[], exit, &[]);
+                self.builder.switch_to_block(body);
+                let i = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let stride = self.builder.ins().iconst(types::I64, elem_size);
+                let offset = self.builder.ins().imul(i, stride);
+                let addr = self.builder.ins().iadd(data, offset);
+                let item = if elem_size == 1 {
+                    let byte = self
+                        .builder
+                        .ins()
+                        .load(types::I8, MemFlagsData::new(), addr, 0);
+                    self.builder.ins().uextend(types::I64, byte)
+                } else if matches!(*elem, Type::Struct(_)) {
+                    addr
+                } else {
+                    let value = self
+                        .builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), addr, 0);
+                    if elem.is_float() {
+                        self.builder
+                            .ins()
+                            .bitcast(types::F64, MemFlagsData::new(), value)
+                    } else {
+                        value
+                    }
+                };
+                let fn_ptr =
+                    self.builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), closure_obj, 0);
+                let env = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), closure_obj, 8);
+                let call = self
+                    .builder
+                    .ins()
+                    .call_indirect(sig_ref, fn_ptr, &[env, item]);
+                let result = self
+                    .builder
+                    .inst_results(call)
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| self.builder.ins().iconst(types::I64, 0));
+                match mode {
+                    IterateMode::Some => {
+                        let zero_i64 = self.builder.ins().iconst(types::I64, 0);
+                        let hit = self.builder.ins().icmp(IntCC::NotEqual, result, zero_i64);
+                        let hit_block = self.builder.create_block();
+                        let cont = self.builder.create_block();
+                        self.builder.ins().brif(hit, hit_block, &[], cont, &[]);
+                        self.builder.switch_to_block(hit_block);
+                        let one = self.builder.ins().iconst(types::I64, 1);
+                        self.builder
+                            .ins()
+                            .stack_store(types::I64, one, result_slot, 0);
+                        self.builder.ins().jump(exit, &[]);
+                        self.builder.switch_to_block(cont);
+                        self.builder.seal_block(cont);
+                    }
+                    IterateMode::Every => {
+                        let zero_i64 = self.builder.ins().iconst(types::I64, 0);
+                        let miss = self.builder.ins().icmp(IntCC::Equal, result, zero_i64);
+                        let miss_block = self.builder.create_block();
+                        let cont = self.builder.create_block();
+                        self.builder.ins().brif(miss, miss_block, &[], cont, &[]);
+                        self.builder.switch_to_block(miss_block);
+                        self.builder
+                            .ins()
+                            .stack_store(types::I64, zero_i64, result_slot, 0);
+                        self.builder.ins().jump(exit, &[]);
+                        self.builder.switch_to_block(cont);
+                        self.builder.seal_block(cont);
+                    }
+                    IterateMode::Find => {
+                        let zero_i64 = self.builder.ins().iconst(types::I64, 0);
+                        let hit = self.builder.ins().icmp(IntCC::NotEqual, result, zero_i64);
+                        let hit_block = self.builder.create_block();
+                        let cont = self.builder.create_block();
+                        self.builder.ins().brif(hit, hit_block, &[], cont, &[]);
+                        self.builder.switch_to_block(hit_block);
+                        let stored = if elem.is_float() {
+                            self.builder
+                                .ins()
+                                .bitcast(types::I64, MemFlagsData::new(), item)
+                        } else {
+                            item
+                        };
+                        self.builder
+                            .ins()
+                            .stack_store(types::I64, stored, result_slot, 0);
+                        self.builder.ins().jump(exit, &[]);
+                        self.builder.switch_to_block(cont);
+                        self.builder.seal_block(cont);
+                    }
+                    IterateMode::ForEach => {}
+                }
+                let i = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let next = self.builder.ins().iadd_imm(i, 1);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, next, index_slot, 0);
+                self.builder.ins().jump(header, &[]);
+                self.builder.switch_to_block(exit);
+                self.builder.seal_block(header);
+                self.builder.seal_block(body);
+                self.builder.seal_block(exit);
+                match mode {
+                    IterateMode::ForEach => self.builder.ins().iconst(types::I64, 0),
+                    IterateMode::Some | IterateMode::Every => {
+                        self.builder
+                            .ins()
+                            .stack_load(types::I64, types::I64, result_slot, 0)
+                    }
+                    IterateMode::Find => {
+                        let stored =
+                            self.builder
+                                .ins()
+                                .stack_load(types::I64, types::I64, result_slot, 0);
+                        if elem.is_float() {
+                            self.builder
+                                .ins()
+                                .bitcast(types::F64, MemFlagsData::new(), stored)
+                        } else {
+                            stored
+                        }
+                    }
+                }
             }
         })
     }

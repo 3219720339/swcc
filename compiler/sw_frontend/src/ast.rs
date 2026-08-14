@@ -234,9 +234,20 @@ pub enum VarKind {
 pub struct VariableDecl {
     pub kind: VarKind,
     pub name: Ident,
+    /// 解构声明模式（`const [a, b] = arr;` / `const { x, y } = obj;`）；
+    /// 有模式时 name 为占位。
+    pub pattern: Option<VariablePattern>,
     pub ty: Option<TypeRef>,
     pub init: Option<Expr>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum VariablePattern {
+    /// 数组解构：绑定名列表（与元素一一对应）。
+    Array(Vec<String>),
+    /// 对象解构：(字段名, 绑定名) 列表。
+    Object(Vec<(String, String)>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -431,6 +442,8 @@ pub enum ExprKind {
         value: Box<Expr>,
         arms: Vec<MatchExprArm>,
     },
+    /// 展开运算符：`...expr`（数组/对象字面量与调用实参中）。
+    Spread(Box<Expr>),
     Array(Vec<Expr>),
     Object(Vec<ObjectField>),
     New {
@@ -453,6 +466,8 @@ pub enum TemplatePart {
 pub struct ObjectField {
     pub key: ObjectKey,
     pub value: Expr,
+    /// 展开项 `{ ...a }`：key/value 为占位，值为被展开的表达式。
+    pub spread: Option<Expr>,
 }
 
 #[derive(Clone, Debug)]
@@ -522,6 +537,8 @@ pub enum AssignOp {
     Shl,
     Shr,
     Coalesce,
+    LogicalAnd,
+    LogicalOr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

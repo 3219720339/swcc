@@ -156,6 +156,12 @@ enum CallTarget {
 enum ArrayMethodKind {
     Map,
     Filter,
+    ForEach,
+    Some,
+    Every,
+    Find,
+    Push,
+    Pop,
 }
 
 #[derive(Clone, Debug)]
@@ -2344,6 +2350,64 @@ impl<'s> Checker<'s> {
     }
 
     fn check_var_decl(&mut self, variable: &VariableDecl) {
+        if let Some(pattern) = &variable.pattern {
+            let Some(init) = &variable.init else {
+                self.error("解构声明需要初始化表达式", variable.span);
+                return;
+            };
+            let init_ty = self.check_expr(init);
+            match pattern {
+                VariablePattern::Array(bindings) => {
+                    let Type::Array(elem) = init_ty.without_nullable() else {
+                        self.error(
+                            format!("数组解构目标必须是数组，实际为 {}", init_ty.display()),
+                            init.span,
+                        );
+                        return;
+                    };
+                    for binding in bindings {
+                        let id = self.alloc_local();
+                        self.symbols[id.0 as usize].kind = SymbolKind::Local {
+                            ty: (**elem).clone(),
+                            mutable: variable.kind == VarKind::Let,
+                        };
+                        self.scopes
+                            .last_mut()
+                            .expect("作用域存在")
+                            .insert(binding.clone(), id);
+                    }
+                }
+                VariablePattern::Object(bindings) => {
+                    let Type::Struct(struct_id) = init_ty.without_nullable() else {
+                        self.error(
+                            format!("对象解构目标必须是 struct，实际为 {}", init_ty.display()),
+                            init.span,
+                        );
+                        return;
+                    };
+                    let info = self.types.structs[*struct_id as usize].clone();
+                    for (field_name, binding) in bindings {
+                        let Some(field) = info.fields.iter().find(|f| f.name == *field_name) else {
+                            self.error(
+                                format!("struct {} 没有字段 `{}`", info.name, field_name),
+                                variable.span,
+                            );
+                            continue;
+                        };
+                        let id = self.alloc_local();
+                        self.symbols[id.0 as usize].kind = SymbolKind::Local {
+                            ty: field.ty.clone(),
+                            mutable: variable.kind == VarKind::Let,
+                        };
+                        self.scopes
+                            .last_mut()
+                            .expect("作用域存在")
+                            .insert(binding.clone(), id);
+                    }
+                }
+            }
+            return;
+        }
         let ty = if let Some(annotation) = &variable.ty {
             let ty = self.lower_type(annotation);
             if let Some(init) = &variable.init {
@@ -2557,6 +2621,13 @@ impl<'s> Checker<'s> {
                         self.error(
                             format!("不能把 {} 赋给 {}", value_ty.display(), target_ty.display()),
                             value.span,
+                        );
+                    }
+                } else if matches!(op, AssignOp::LogicalAnd | AssignOp::LogicalOr) {
+                    if target_ty != Type::Bool || !self.is_assignable(&value_ty, &target_ty) {
+                        self.error(
+                            format!("`&&=`/`||=` 需要 bool 目标，实际为 {}", target_ty.display()),
+                            target.span,
                         );
                     }
                 } else if !target_ty.is_numeric() {
@@ -2788,10 +2859,29 @@ impl<'s> Checker<'s> {
                 }
                 merged.unwrap_or(Type::Error)
             }
+            ExprKind::Spread(inner) => {
+                self.error("`...` 展开只能用于数组/对象字面量或调用参数", expr.span);
+                self.check_expr(inner)
+            }
             ExprKind::Array(items) => {
                 let mut element = None;
                 for item in items {
-                    let ty = self.check_expr(item);
+                    let ty = match &item.kind {
+                        ExprKind::Spread(inner) => {
+                            let ty = self.check_expr(inner);
+                            match ty.without_nullable() {
+                                Type::Array(inner_ty) => (**inner_ty).clone(),
+                                other => {
+                                    self.error(
+                                        format!("展开目标必须是数组，实际为 {}", other.display()),
+                                        inner.span,
+                                    );
+                                    Type::Error
+                                }
+                            }
+                        }
+                        _ => self.check_expr(item),
+                    };
                     match &element {
                         None => element = Some(ty),
                         Some(expected) => {
@@ -2833,6 +2923,22 @@ impl<'s> Checker<'s> {
                             .map(|field| (field.name.clone(), field.ty.clone()))
                             .collect();
                         for field in fields {
+                            if let Some(spread_expr) = &field.spread {
+                                let spread_ty = self.check_expr(spread_expr);
+                                if !matches!(
+                                    spread_ty.without_nullable(),
+                                    Type::Struct(spread_id) if *spread_id == id
+                                ) {
+                                    self.error(
+                                        format!(
+                                            "`{{...}}` 展开目标必须是同类型 struct（{}）",
+                                            struct_name
+                                        ),
+                                        spread_expr.span,
+                                    );
+                                }
+                                continue;
+                            }
                             let field_name = match &field.key {
                                 ObjectKey::Ident(ident) => ident.name.clone(),
                                 ObjectKey::Str(value) => value.clone(),
@@ -2897,8 +3003,7 @@ impl<'s> Checker<'s> {
                             .result
                             .new_types
                             .insert(expr.span.start, Type::Class(id));
-                        let args_ty: Vec<Type> =
-                            args.iter().map(|arg| self.check_expr(arg)).collect();
+                        let args_ty = self.call_args_ty(args);
                         let info = self.types.classes[id as usize].clone();
                         let Some(constructor) = info
                             .methods
@@ -3320,6 +3425,8 @@ impl<'s> Checker<'s> {
     }
 
     fn check_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Type {
+        // 调用实参：`...数组字面量` 展开成多个实参（变量数组展开暂不支持）。
+        let args_ty = self.call_args_ty(args);
         // 命名空间函数调用：ns.foo(...)
         if let ExprKind::Member { object, name, .. } = &callee.kind {
             if let ExprKind::Ident(ns_ident) = &object.kind {
@@ -3328,8 +3435,6 @@ impl<'s> Checker<'s> {
                         let target_names =
                             self.module_names.get(target).cloned().unwrap_or_default();
                         if let Some(symbol_ids) = target_names.get(&name.name) {
-                            let args_ty: Vec<Type> =
-                                args.iter().map(|arg| self.check_expr(arg)).collect();
                             let mut candidates = Vec::new();
                             for symbol_id in symbol_ids {
                                 if let SymbolKind::Function(sig) =
@@ -3375,8 +3480,7 @@ impl<'s> Checker<'s> {
                                 .result
                                 .expr_types
                                 .insert((ident.span.start, ident.span.end), symbol_type.clone());
-                            let args_ty: Vec<Type> =
-                                args.iter().map(|arg| self.check_expr(arg)).collect();
+                            let args_ty = self.call_args_ty(args);
                             if args_ty.len() != params.len() {
                                 self.error(
                                     format!(
@@ -3404,7 +3508,6 @@ impl<'s> Checker<'s> {
                         }
                     }
                 }
-                let args_ty: Vec<Type> = args.iter().map(|arg| self.check_expr(arg)).collect();
                 let Some(symbol_ids) = self.state.names.get(&ident.name).cloned() else {
                     self.error(format!("未定义的函数 `{}`", ident.name), ident.span);
                     return Type::Error;
@@ -3438,7 +3541,6 @@ impl<'s> Checker<'s> {
                     self.error("`super(...)` 只能在有基类的构造函数中使用", span);
                     return Type::Error;
                 };
-                let args_ty: Vec<Type> = args.iter().map(|arg| self.check_expr(arg)).collect();
                 let info = self.types.classes[base as usize].clone();
                 let Some(constructor) = info
                     .methods
@@ -3486,8 +3588,6 @@ impl<'s> Checker<'s> {
                                 return Type::Error;
                             };
                             let variant = &info.members[index];
-                            let args_ty: Vec<Type> =
-                                args.iter().map(|arg| self.check_expr(arg)).collect();
                             let resolved_enum =
                                 match self.state.result.enum_targets.get(&span.start).copied() {
                                     // 带注解声明提供了目标实例（如 Option<int> 的 None）。
@@ -3548,7 +3648,6 @@ impl<'s> Checker<'s> {
                     }
                 }
                 let object_ty = self.check_expr(object);
-                let args_ty: Vec<Type> = args.iter().map(|arg| self.check_expr(arg)).collect();
                 let result = match object_ty.without_nullable() {
                     Type::TypeParam(param_name) => {
                         let mut resolved = None;
@@ -3711,7 +3810,11 @@ impl<'s> Checker<'s> {
                         }
                     }
                     Type::Array(inner) => {
-                        if (name.name == "map" || name.name == "filter") && args.len() == 1 {
+                        if matches!(
+                            name.name.as_str(),
+                            "map" | "filter" | "forEach" | "some" | "every" | "find"
+                        ) && args.len() == 1
+                        {
                             let fn_ty = args_ty[0].clone();
                             let Type::Function {
                                 params: fn_params,
@@ -3735,14 +3838,22 @@ impl<'s> Checker<'s> {
                                 );
                                 return Type::Error;
                             }
-                            if name.name == "filter" && !self.is_assignable(&fn_ret, &Type::Bool) {
-                                self.error("`filter` 的函数必须返回 bool", args[0].span);
+                            if matches!(name.name.as_str(), "filter" | "some" | "every" | "find")
+                                && !self.is_assignable(&fn_ret, &Type::Bool)
+                            {
+                                self.error(
+                                    format!("`{}` 的函数必须返回 bool", name.name),
+                                    args[0].span,
+                                );
                                 return Type::Error;
                             }
-                            let method = if name.name == "map" {
-                                ArrayMethodKind::Map
-                            } else {
-                                ArrayMethodKind::Filter
+                            let method = match name.name.as_str() {
+                                "map" => ArrayMethodKind::Map,
+                                "filter" => ArrayMethodKind::Filter,
+                                "forEach" => ArrayMethodKind::ForEach,
+                                "some" => ArrayMethodKind::Some,
+                                "every" => ArrayMethodKind::Every,
+                                _ => ArrayMethodKind::Find,
                             };
                             self.state.result.call_targets.insert(
                                 (span.start, span.end),
@@ -3752,11 +3863,41 @@ impl<'s> Checker<'s> {
                                     ret: (**fn_ret).clone(),
                                 },
                             );
-                            if method == ArrayMethodKind::Map {
-                                Type::Array(Box::new((**fn_ret).clone()))
-                            } else {
-                                Type::Array(inner.clone())
+                            match method {
+                                ArrayMethodKind::Map => Type::Array(Box::new((**fn_ret).clone())),
+                                ArrayMethodKind::Filter => Type::Array(inner.clone()),
+                                ArrayMethodKind::ForEach => Type::Void,
+                                ArrayMethodKind::Some | ArrayMethodKind::Every => Type::Bool,
+                                ArrayMethodKind::Find => Type::Nullable(inner.clone()),
+                                ArrayMethodKind::Push | ArrayMethodKind::Pop => Type::Error,
                             }
+                        } else if name.name == "push" && args.len() == 1 {
+                            if !self.is_assignable(&args_ty[0], inner) {
+                                self.error(
+                                    format!("`push` 参数必须是 {}", inner.display()),
+                                    args[0].span,
+                                );
+                                return Type::Error;
+                            }
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method: ArrayMethodKind::Push,
+                                    elem: (**inner).clone(),
+                                    ret: Type::Int,
+                                },
+                            );
+                            Type::Int
+                        } else if name.name == "pop" && args.is_empty() {
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method: ArrayMethodKind::Pop,
+                                    elem: (**inner).clone(),
+                                    ret: (**inner).clone(),
+                                },
+                            );
+                            (**inner).clone()
                         } else if name.name == "join" && matches!(**inner, Type::Str) {
                             if args_ty.len() != 1 || !self.is_assignable(&args_ty[0], &Type::Str) {
                                 self.error("`join` 需要一个 string 分隔符", span);
@@ -3826,6 +3967,29 @@ impl<'s> Checker<'s> {
                 Type::Error
             }
         }
+    }
+
+    /// 调用实参类型：`...数组字面量` 展开为多个实参类型。
+    fn call_args_ty(&mut self, args: &[Expr]) -> Vec<Type> {
+        let mut out = Vec::new();
+        for arg in args {
+            if let ExprKind::Spread(inner) = &arg.kind {
+                match &inner.kind {
+                    ExprKind::Array(items) => {
+                        for item in items {
+                            out.push(self.check_expr(item));
+                        }
+                    }
+                    _ => {
+                        self.error("调用展开暂只支持数组字面量", inner.span);
+                        out.push(Type::Error);
+                    }
+                }
+            } else {
+                out.push(self.check_expr(arg));
+            }
+        }
+        out
     }
 
     fn pick_overload(
@@ -4893,6 +5057,87 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 output.extend(inner);
             }
             StmtKind::Variable(variable) => {
+                if let Some(pattern) = &variable.pattern {
+                    let Some(init_expr) = &variable.init else {
+                        return;
+                    };
+                    let init_ty = self.expr_type(init_expr);
+                    // init 只求值一次：存临时局部，绑定从临时取。
+                    let tmp = self.declare_local("$destr", init_ty.clone(), false);
+                    output.push(MirStmt::new(MirStmtKind::VarDecl {
+                        local: tmp,
+                        init: Some(self.lower_expr(init_expr)),
+                    }));
+                    let tmp_expr = MirExpr::Local(tmp);
+                    match pattern {
+                        VariablePattern::Array(bindings) => {
+                            let elem = match init_ty.without_nullable() {
+                                Type::Array(inner) => (**inner).clone(),
+                                _ => Type::Error,
+                            };
+                            for (index, binding) in bindings.iter().enumerate() {
+                                let local = self.declare_local(
+                                    binding,
+                                    elem.clone(),
+                                    variable.kind == VarKind::Let,
+                                );
+                                self.name_scopes
+                                    .last_mut()
+                                    .expect("作用域存在")
+                                    .insert(binding.clone(), local);
+                                output.push(MirStmt::new(MirStmtKind::VarDecl {
+                                    local,
+                                    init: Some(MirExpr::Index {
+                                        object: Box::new(tmp_expr.clone()),
+                                        index: Box::new(MirExpr::Int(index as i64)),
+                                        elem: Box::new(elem.clone()),
+                                    }),
+                                }));
+                            }
+                        }
+                        VariablePattern::Object(bindings) => {
+                            let struct_id = match init_ty.without_nullable() {
+                                Type::Struct(id) => *id,
+                                _ => u32::MAX,
+                            };
+                            for (field_name, binding) in bindings {
+                                let index =
+                                    self.lowerer.types.structs.get(struct_id as usize).and_then(
+                                        |info| {
+                                            info.fields.iter().position(|f| f.name == *field_name)
+                                        },
+                                    );
+                                let Some(index) = index else {
+                                    continue;
+                                };
+                                let ty = self
+                                    .lowerer
+                                    .types
+                                    .structs
+                                    .get(struct_id as usize)
+                                    .map(|info| info.fields[index].ty.clone())
+                                    .unwrap_or(Type::Error);
+                                let local = self.declare_local(
+                                    binding,
+                                    ty.clone(),
+                                    variable.kind == VarKind::Let,
+                                );
+                                self.name_scopes
+                                    .last_mut()
+                                    .expect("作用域存在")
+                                    .insert(binding.clone(), local);
+                                output.push(MirStmt::new(MirStmtKind::VarDecl {
+                                    local,
+                                    init: Some(MirExpr::Field {
+                                        object: Box::new(tmp_expr.clone()),
+                                        index,
+                                    }),
+                                }));
+                            }
+                        }
+                    }
+                    return;
+                }
                 let ty = self.local_type(variable);
                 let local =
                     self.declare_local(&variable.name.name, ty, variable.kind == VarKind::Let);
@@ -5409,6 +5654,16 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     },
                     AssignOp::Coalesce => MirExpr::Binary {
                         op: MirBinary::Coalesce,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::LogicalAnd => MirExpr::Binary {
+                        op: MirBinary::And,
+                        left: Box::new(self.lower_expr(target_ast)),
+                        right: Box::new(value),
+                    },
+                    AssignOp::LogicalOr => MirExpr::Binary {
+                        op: MirBinary::Or,
                         left: Box::new(self.lower_expr(target_ast)),
                         right: Box::new(value),
                     },
@@ -6071,17 +6326,31 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             break;
                         }
                     }
+                    if let ExprKind::Spread(inner) = &arg.kind {
+                        if let ExprKind::Array(items) = &inner.kind {
+                            for item in items {
+                                args.push(self.lower_expr(item));
+                            }
+                            continue;
+                        }
+                    }
                     args.push(self.lower_expr(arg));
                 }
                 if let Some(fixed) = variadic_fixed {
-                    let packed: Vec<(i64, MirExpr)> = ast_args
-                        .iter()
-                        .skip(fixed)
-                        .map(|arg| {
-                            let ty = self.expr_type(arg);
-                            (vararg_tag(&ty), self.lower_expr(arg))
-                        })
-                        .collect();
+                    let mut packed: Vec<(i64, MirExpr)> = Vec::new();
+                    for arg in ast_args.iter().skip(fixed) {
+                        if let ExprKind::Spread(inner) = &arg.kind {
+                            if let ExprKind::Array(items) = &inner.kind {
+                                for item in items {
+                                    let ty = self.expr_type(item);
+                                    packed.push((vararg_tag(&ty), self.lower_expr(item)));
+                                }
+                                continue;
+                            }
+                        }
+                        let ty = self.expr_type(arg);
+                        packed.push((vararg_tag(&ty), self.lower_expr(arg)));
+                    }
                     args.push(MirExpr::VarArgs(packed));
                 }
                 if variadic_fixed.is_none() {
@@ -6106,6 +6375,48 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         ExprKind::Member { object, .. } => self.lower_expr(object),
                         _ => MirExpr::Int(0),
                     };
+                    if matches!(method, ArrayMethodKind::Push | ArrayMethodKind::Pop) {
+                        let (name, params) = match method {
+                            ArrayMethodKind::Push => ("sw_array_push", 1usize),
+                            _ => ("sw_array_pop", 0usize),
+                        };
+                        let mut sig = FunctionSig {
+                            module: self.lowerer.state.id,
+                            name: name.to_owned(),
+                            generics: Vec::new(),
+                            bounds: HashMap::new(),
+                            params: vec![ParamSig {
+                                name: "self".to_owned(),
+                                ty: Type::Array(Box::new(elem.clone())),
+                                has_default: false,
+                                rest: false,
+                            }],
+                            ret: Type::Int,
+                            extern_c: true,
+                            span: expr.span,
+                        };
+                        if params == 1 {
+                            sig.params.push(ParamSig {
+                                name: "value".to_owned(),
+                                ty: elem.clone(),
+                                has_default: false,
+                                rest: false,
+                            });
+                        } else {
+                            sig.ret = elem.clone();
+                        }
+                        let mut call_args = vec![object];
+                        if params == 1 {
+                            call_args.push(args.first().cloned().unwrap_or(MirExpr::Int(0)));
+                        }
+                        return MirExpr::Call {
+                            callee: MirCallee::Extern {
+                                name: name.to_owned(),
+                                sig,
+                            },
+                            args: call_args,
+                        };
+                    }
                     let closure = args.first().cloned().unwrap_or(MirExpr::Int(0));
                     let fn_ty = self.expr_type(&ast_args[0]);
                     let (fn_params, fn_ret) = match &fn_ty {
@@ -6149,6 +6460,35 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             sig,
                             elem: elem.clone(),
                         },
+                        ArrayMethodKind::ForEach => MirExpr::ArrayIterate {
+                            object: Box::new(object),
+                            closure: Box::new(closure),
+                            sig,
+                            elem: elem.clone(),
+                            mode: IterateMode::ForEach,
+                        },
+                        ArrayMethodKind::Some => MirExpr::ArrayIterate {
+                            object: Box::new(object),
+                            closure: Box::new(closure),
+                            sig,
+                            elem: elem.clone(),
+                            mode: IterateMode::Some,
+                        },
+                        ArrayMethodKind::Every => MirExpr::ArrayIterate {
+                            object: Box::new(object),
+                            closure: Box::new(closure),
+                            sig,
+                            elem: elem.clone(),
+                            mode: IterateMode::Every,
+                        },
+                        ArrayMethodKind::Find => MirExpr::ArrayIterate {
+                            object: Box::new(object),
+                            closure: Box::new(closure),
+                            sig,
+                            elem: elem.clone(),
+                            mode: IterateMode::Find,
+                        },
+                        ArrayMethodKind::Push | ArrayMethodKind::Pop => unreachable!(),
                     };
                 }
                 let callee = match target {
@@ -6564,6 +6904,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     ret: self.expr_type(expr),
                 }
             }
+            ExprKind::Spread(inner) => {
+                self.error("`...` 展开只能用于数组/对象字面量或调用参数", expr.span);
+                self.lower_expr(inner)
+            }
             ExprKind::Array(items) => {
                 let elem = self
                     .result()
@@ -6578,7 +6922,15 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 let elem = substitute_type(&elem, &self.type_args);
                 MirExpr::Array {
                     elem: Box::new(elem),
-                    items: items.iter().map(|item| self.lower_expr(item)).collect(),
+                    items: items
+                        .iter()
+                        .map(|item| match &item.kind {
+                            ExprKind::Spread(inner) => {
+                                MirExpr::ArraySpread(Box::new(self.lower_expr(inner)))
+                            }
+                            _ => self.lower_expr(item),
+                        })
+                        .collect(),
                 }
             }
             ExprKind::Object(fields) => {
@@ -6598,6 +6950,24 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             .collect();
                         let mut field_values = Vec::new();
                         for field in fields {
+                            if let Some(spread_expr) = &field.spread {
+                                let spread_ty = self.expr_type(spread_expr);
+                                if let Type::Struct(spread_id) = spread_ty.without_nullable() {
+                                    if *spread_id == id {
+                                        let spread_mir = self.lower_expr(spread_expr);
+                                        for index in 0..field_names.len() {
+                                            field_values.push((
+                                                index,
+                                                MirExpr::Field {
+                                                    object: Box::new(spread_mir.clone()),
+                                                    index,
+                                                },
+                                            ));
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
                             let name = match &field.key {
                                 ObjectKey::Ident(ident) => ident.name.clone(),
                                 ObjectKey::Str(value) => value.clone(),
@@ -6880,6 +7250,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 for arm in arms {
                     self.collect_captures_expr(&arm.body, lambda_params, out, seen);
                 }
+            }
+            ExprKind::Spread(inner) => {
+                self.collect_captures_expr(inner, lambda_params, out, seen);
             }
             ExprKind::Object(fields) => {
                 for field in fields {

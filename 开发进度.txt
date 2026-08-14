@@ -899,6 +899,37 @@ Sw 编译器（swcc）开发进度
                          float/双绑定/无字段变体/int 表达式），62 个 examples
                          全过；cargo test 52 全绿；fmt 通过
 
+    2026-08-15 03:16  JS 语法补齐批次（A2：逻辑赋值/展开/解构/数组方法）：
+                       - 逻辑赋值：`&&=`、`||=`（token/lexer/AssignOp/降级
+                         为 Binary And/Or，目标要求 bool）
+                       - 展开运算符：
+                         a) 数组字面量 `[...a, 99, ...b]`——MirExpr::ArraySpread，
+                            codegen 动态总长 + 按原始顺序填充（固定项 +
+                            spread 内层循环复制，u8/int/float/string；struct
+                            元素暂不支持 spread）
+                         b) struct 字面量 `{ ...origin, y: 9 }`——展开为
+                            Field 表达式，显式字段覆盖
+                         c) 调用 `f(...[1, 2, 3])`——数组字面量展开为多个
+                            实参（变量数组展开暂不支持），varargs 位置也能
+                            展开打包
+                       - 解构声明：`const [a, b] = arr;`、
+                         `const { x, y } = p;`、`const { x: renamed } = p;`
+                         ——init 只求值一次（临时局部），绑定按 Index/Field
+                         生成 VarDecl；数组解构支持函数调用返回值
+                       - 数组方法：push/pop（运行时 sw_array_push/pop，
+                         扩容复制）、forEach/some/every/find（MirExpr::
+                         ArrayIterate 内联循环，some/every 提前退出，find
+                         返回可空元素，找不到 null）
+                       - 修复潜伏 bug：codegen 临时槽（new_slot）与局部变量
+                         槽（slot_for）共用 slots 表，数组/map/match 等临时
+                         槽会错位后续 struct 局部变量（暴露于展开测试）；
+                         分离 temp_slots
+                       - 新增 probe-spread.sw（8 断言）/probe-destructure.sw
+                         （4 断言）/probe-array-methods.sw（8 断言），
+                         65 个 examples 全过；cargo test 52 全绿；fmt 通过
+                       - 待办：class static 方法/字段（parser 已解析 static
+                         关键字，语义层未实现）
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

@@ -139,6 +139,8 @@ pub enum MirExpr {
         elem: Box<Type>,
         items: Vec<MirExpr>,
     },
+    /// 数组字面量内的展开项 `...arr`（items 中与普通项混排）。
+    ArraySpread(Box<MirExpr>),
     /// 可变参数打包：每个元素为 (类型标签, 元素)，用作可变参数函数的最后一个参数。
     VarArgs(Vec<(i64, MirExpr)>),
     /// 数组/字符串长度。
@@ -228,12 +230,28 @@ pub enum MirExpr {
         sig: FunctionSig,
         elem: Type,
     },
+    /// 数组迭代（forEach/some/every/find）：内联循环调闭包。
+    ArrayIterate {
+        object: Box<MirExpr>,
+        closure: Box<MirExpr>,
+        sig: FunctionSig,
+        elem: Type,
+        mode: IterateMode,
+    },
     /// match 表达式：按 tag 分派，每分支解构绑定后求值，结果进公共槽。
     MatchExpr {
         value: Box<MirExpr>,
         arms: Vec<MatchArmMir>,
         ret: Type,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IterateMode {
+    ForEach,
+    Some,
+    Every,
+    Find,
 }
 
 #[derive(Clone, Debug)]

@@ -2346,6 +2346,32 @@ void sw_array_set(sw_array* array, int64_t index, int64_t value) {
     ((int64_t*)array->data)[index] = value;
 }
 
+// 追加元素（扩容：新数组 + 复制），返回新长度。
+int64_t sw_array_push(sw_array* array, int64_t value) {
+    if (array == NULL) {
+        return 0;
+    }
+    if (array->len >= array->cap) {
+        int64_t new_cap = array->cap * 2 + 1;
+        sw_array* bigger = sw_array_new(8, new_cap);
+        memcpy(bigger->data, array->data, (sw_size)((uint64_t)array->len * 8));
+        bigger->len = array->len;
+        *array = *bigger;
+    }
+    ((int64_t*)array->data)[array->len] = value;
+    array->len += 1;
+    return array->len;
+}
+
+// 弹出末尾元素（空数组返回 0）。
+int64_t sw_array_pop(sw_array* array) {
+    if (array == NULL || array->len <= 0) {
+        return 0;
+    }
+    array->len -= 1;
+    return ((int64_t*)array->data)[array->len];
+}
+
 // 数组切片（复制）：a[start:end]，越界自动裁剪，返回新数组。
 sw_array* sw_array_slice(sw_array* array, int64_t start, int64_t end, int64_t elem_size) {
     if (elem_size <= 0) {

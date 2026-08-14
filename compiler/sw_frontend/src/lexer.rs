@@ -269,7 +269,13 @@ impl<'a> Lexer<'a> {
                 }
             }
             '&' => {
-                if self.at("&&") {
+                if self.at("&&=") {
+                    self.bump_thrice();
+                    Token {
+                        kind: TokenKind::AmpAmpAssign,
+                        span: Span::new(start, self.pos),
+                    }
+                } else if self.at("&&") {
                     self.bump_twice();
                     Token {
                         kind: TokenKind::AmpAmp,
@@ -286,7 +292,13 @@ impl<'a> Lexer<'a> {
                 }
             }
             '|' => {
-                if self.at("||") {
+                if self.at("||=") {
+                    self.bump_thrice();
+                    Token {
+                        kind: TokenKind::PipePipeAssign,
+                        span: Span::new(start, self.pos),
+                    }
+                } else if self.at("||") {
                     self.bump_twice();
                     Token {
                         kind: TokenKind::PipePipe,

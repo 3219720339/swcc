@@ -679,7 +679,49 @@ impl<'a> Parser<'a> {
             }
         };
         self.advance();
-        let name = self.expect_ident("变量名")?;
+        let (name, pattern) = if self.at(&TokenKind::LBracket) {
+            self.advance();
+            let mut bindings = Vec::new();
+            while !self.at(&TokenKind::RBracket) && !self.at(&TokenKind::Eof) {
+                bindings.push(self.expect_ident("解构绑定名")?.name);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RBracket, "数组解构缺少 `]`").ok();
+            (
+                Ident {
+                    name: "$destructure".to_owned(),
+                    span: Span::new(start, self.peek().span.start),
+                },
+                Some(VariablePattern::Array(bindings)),
+            )
+        } else if self.at(&TokenKind::LBrace) {
+            self.advance();
+            let mut bindings = Vec::new();
+            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                let key = self.expect_ident("对象解构字段名")?.name;
+                let binding = if self.eat(&TokenKind::Colon) {
+                    self.expect_ident("对象解构绑定名")?.name
+                } else {
+                    key.clone()
+                };
+                bindings.push((key, binding));
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RBrace, "对象解构缺少 `}`").ok();
+            (
+                Ident {
+                    name: "$destructure".to_owned(),
+                    span: Span::new(start, self.peek().span.start),
+                },
+                Some(VariablePattern::Object(bindings)),
+            )
+        } else {
+            (self.expect_ident("变量名")?, None)
+        };
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type()?)
         } else {
@@ -697,6 +739,7 @@ impl<'a> Parser<'a> {
         Ok(VariableDecl {
             kind,
             name,
+            pattern,
             ty,
             init,
             span: Span::new(start, self.peek().span.start),
@@ -783,6 +826,7 @@ impl<'a> Parser<'a> {
                 init: Some(ForInit::Variable(VariableDecl {
                     kind,
                     name,
+                    pattern: None,
                     ty,
                     init,
                     span: Span::new(start, self.peek().span.start),
@@ -1385,6 +1429,8 @@ impl<'a> Parser<'a> {
             TokenKind::ShlAssign => AssignOp::Shl,
             TokenKind::ShrAssign => AssignOp::Shr,
             TokenKind::CoalesceAssign => AssignOp::Coalesce,
+            TokenKind::AmpAmpAssign => AssignOp::LogicalAnd,
+            TokenKind::PipePipeAssign => AssignOp::LogicalOr,
             _ => return None,
         };
         Some(op)
@@ -1750,7 +1796,16 @@ impl<'a> Parser<'a> {
             return Ok(arguments);
         }
         loop {
-            arguments.push(self.parse_assignment()?);
+            if self.at(&TokenKind::DotDotDot) {
+                let start = self.peek().span.start;
+                self.advance();
+                arguments.push(Expr {
+                    kind: ExprKind::Spread(Box::new(self.parse_assignment()?)),
+                    span: Span::new(start, self.peek().span.start),
+                });
+            } else {
+                arguments.push(self.parse_assignment()?);
+            }
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
@@ -1791,7 +1846,15 @@ impl<'a> Parser<'a> {
                 let mut elements = Vec::new();
                 if !self.at(&TokenKind::RBracket) {
                     loop {
-                        elements.push(self.parse_assignment()?);
+                        if self.at(&TokenKind::DotDotDot) {
+                            self.advance();
+                            elements.push(Expr {
+                                kind: ExprKind::Spread(Box::new(self.parse_assignment()?)),
+                                span: Span::new(start, self.peek().span.start),
+                            });
+                        } else {
+                            elements.push(self.parse_assignment()?);
+                        }
                         if !self.eat(&TokenKind::Comma) {
                             break;
                         }
@@ -1807,6 +1870,22 @@ impl<'a> Parser<'a> {
                 let mut fields = Vec::new();
                 if !self.at(&TokenKind::RBrace) {
                     loop {
+                        if self.at(&TokenKind::DotDotDot) {
+                            self.advance();
+                            let value = self.parse_assignment()?;
+                            fields.push(ObjectField {
+                                key: ObjectKey::Str(String::new()),
+                                value: value.clone(),
+                                spread: Some(value),
+                            });
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
+                            }
+                            if self.at(&TokenKind::RBrace) {
+                                break;
+                            }
+                            continue;
+                        }
                         let key = match &self.peek().kind {
                             TokenKind::Ident(name) => {
                                 let name = name.clone();
@@ -1843,7 +1922,11 @@ impl<'a> Parser<'a> {
                                 span: Span::empty(start),
                             }
                         };
-                        fields.push(ObjectField { key, value });
+                        fields.push(ObjectField {
+                            key,
+                            value,
+                            spread: None,
+                        });
                         if !self.eat(&TokenKind::Comma) {
                             break;
                         }
