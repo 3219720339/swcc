@@ -180,7 +180,7 @@ function main(): int {
     passed = passed & check(集合转数组(cs).length == 1, "cn set to array");
 
     // 时间补充
-    passed = passed & check(datetime_string_ms(0) == "1970-01-01 08:00:00.000", "datetime_ms epoch cn tz");
+    // 不依赖本地时区：格式长度与毫秒位校验（epoch 的本地时间随 TZ 变化）。
     const ms_text = datetime_string_ms(1786700000000);
     passed = passed & check(ms_text.length == 23 && ms_text[19] == '.', "datetime_ms format");
     const w = week_of_year(1786700000);

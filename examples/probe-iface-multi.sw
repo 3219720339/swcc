@@ -25,6 +25,21 @@ class 鸭子 implements 会飞, 会游泳 {
     }
 }
 
+// 接口继承接口：飞行器接口继承会飞接口（新增方法）
+interface 会降落 extends 会飞 {
+    land(): string;
+}
+
+class 飞机 implements 会降落 {
+    fly(): string {
+        return "飞机飞";
+    }
+
+    land(): string {
+        return "飞机降落";
+    }
+}
+
 // 泛型接口 + 多实现
 interface 容器<T> {
     get(): T;
@@ -107,6 +122,16 @@ function main(): int {
     passed = passed & check(f1.fly() == "唐老鸭 飞", "multi iface fly dispatch");
     passed = passed & check(s1.swim() == "唐老鸭 游", "multi iface swim dispatch");
     passed = passed & check(测试会飞接口(duck) == "唐老鸭 飞", "iface param dispatch");
+
+    // 2) 接口继承接口：实现子接口的类自动满足父接口
+    const plane = new 飞机();
+    const f2: 会飞 = plane;  // 子接口实现可赋给父接口
+    const l2: 会降落 = plane;
+    passed = passed & check(f2.fly() == "飞机飞", "iface extends base dispatch");
+    passed = passed & check(l2.fly() == "飞机飞", "iface extends inherited method");
+    passed = passed & check(l2.land() == "飞机降落", "iface extends own method");
+    const f4: 会飞 = l2;  // 子接口引用赋给父接口引用
+    passed = passed & check(f4.fly() == "飞机飞", "iface ref to parent iface");
 
     // 3) 泛型接口多实现
     const box = new 计数盒<int>(42, 7);

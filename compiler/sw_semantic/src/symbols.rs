@@ -96,6 +96,8 @@ pub struct InterfaceInfo {
     pub name: String,
     pub generics: Vec<String>,
     pub methods: Vec<FunctionSig>,
+    /// 父接口 id 列表（interface extends A, B）。
+    pub extends: Vec<u32>,
 }
 
 /// 类型表：struct/enum/class/interface 的聚合信息。

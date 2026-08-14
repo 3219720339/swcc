@@ -10,6 +10,7 @@ import {
     add_months,
     add_years,
     time_from_parts,
+    timezone_offset_sec,
     year_of,
     month_of,
     day_of,
@@ -54,7 +55,10 @@ function main(): int {
     const um = utc_month_of(utc_ts);
     const ud = utc_day_of(utc_ts);
     passed = passed & check(uy == 2024 && um == 1 && ud == 24, "utc date fields");
-    passed = passed & check(utc_hour_of(utc_ts) == 1, "utc hour shift");
+    // utc_hour = (local_hour - 时区偏移秒/3600) mod 24，跨时区恒成立。
+    const tz_hours = timezone_offset_sec() / 3600;
+    const expected_utc_hour = (9 - tz_hours + 24) % 24;
+    passed = passed & check(utc_hour_of(utc_ts) == expected_utc_hour, "utc hour shift");
     passed = passed & check(utc_minute_of(utc_ts) == 12 && utc_second_of(utc_ts) == 1, "utc min/sec");
     const uw = utc_weekday_of(utc_ts);
     passed = passed & check(uw >= 0 && uw <= 6, "utc weekday range");
@@ -79,9 +83,11 @@ function main(): int {
     passed = passed & check(年份增减(jan31, 2) == plus2y, "cn add_years");
 
     // ---- which ----
-    const which_cmd = os_which("cmd");
-    passed = passed & check(which_cmd.length > 0, "which cmd found");
-    passed = passed & check(查找可执行文件("cmd").length > 0, "cn which");
+    // 跨平台：Windows 用 cmd，Linux/macOS 用 sh。
+    const which_exe = os_which("cmd");
+    const which_sh = os_which("sh");
+    passed = passed & check(which_exe.length > 0 || which_sh.length > 0, "which found");
+    passed = passed & check(查找可执行文件("cmd").length > 0 || 查找可执行文件("sh").length > 0, "cn which");
     const which_none = os_which("sw-nonexistent-xyz");
     passed = passed & check(which_none == "", "which missing empty");
 

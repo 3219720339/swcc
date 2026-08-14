@@ -373,6 +373,7 @@ impl Analyzer {
                                 name: interface.name.name.clone(),
                                 generics: Vec::new(),
                                 methods: Vec::new(),
+                                extends: Vec::new(),
                             });
                             Some((
                                 interface.name.name.clone(),
@@ -786,7 +787,19 @@ impl Analyzer {
                                     );
                                 }
                             }
-                            implemented.push(iface_id);
+                            // 注册接口及其父接口链（interface extends A, B 的父接口
+                            // 也进入 class_interfaces，vtable 才能填父接口槽位，
+                            // 子接口实现即可赋给父接口类型）。
+                            let mut stack = vec![iface_id];
+                            while let Some(current) = stack.pop() {
+                                if implemented.contains(&current) {
+                                    continue;
+                                }
+                                implemented.push(current);
+                                for parent in &self.types.interfaces[current as usize].extends {
+                                    stack.push(*parent);
+                                }
+                            }
                         }
                         if generics.is_empty() {
                             self.types.class_interfaces.insert(id, implemented);
@@ -802,14 +815,59 @@ impl Analyzer {
                         .iter()
                         .map(|g| g.name.clone())
                         .collect::<Vec<_>>();
+                    let mut extends = Vec::new();
+                    let mut extends_errors = Vec::new();
+                    {
+                        let mut resolver = TypeResolver::new(
+                            &self.symbols,
+                            &mut self.types,
+                            &self.registry,
+                            &self.states[module_id.0 as usize].names,
+                        );
+                        for parent in &interface.extends {
+                            match resolver.lower(parent, &generics) {
+                                Type::Interface(id) => extends.push(id),
+                                other => {
+                                    extends_errors.push((
+                                        parent.span,
+                                        format!(
+                                            "`extends` 只能继承 interface，实际为 {}",
+                                            other.display()
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    for (span, message) in extends_errors {
+                        self.error(message, span);
+                    }
                     let mut methods = Vec::new();
                     for method in &interface.methods {
                         methods.push(self.build_function_sig(module_id, method, &generics, None));
+                    }
+                    // 先收集父接口方法（避免借用冲突）。
+                    let mut inherited: Vec<FunctionSig> = Vec::new();
+                    for parent_id in &extends {
+                        let parent_methods =
+                            self.types.interfaces[*parent_id as usize].methods.clone();
+                        for pm in parent_methods {
+                            if !inherited.iter().any(|m| m.name == pm.name) {
+                                inherited.push(pm);
+                            }
+                        }
                     }
                     let id = self.type_id_for(module_id, &interface.name.name);
                     if let Some(SymbolKind::Type(SymbolType::Interface(id))) = id {
                         let info = &mut self.types.interfaces[id as usize];
                         info.generics = generics;
+                        info.extends = extends.clone();
+                        // 合并父接口方法（父接口方法在前，自身方法在后，去重）。
+                        for pm in inherited {
+                            if !methods.iter().any(|m| m.name == pm.name) {
+                                methods.push(pm);
+                            }
+                        }
                         info.methods = methods;
                     }
                 }
@@ -1822,6 +1880,7 @@ impl<'a> TypeResolver<'a> {
             name: info.name,
             generics: Vec::new(),
             methods,
+            extends: info.extends,
         });
         self.types.generic_interface_instances.insert(key, id);
         id
@@ -2098,6 +2157,22 @@ impl<'s> Checker<'s> {
                         return true;
                     }
                     current = self.types.classes[class_id as usize].base;
+                }
+                false
+            }
+            (Type::Interface(from_id), Type::Interface(to_id)) => {
+                // 子接口引用可赋给父接口（沿 extends 链查找）。
+                if from_id == to_id {
+                    return true;
+                }
+                let mut stack = vec![*from_id];
+                while let Some(current) = stack.pop() {
+                    for parent in &self.types.interfaces[current as usize].extends {
+                        if parent == to_id {
+                            return true;
+                        }
+                        stack.push(*parent);
+                    }
                 }
                 false
             }

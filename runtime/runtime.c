@@ -3914,20 +3914,17 @@ int64_t sw_time_from_parts(
 
 int64_t sw_timezone_offset_sec(void) {
 #if defined(_WIN32)
-    extern int SystemTimeToFileTime(const void* system_time, void* file_time);
-    extern int LocalFileTimeToFileTime(const void* local_file_time, void* file_time);
-    int64_t now = now_sec();
-    unsigned char st[16];
-    sw_unix_to_local_systemtime(st, now);
-    unsigned char local_ft[8];
-    unsigned char ft[8];
-    if (!SystemTimeToFileTime(st, local_ft) || !LocalFileTimeToFileTime(local_ft, ft)) {
-        return 0;
-    }
-    uint64_t since_1601 =
-        ((uint64_t)(*(unsigned int*)(ft + 4)) << 32) | (*(unsigned int*)ft);
-    int64_t local_unix = (int64_t)((since_1601 - 116444736000000000ULL) / 10000000ULL);
-    return local_unix - now;
+    // TIME_ZONE_INFORMATION：bias(4) StandardName(64) StandardDate(16)
+    // StandardBias(4) DaylightName(64) DaylightDate(16) DaylightBias(4)
+    extern int GetTimeZoneInformation(void* tzi);
+    unsigned char tzi[172];
+    memset(tzi, 0, sizeof(tzi));
+    int result = GetTimeZoneInformation(tzi);
+    long bias = *(long*)(tzi + 0);
+    long daylight_bias = *(long*)(tzi + 168);
+    // 返回值 2 = 夏令时生效中：偏移 = -(bias + daylight_bias) 分钟。
+    long total_minutes = result == 2 ? bias + daylight_bias : bias;
+    return -(int64_t)total_minutes * 60;
 #else
     extern void* localtime_r(const void* time, void* tm);
     extern void* gmtime_r(const void* time, void* tm);

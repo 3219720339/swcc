@@ -1427,6 +1427,28 @@ Sw 编译器（swcc）开发进度
                        - 多继承 extends A, B 按用户要求不做
                        - run-examples.py 登记；83 examples 全过
 
+    2026-08-15 10:00  接口继承补齐 + CI 时区/平台断言修复：
+                       - InterfaceInfo 新增 extends（父接口 id 列表），
+                         interface extends A, B 时合并父接口方法（父方法
+                         在前、自身在后、按名去重），父接口错误类型显式报错
+                       - 类 implements 子接口时，父接口链一并注册进
+                         class_interfaces（vtable 填父接口槽位），实现
+                         "实现子接口的类可赋给父接口类型"
+                       - 新增接口→接口赋值兼容：子接口引用可赋给父接口
+                         （沿 extends 链查找）
+                       - probe-iface-multi.sw 恢复接口继承用例并加
+                         "子接口引用赋父接口"断言，13 项全过
+                       - 修复 Windows timezone_offset_sec 返回 0 的 bug：
+                         改用 GetTimeZoneInformation（bias+DaylightBias，
+                         夏令时生效时计入）
+                       - 修复 CI 时区/平台断言：probe-util2 的
+                         datetime_ms 去掉 epoch 时区假设（只验格式）；
+                         probe-batch4 的 utc_hour 用 timezone_offset_sec
+                         精确换算（跨时区恒成立）、which 改为 Windows cmd
+                         或 POSIX sh 二选一
+                       - 验证：83 examples 全过；cargo test 52 全绿；
+                         fmt 通过；runtime.c 三平台交叉编译通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
