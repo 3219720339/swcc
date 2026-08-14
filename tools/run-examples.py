@@ -16,6 +16,7 @@ EXPECTED = {
     "probe-argv.sw": 0,
     "probe-bool.sw": 0,
     "probe-array.sw": 10,
+    "probe-array-desc.sw": 0,
     "probe-adt.sw": 0,
     "probe-chmod.sw": 0,
     "probe-circular.sw": 0,

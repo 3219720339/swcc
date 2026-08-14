@@ -5223,6 +5223,47 @@ void sw_sort_string(sw_array* items) {
     }
 }
 
+static int sw_cmp_i64_desc(const void* a, const void* b) {
+    int64_t x = *(const int64_t*)a;
+    int64_t y = *(const int64_t*)b;
+    return x > y ? -1 : (x < y ? 1 : 0);
+}
+
+static int sw_cmp_f64_desc(const void* a, const void* b) {
+    double x = *(const double*)a;
+    double y = *(const double*)b;
+    return x > y ? -1 : (x < y ? 1 : 0);
+}
+
+static int sw_cmp_str_desc(const void* a, const void* b) {
+    sw_string* x = *(sw_string* const*)a;
+    sw_string* y = *(sw_string* const*)b;
+    int64_t min = x->len < y->len ? x->len : y->len;
+    int cmp = min > 0 ? memcmp(x->data, y->data, (uint64_t)min) : 0;
+    if (cmp != 0) {
+        return -cmp;
+    }
+    return x->len < y->len ? 1 : (x->len > y->len ? -1 : 0);
+}
+
+void sw_sort_int_desc(sw_array* items) {
+    if (items != NULL && items->len > 1) {
+        qsort(items->data, (uint64_t)items->len, 8, sw_cmp_i64_desc);
+    }
+}
+
+void sw_sort_float_desc(sw_array* items) {
+    if (items != NULL && items->len > 1) {
+        qsort(items->data, (uint64_t)items->len, 8, sw_cmp_f64_desc);
+    }
+}
+
+void sw_sort_string_desc(sw_array* items) {
+    if (items != NULL && items->len > 1) {
+        qsort(items->data, (uint64_t)items->len, 8, sw_cmp_str_desc);
+    }
+}
+
 void sw_reverse_int(sw_array* items) {
     if (items == NULL) {
         return;

@@ -831,6 +831,13 @@ Sw 编译器（swcc）开发进度
                        - 新增 examples/probe-bool.sw（10 项断言）注册进 run-examples.py
                        - 验证：cargo test 51 全绿、probe-bool 通过
 
+    2026-08-15 03:30  标准库扩充：std/array 新增降序排序（+3）：
+                       - sort_int_desc / sort_float_desc / sort_string_desc（原地降序）
+                       - runtime.c 加 sw_cmp_i64_desc/f64_desc/str_desc 比较器 +
+                         sw_sort_{int,float,string}_desc；codegen extern_c_symbol 映射 3 项
+                       - 新增 examples/probe-array-desc.sw（5 项断言）注册进 run-examples.py
+                       - 验证：cargo test 51 全绿、probe-array-desc 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充（io 6 个函数、regex/hash 新模块）

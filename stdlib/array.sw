@@ -2,9 +2,10 @@
 // std/array —— 数组工具（类型化，原地操作）
 //
 // 用法：
-//   import { sort_int, sum_int, min_int, max_int } from "std/array";
+//   import { sort_int, sort_int_desc, sum_int, min_int, max_int } from "std/array";
 //   const nums = [5, 1, 4, 2, 3];
 //   sort_int(nums);             // 原地升序 [1,2,3,4,5]
+//   sort_int_desc(nums);        // 原地降序 [5,4,3,2,1]
 //   const total = sum_int(nums); // 15
 //   reverse_int(nums);          // 原地反转
 //
@@ -22,6 +23,15 @@ export extern c function sort_float(items: float[]): void;
 
 /// 原地升序排序 string[]（按 UTF-8 字节序）。
 export extern c function sort_string(items: string[]): void;
+
+/// 原地降序排序 int[]。
+export extern c function sort_int_desc(items: int[]): void;
+
+/// 原地降序排序 float[]。
+export extern c function sort_float_desc(items: float[]): void;
+
+/// 原地降序排序 string[]（按 UTF-8 字节序）。
+export extern c function sort_string_desc(items: string[]): void;
 
 /// 原地反转 int[]。
 export extern c function reverse_int(items: int[]): void;
