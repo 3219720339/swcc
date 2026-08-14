@@ -39,6 +39,7 @@ EXPECTED = {
     "probe-return.sw": 42,
     "probe-string.sw": 0,
     "probe-stdlib.sw": 0,
+    "probe-stdlib2.sw": 0,
     "probe-struct.sw": 0,
     "probe-template.sw": 0,
     "probe-template-escape.sw": 0,

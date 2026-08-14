@@ -313,12 +313,37 @@ Sw 编译器（swcc）开发进度
                          （FNV-1a 内容哈希 + 编译参数），mtime 判定为旧但内容一致时
                          直接复用对象；实测 mtime 假变从 571ms 降到 73ms
 
+    2026-08-14 21:32  标准库扩充（批次 A+B，约 39 个函数）：
+                       - std/os +12：desktop/documents/downloads/pictures/music/videos/
+                         config/system 目录、username、pid、arch、unsetenv
+                         （Windows SHGetKnownFolderPath + 失败回退主目录；
+                         POSIX XDG 环境变量 + $HOME 回退）
+                       - std/fs +11：path_absolute/path_normalize/is_absolute/
+                         path_parts/expand_home/mkdir_p/disk_free/disk_total/
+                         is_symlink/read_symlink/file_mode
+                         （Windows 符号链接用 DeviceIoControl 读重解析点）
+                       - std/string +4：is_empty/utf8_is_valid/truncate/ellipsis
+                         （全部进链式方法表）
+                       - std/math +5：deg_to_rad/rad_to_deg/is_nan/is_infinite/tau
+                       - std/time +1：parse_datetime（"YYYY-MM-DD[ T]HH:MM:SS"）
+                       - std/encoding +3：base64url_encode/decode（无填充）、html_escape
+                       - std/json +3：json_stringify（紧凑序列化）/json_object_keys/
+                         json_type_name
+                       - codegen extern_c_symbol 追加 36 个 sw_ 映射；
+                         string_method 追加 4 个；Windows 链接补 -lole32（CoTaskMemFree）
+                       - 修复：videos_dir 在无该文件夹的机器上返回空（SHGetKnownFolderPath
+                         报 0x80070002），改为回退到主目录/文件夹名
+                       - 新增 examples/probe-stdlib2.sw（约 68 项断言），
+                         34 个 examples 全过；cargo test 51 全绿；runtime.c 六目标交叉
+                         编译通过；musl x86_64/aarch64 端到端链接通过，
+                         nm 确认 statvfs/lstat/readlink/unsetenv 未被遮蔽
+
     待办（下一批，按推荐优先级）：
        1. 网络：TCP 连接/收发基础
        2. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、
           接口方法 struct 返回值、闭包 struct 参数
-       3. 容器与序列化：std/array（sort_int/sort_float/sort_string/reverse/min/max/sum）、
-          std/map（字符串键）、json_stringify/json_object_keys
+       3. 容器：std/array（sort_int/sort_float/sort_string/reverse/min/max/sum/unique）、
+          std/map（字符串键）
        4. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
        5. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 

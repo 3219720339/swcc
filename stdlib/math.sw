@@ -108,3 +108,18 @@ export extern c function pi(): float;
 
 /// 自然常数 e。
 export extern c function e(): float;
+
+/// 角度转弧度。
+export extern c function deg_to_rad(degrees: float): float;
+
+/// 弧度转角度。
+export extern c function rad_to_deg(radians: float): float;
+
+/// 是否为 NaN。
+export extern c function is_nan(value: float): bool;
+
+/// 是否为正负无穷。
+export extern c function is_infinite(value: float): bool;
+
+/// 2π。
+export extern c function tau(): float;

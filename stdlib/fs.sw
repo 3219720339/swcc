@@ -117,3 +117,36 @@ export extern c function remove_all(path: string): int;
 /// 通配匹配文件路径，支持 * 与 ?（作用于文件名部分）；
 /// 返回匹配项的完整路径，无匹配返回空数组。
 export extern c function glob(pattern: string): string[];
+
+/// 转绝对路径（不解析符号链接）；失败返回原路径。
+export extern c function path_absolute(path: string): string;
+
+/// 规范化路径（解析 . 与 ..，保留盘符/根前缀）。
+export extern c function path_normalize(path: string): string;
+
+/// 判断路径是否为绝对路径。
+export extern c function is_absolute(path: string): bool;
+
+/// 按分隔符拆分路径段（不含空段与 .），如 "a/b/c" -> ["a","b","c"]。
+export extern c function path_parts(path: string): string[];
+
+/// 展开 "~" / "~/..." 为用户主目录；其他路径原样返回。
+export extern c function expand_home(path: string): string;
+
+/// 递归创建目录（父目录自动创建）；成功返回 0，失败返回 -1。
+export extern c function mkdir_p(path: string): int;
+
+/// 路径所在磁盘剩余可用字节；失败返回 -1。
+export extern c function disk_free(path: string): int;
+
+/// 路径所在磁盘总字节；失败返回 -1。
+export extern c function disk_total(path: string): int;
+
+/// 判断路径是否为符号链接。
+export extern c function is_symlink(path: string): bool;
+
+/// 读取符号链接目标；非链接或失败返回空字符串。
+export extern c function read_symlink(path: string): string;
+
+/// 文件权限位（POSIX 直读 mode & 0o7777；Windows 按只读/可写映射近似值）。
+export extern c function file_mode(path: string): int;

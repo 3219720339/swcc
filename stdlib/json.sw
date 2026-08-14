@@ -39,3 +39,12 @@ export extern c function json_array_at(value: ptr<void>, index: int): ptr<void>;
 
 /// 取对象中 key 对应的值；键不存在返回 null。
 export extern c function json_object_get(value: ptr<void>, key: string): ptr<void>;
+
+/// 把解析后的 JSON 值序列化为紧凑 JSON 文本。
+export extern c function json_stringify(value: ptr<void>): string;
+
+/// 对象的所有键（string[]）；非对象返回空数组。
+export extern c function json_object_keys(value: ptr<void>): string[];
+
+/// JSON 值类型名："null"/"bool"/"int"/"float"/"string"/"array"/"object"。
+export extern c function json_type_name(value: ptr<void>): string;

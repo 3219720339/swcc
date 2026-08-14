@@ -42,3 +42,6 @@ export extern c function time_from_parts(
 
 /// 当前本地时区相对 UTC 的偏移秒数（东为正、西为负）。
 export extern c function timezone_offset_sec(): int;
+
+/// 解析 "YYYY-MM-DD[ T]HH:MM:SS" 为本地时间戳；格式错误返回 -1。
+export extern c function parse_datetime(text: string): int;

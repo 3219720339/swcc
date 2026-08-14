@@ -131,3 +131,15 @@ export extern c function escape(text: string): string;
 
 /// 反转义 escape 的输出（支持 \n \r \t \" \\ \xNN）；非法转义按字面保留。
 export extern c function unescape(text: string): string;
+
+/// 是否为空字符串（长度为 0）。
+export extern c function is_empty(text: string): bool;
+
+/// 是否为合法 UTF-8 字节序列。
+export extern c function utf8_is_valid(text: string): bool;
+
+/// 按字符（码点）截断到最多 max_chars 个字符；不足则原样返回。
+export extern c function truncate(text: string, max_chars: int): string;
+
+/// 截断并追加 "..."（最多 max_chars 个字符）；不足则原样返回。
+export extern c function ellipsis(text: string, max_chars: int): string;

@@ -3206,6 +3206,8 @@ fn string_method(method: &str) -> Option<(String, Vec<Type>, Type)> {
         "count" | "last_index_of" => (method.to_owned(), vec![Type::Str], Type::Int),
         "is_ascii" => ("is_ascii".to_owned(), vec![], Type::Bool),
         "escape" | "unescape" => (method.to_owned(), vec![], Type::Str),
+        "is_empty" | "utf8_is_valid" => (method.to_owned(), vec![], Type::Bool),
+        "truncate" | "ellipsis" => (method.to_owned(), vec![Type::Int], Type::Str),
         "contains" => ("contains".to_owned(), vec![Type::Str], Type::Bool),
         "index_of" => ("index_of".to_owned(), vec![Type::Str], Type::Int),
         "starts_with" => ("starts_with".to_owned(), vec![Type::Str], Type::Bool),

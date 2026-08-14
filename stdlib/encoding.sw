@@ -29,3 +29,12 @@ export extern c function url_encode(text: string): string;
 
 /// URL 百分号解码；%XX 非法时按字面保留。
 export extern c function url_decode(text: string): string;
+
+/// Base64URL 编码（- _ 字母表，无填充）。
+export extern c function base64url_encode(text: string): string;
+
+/// Base64URL 解码（容忍标准 base64 与填充）。
+export extern c function base64url_decode(text: string): string;
+
+/// HTML 转义：& < > " ' -> &amp; &lt; &gt; &quot; &#39;。
+export extern c function html_escape(text: string): string;

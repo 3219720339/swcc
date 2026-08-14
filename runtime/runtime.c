@@ -4073,3 +4073,953 @@ sw_array* sw_glob(sw_string* pattern) {
     result->cap = slot;
     return result;
 }
+
+// ---------------------------------------------------------------------------
+// 标准库扩充批次 A+B：目录定位 / 路径工具 / 磁盘与链接 / 字符串截断 /
+// 数学角度与判定 / parse_datetime / base64url / html_escape / JSON 序列化
+// ---------------------------------------------------------------------------
+
+// ---- os：用户目录定位 / 用户名 / pid / 架构 / unsetenv ----
+
+#if defined(_WIN32)
+static sw_string* sw_wide_to_utf8(const void* wide) {
+    extern int WideCharToMultiByte(
+        unsigned int cp,
+        unsigned long flags,
+        const void* wstr,
+        int wlen,
+        char* out,
+        int outlen,
+        const void* def,
+        const void* used
+    );
+    int len = WideCharToMultiByte(65001, 0, wide, -1, NULL, 0, NULL, NULL);
+    if (len <= 0) {
+        len = 1;
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)len);
+    WideCharToMultiByte(65001, 0, wide, -1, buffer, len, NULL, NULL);
+    return sw_string_from_literal(buffer, (int64_t)(len - 1));
+}
+
+static sw_string* sw_known_folder(const unsigned char rfid[16], const char* fallback) {
+    extern int SHGetKnownFolderPath(const void* rfid, unsigned int flags, void* token, void** path);
+    extern void CoTaskMemFree(void* ptr);
+    void* wide = NULL;
+    if (SHGetKnownFolderPath(rfid, 0, NULL, &wide) != 0 || wide == NULL) {
+        // 已知文件夹不存在（如本机无 Videos）时回退到主目录下同名目录。
+        sw_string* home = sw_home_dir();
+        if (home->len == 0) {
+            return sw_string_from_literal("", 0);
+        }
+        return path_join(home, sw_string_from_literal(fallback, (int64_t)strlen(fallback)));
+    }
+    sw_string* result = sw_wide_to_utf8(wide);
+    CoTaskMemFree(wide);
+    return result;
+}
+#endif
+
+#if !defined(_WIN32)
+static sw_string* sw_xdg_or_home(const char* xdg_name, const char* fallback) {
+    extern char* getenv(const char* name);
+    const char* xdg = getenv(xdg_name);
+    if (xdg != NULL && xdg[0] != 0) {
+        return sw_string_from_literal(xdg, (int64_t)strlen(xdg));
+    }
+    sw_string* home = sw_home_dir();
+    if (home->len == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    return path_join(home, sw_string_from_literal(fallback, (int64_t)strlen(fallback)));
+}
+#endif
+
+sw_string* sw_desktop_dir(void) {
+#if defined(_WIN32)
+    static const unsigned char rfid[16] = {
+        0x3A, 0xCC, 0xBF, 0xB4, 0x2C, 0xDB, 0x4C, 0x42,
+        0xB0, 0x29, 0x7F, 0xE9, 0x9A, 0x87, 0xC6, 0x41,
+    };
+    return sw_known_folder(rfid, "Desktop");
+#else
+    return sw_xdg_or_home("XDG_DESKTOP_DIR", "Desktop");
+#endif
+}
+
+sw_string* sw_documents_dir(void) {
+#if defined(_WIN32)
+    static const unsigned char rfid[16] = {
+        0xD0, 0x9A, 0xD3, 0xFD, 0x8F, 0x23, 0xAF, 0x46,
+        0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7,
+    };
+    return sw_known_folder(rfid, "Documents");
+#else
+    return sw_xdg_or_home("XDG_DOCUMENTS_DIR", "Documents");
+#endif
+}
+
+sw_string* sw_downloads_dir(void) {
+#if defined(_WIN32)
+    static const unsigned char rfid[16] = {
+        0x90, 0xE2, 0x4D, 0x37, 0x3F, 0x12, 0x65, 0x45,
+        0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B,
+    };
+    return sw_known_folder(rfid, "Downloads");
+#else
+    return sw_xdg_or_home("XDG_DOWNLOAD_DIR", "Downloads");
+#endif
+}
+
+sw_string* sw_pictures_dir(void) {
+#if defined(_WIN32)
+    static const unsigned char rfid[16] = {
+        0x30, 0x81, 0xE2, 0x33, 0x1E, 0x4E, 0x76, 0x46,
+        0x83, 0x5A, 0x98, 0x39, 0x5C, 0x3B, 0xC3, 0xBB,
+    };
+    return sw_known_folder(rfid, "Pictures");
+#else
+    return sw_xdg_or_home("XDG_PICTURES_DIR", "Pictures");
+#endif
+}
+
+sw_string* sw_music_dir(void) {
+#if defined(_WIN32)
+    static const unsigned char rfid[16] = {
+        0x71, 0xD5, 0xD8, 0x4B, 0x19, 0x6D, 0xD3, 0x48,
+        0xBE, 0x97, 0x42, 0x22, 0x20, 0x08, 0x0E, 0x43,
+    };
+    return sw_known_folder(rfid, "Music");
+#else
+    return sw_xdg_or_home("XDG_MUSIC_DIR", "Music");
+#endif
+}
+
+sw_string* sw_videos_dir(void) {
+#if defined(_WIN32)
+    static const unsigned char rfid[16] = {
+        0x1D, 0x9B, 0x98, 0x18, 0xB5, 0x99, 0x5B, 0x45,
+        0x84, 0x1C, 0xAB, 0x7C, 0x74, 0xE4, 0xDD, 0xF3,
+    };
+    return sw_known_folder(rfid, "Videos");
+#else
+    return sw_xdg_or_home("XDG_VIDEOS_DIR", "Videos");
+#endif
+}
+
+sw_string* sw_config_dir(void) {
+    extern char* getenv(const char* name);
+#if defined(_WIN32)
+    const char* appdata = getenv("APPDATA");
+    if (appdata == NULL || appdata[0] == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(appdata, (int64_t)strlen(appdata));
+#else
+    return sw_xdg_or_home("XDG_CONFIG_HOME", ".config");
+#endif
+}
+
+sw_string* sw_system_dir(void) {
+#if defined(_WIN32)
+    extern unsigned int GetSystemDirectoryA(char* buffer, unsigned int size);
+    char buffer[4096];
+    unsigned int len = GetSystemDirectoryA(buffer, sizeof(buffer));
+    return sw_string_from_literal(buffer, (int64_t)len);
+#elif defined(__APPLE__)
+    return sw_string_from_literal("/System", 7);
+#else
+    return sw_string_from_literal("/usr", 4);
+#endif
+}
+
+sw_string* sw_username(void) {
+    extern char* getenv(const char* name);
+#if defined(_WIN32)
+    const char* user = getenv("USERNAME");
+#else
+    const char* user = getenv("USER");
+    if (user == NULL || user[0] == 0) {
+        user = getenv("LOGNAME");
+    }
+#endif
+    if (user == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(user, (int64_t)strlen(user));
+}
+
+int64_t sw_pid(void) {
+#if defined(_WIN32)
+    extern unsigned int GetCurrentProcessId(void);
+    return (int64_t)GetCurrentProcessId();
+#else
+    extern int getpid(void);
+    return (int64_t)getpid();
+#endif
+}
+
+sw_string* sw_arch(void) {
+#if defined(__aarch64__)
+    return sw_string_from_literal("aarch64", 7);
+#else
+    return sw_string_from_literal("x86_64", 6);
+#endif
+}
+
+int64_t sw_unsetenv(sw_string* name) {
+#if defined(_WIN32)
+    extern int SetEnvironmentVariableA(const char* name, const char* value);
+    return SetEnvironmentVariableA(name->data, NULL) ? 0 : -1;
+#else
+    extern int unsetenv(const char* name);
+    return unsetenv(name->data) == 0 ? 0 : -1;
+#endif
+}
+
+// ---- fs：路径工具 / mkdir_p / 磁盘 / 符号链接 / 权限 ----
+
+static int sw_is_sep(char c) {
+    return c == '/' || c == '\\';
+}
+
+int64_t sw_is_absolute(sw_string* path) {
+#if defined(_WIN32)
+    if (path->len >= 3 && path->data[1] == ':' && sw_is_sep(path->data[2])) {
+        return 1;
+    }
+    if (path->len >= 2 && sw_is_sep(path->data[0]) && sw_is_sep(path->data[1])) {
+        return 1;
+    }
+    return 0;
+#else
+    return path->len > 0 && path->data[0] == '/' ? 1 : 0;
+#endif
+}
+
+sw_string* sw_path_normalize(sw_string* path) {
+    if (path == NULL || path->len == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    char* input = (char*)sw_gc_alloc((uint64_t)path->len + 1);
+    memcpy(input, path->data, (uint64_t)path->len);
+    input[path->len] = 0;
+#if defined(_WIN32)
+    for (int64_t i = 0; i < path->len; i++) {
+        if (input[i] == '\\') {
+            input[i] = '/';
+        }
+    }
+#endif
+    int64_t drive = 0;
+#if defined(_WIN32)
+    if (path->len >= 2 && input[1] == ':') {
+        drive = 2;
+        if (path->len >= 3 && input[2] == '/') {
+            drive = 3;
+        }
+    }
+#endif
+    int64_t absolute = 0;
+    if (drive == 0 && path->len > 0 && input[0] == '/') {
+        absolute = 1;
+    }
+    int64_t segments[256];
+    int64_t count = 0;
+    int64_t i = drive;
+    while (i < path->len) {
+        while (i < path->len && input[i] == '/') {
+            i++;
+        }
+        int64_t start = i;
+        while (i < path->len && input[i] != '/') {
+            i++;
+        }
+        if (i > start) {
+            int64_t seg_len = i - start;
+            if (seg_len == 1 && input[start] == '.') {
+                continue;
+            }
+            if (seg_len == 2 && input[start] == '.' && input[start + 1] == '.') {
+                if (count > 0) {
+                    count--;
+                } else if (!absolute && count < 256) {
+                    segments[count++] = start;
+                }
+                continue;
+            }
+            if (count < 256) {
+                segments[count++] = start;
+            }
+        }
+    }
+    if (count == 0 && !absolute && drive == 0) {
+        return sw_string_from_literal(".", 1);
+    }
+    int64_t total = drive + (absolute ? 1 : 0);
+    for (int64_t k = 0; k < count; k++) {
+        int64_t seg_len = 0;
+        while (segments[k] + seg_len < path->len && input[segments[k] + seg_len] != '/') {
+            seg_len++;
+        }
+        total += seg_len + 1;
+    }
+    char* out = (char*)sw_gc_alloc((uint64_t)total + 1);
+    int64_t o = 0;
+    char sep = '/';
+#if defined(_WIN32)
+    sep = '\\';
+    for (int64_t k = 0; k < drive && k < path->len; k++) {
+        out[o++] = input[k] == '/' ? sep : input[k];
+    }
+#else
+    (void)drive;
+#endif
+    if (absolute && o == 0) {
+        out[o++] = sep;
+    }
+    for (int64_t k = 0; k < count; k++) {
+        if (o > 0 && out[o - 1] != sep) {
+            out[o++] = sep;
+        }
+        int64_t seg_len = 0;
+        while (segments[k] + seg_len < path->len && input[segments[k] + seg_len] != '/') {
+            seg_len++;
+        }
+        memcpy(out + o, input + segments[k], (uint64_t)seg_len);
+        o += seg_len;
+    }
+    out[o] = 0;
+    return sw_string_from_literal(out, o);
+}
+
+sw_string* sw_path_absolute(sw_string* path) {
+    if (sw_is_absolute(path)) {
+        return sw_path_normalize(path);
+    }
+    sw_string* cwd = sw_cwd();
+    if (cwd->len == 0) {
+        return sw_string_from_literal(path->data, path->len);
+    }
+    return sw_path_normalize(path_join(cwd, path));
+}
+
+sw_array* sw_path_parts(sw_string* path) {
+    sw_array* array = sw_array_new(8, 8);
+    int64_t slot = 0;
+    int64_t i = 0;
+    while (i < path->len) {
+        while (i < path->len && sw_is_sep(path->data[i])) {
+            i++;
+        }
+        int64_t start = i;
+        while (i < path->len && !sw_is_sep(path->data[i])) {
+            i++;
+        }
+        if (i > start) {
+            if (slot >= array->len) {
+                sw_array* bigger = sw_array_new(8, array->len * 2 + 1);
+                for (int64_t k = 0; k < slot; k++) {
+                    ((int64_t*)bigger->data)[k] = ((int64_t*)array->data)[k];
+                }
+                array = bigger;
+            }
+            ((int64_t*)array->data)[slot++] =
+                (int64_t)sw_string_from_literal(path->data + start, i - start);
+        }
+    }
+    array->len = slot;
+    array->cap = slot;
+    return array;
+}
+
+sw_string* sw_expand_home(sw_string* path) {
+    if (path == NULL || path->len == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    if (path->data[0] == '~' && (path->len == 1 || sw_is_sep(path->data[1]))) {
+        sw_string* home = sw_home_dir();
+        if (home->len == 0) {
+            return sw_string_from_literal(path->data, path->len);
+        }
+        if (path->len == 1) {
+            return home;
+        }
+        sw_string* rest = sw_string_from_literal(path->data + 1, path->len - 1);
+        return sw_path_normalize(path_join(home, rest));
+    }
+    return sw_string_from_literal(path->data, path->len);
+}
+
+int64_t sw_mkdir_p(sw_string* path) {
+    if (path == NULL || path->len == 0) {
+        return -1;
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)path->len + 1);
+    memcpy(buffer, path->data, (uint64_t)path->len);
+    buffer[path->len] = 0;
+    int64_t start = 0;
+    if (path->len >= 3 && buffer[1] == ':' && sw_is_sep(buffer[2])) {
+        start = 3;
+    } else if (path->len >= 1 && sw_is_sep(buffer[0])) {
+        start = 1;
+    }
+    for (int64_t i = start; i <= path->len; i++) {
+        if (i == path->len || sw_is_sep(buffer[i])) {
+            if (i > start) {
+                char saved = buffer[i];
+                buffer[i] = 0;
+                sw_string* prefix = sw_string_from_literal(buffer, i);
+                if (sw_mkdir(prefix) != 0 && !is_dir(prefix)) {
+                    buffer[i] = saved;
+                    return -1;
+                }
+                buffer[i] = saved;
+            }
+        }
+    }
+    return is_dir(path) ? 0 : -1;
+}
+
+int64_t sw_disk_free(sw_string* path) {
+#if defined(_WIN32)
+    extern int GetDiskFreeSpaceExA(
+        const char* path,
+        uint64_t* free_bytes,
+        uint64_t* total_bytes,
+        uint64_t* total_free
+    );
+    uint64_t free_bytes = 0, total_bytes = 0, total_free = 0;
+    if (!GetDiskFreeSpaceExA(path->data, &free_bytes, &total_bytes, &total_free)) {
+        return -1;
+    }
+    return (int64_t)free_bytes;
+#else
+    extern int statvfs(const char* path, void* buf);
+    unsigned char buf[128];
+    memset(buf, 0, sizeof(buf));
+    if (statvfs(path->data, buf) != 0) {
+        return -1;
+    }
+    uint64_t frsize = *(uint64_t*)(buf + 8);
+    uint64_t bavail = *(uint64_t*)(buf + 32);
+    return (int64_t)(frsize * bavail);
+#endif
+}
+
+int64_t sw_disk_total(sw_string* path) {
+#if defined(_WIN32)
+    extern int GetDiskFreeSpaceExA(
+        const char* path,
+        uint64_t* free_bytes,
+        uint64_t* total_bytes,
+        uint64_t* total_free
+    );
+    uint64_t free_bytes = 0, total_bytes = 0, total_free = 0;
+    if (!GetDiskFreeSpaceExA(path->data, &free_bytes, &total_bytes, &total_free)) {
+        return -1;
+    }
+    return (int64_t)total_bytes;
+#else
+    extern int statvfs(const char* path, void* buf);
+    unsigned char buf[128];
+    memset(buf, 0, sizeof(buf));
+    if (statvfs(path->data, buf) != 0) {
+        return -1;
+    }
+    uint64_t frsize = *(uint64_t*)(buf + 8);
+    uint64_t blocks = *(uint64_t*)(buf + 16);
+    return (int64_t)(frsize * blocks);
+#endif
+}
+
+int64_t sw_is_symlink(sw_string* path) {
+#if defined(_WIN32)
+    extern unsigned int GetFileAttributesA(const char* path);
+    unsigned int attrs = GetFileAttributesA(path->data);
+    if (attrs == 0xFFFFFFFFu) {
+        return 0;
+    }
+    return (attrs & 0x400u) ? 1 : 0;
+#else
+    extern int lstat(const char* path, void* buf);
+    unsigned char buf[160];
+    memset(buf, 0, sizeof(buf));
+    if (lstat(path->data, buf) != 0) {
+        return 0;
+    }
+    unsigned int mode = *(unsigned int*)(buf + SW_STAT_MODE_OFFSET);
+    return (mode & 0xF000) == 0xA000 ? 1 : 0;
+#endif
+}
+
+sw_string* sw_read_symlink(sw_string* path) {
+#if defined(_WIN32)
+    extern void* CreateFileA(
+        const char* path,
+        unsigned int access,
+        unsigned int share,
+        void* sec,
+        unsigned int disp,
+        unsigned int flags,
+        void* templ
+    );
+    extern int DeviceIoControl(
+        void* handle,
+        unsigned int code,
+        void* in,
+        unsigned int in_size,
+        void* out,
+        unsigned int out_size,
+        unsigned int* returned,
+        void* overlapped
+    );
+    extern int CloseHandle(void* handle);
+    void* handle = CreateFileA(
+        path->data,
+        0,
+        7,
+        NULL,
+        3,
+        0x02000000u | 0x01000000u,
+        NULL
+    );
+    if (handle == NULL || handle == (void*)-1) {
+        return sw_string_from_literal("", 0);
+    }
+    unsigned char out[16384];
+    unsigned int returned = 0;
+    if (!DeviceIoControl(handle, 0x000900A8u, NULL, 0, out, sizeof(out), &returned, NULL)) {
+        CloseHandle(handle);
+        return sw_string_from_literal("", 0);
+    }
+    CloseHandle(handle);
+    unsigned int tag = *(unsigned int*)out;
+    int64_t path_base = (tag == 0xA0000003u) ? 16 : 20;
+    unsigned int sub_offset = *(unsigned short*)(out + 8);
+    unsigned int sub_len = *(unsigned short*)(out + 10);
+    if (path_base + sub_offset + sub_len > returned || sub_len < 2) {
+        return sw_string_from_literal("", 0);
+    }
+    const unsigned char* sub = out + path_base + sub_offset;
+    int64_t skip = 0;
+    if (sub_len >= 8 && sub[0] == '\\' && sub[2] == '?' && sub[4] == '?' && sub[6] == '\\') {
+        skip = 8;
+    }
+    unsigned char wide[8192];
+    int64_t units = (sub_len - skip) / 2;
+    if (units > 4095) {
+        units = 4095;
+    }
+    memcpy(wide, sub + skip, (uint64_t)units * 2);
+    wide[units * 2] = 0;
+    wide[units * 2 + 1] = 0;
+    sw_string* result = sw_wide_to_utf8(wide);
+    return result;
+#else
+    extern long readlink(const char* path, char* buffer, unsigned long size);
+    char buffer[4096];
+    long len = readlink(path->data, buffer, sizeof(buffer) - 1);
+    if (len < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    buffer[len] = 0;
+    return sw_string_from_literal(buffer, len);
+#endif
+}
+
+int64_t sw_file_mode(sw_string* path) {
+#if defined(_WIN32)
+    extern unsigned int GetFileAttributesA(const char* path);
+    unsigned int attrs = GetFileAttributesA(path->data);
+    if (attrs == 0xFFFFFFFFu) {
+        return -1;
+    }
+    return (attrs & 0x1u) ? 292 : 438;  // 0o444 / 0o666
+#else
+    extern int stat(const char* path, void* buf);
+    unsigned char buf[160];
+    memset(buf, 0, sizeof(buf));
+    if (stat(path->data, buf) != 0) {
+        return -1;
+    }
+    unsigned int mode = *(unsigned int*)(buf + SW_STAT_MODE_OFFSET);
+    return (int64_t)(mode & 0x1FFFu);
+#endif
+}
+
+// ---- string：is_empty / utf8_is_valid / truncate / ellipsis ----
+
+int64_t sw_is_empty(sw_string* text) {
+    return text == NULL || text->len == 0 ? 1 : 0;
+}
+
+int64_t sw_utf8_is_valid(sw_string* text) {
+    if (text == NULL) {
+        return 1;
+    }
+    int64_t i = 0;
+    while (i < text->len) {
+        unsigned char c = (unsigned char)text->data[i];
+        if (c < 0x80) {
+            i++;
+            continue;
+        }
+        int64_t need = 0;
+        if ((c & 0xE0) == 0xC0) {
+            need = 1;
+        } else if ((c & 0xF0) == 0xE0) {
+            need = 2;
+        } else if ((c & 0xF8) == 0xF0) {
+            need = 3;
+        } else {
+            return 0;
+        }
+        if (i + need >= text->len) {
+            return 0;
+        }
+        for (int64_t k = 1; k <= need; k++) {
+            if (((unsigned char)text->data[i + k] & 0xC0) != 0x80) {
+                return 0;
+            }
+        }
+        if (need == 1 && c < 0xC2) {
+            return 0;
+        }
+        if (need == 2 && c == 0xE0 && (unsigned char)text->data[i + 1] < 0xA0) {
+            return 0;
+        }
+        if (need == 2 && c == 0xED && (unsigned char)text->data[i + 1] > 0x9F) {
+            return 0;
+        }
+        if (need == 3 && c == 0xF0 && (unsigned char)text->data[i + 1] < 0x90) {
+            return 0;
+        }
+        if (need == 3 && c == 0xF4 && (unsigned char)text->data[i + 1] > 0x8F) {
+            return 0;
+        }
+        if (need == 3 && c > 0xF4) {
+            return 0;
+        }
+        i += need + 1;
+    }
+    return 1;
+}
+
+sw_string* sw_truncate(sw_string* text, int64_t max_chars) {
+    if (text == NULL || max_chars <= 0) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t offset = 0;
+    int64_t count = 0;
+    while (offset < text->len && count < max_chars) {
+        offset += sw_utf8_char_length(text->data, offset, text->len);
+        count++;
+    }
+    return sw_string_from_literal(text->data, offset);
+}
+
+sw_string* sw_ellipsis(sw_string* text, int64_t max_chars) {
+    if (text == NULL || max_chars <= 0) {
+        return sw_string_from_literal("", 0);
+    }
+    if (utf8_len(text) <= max_chars) {
+        return sw_string_from_literal(text->data, text->len);
+    }
+    if (max_chars <= 3) {
+        return sw_string_from_literal("...", 3);
+    }
+    sw_string* prefix = sw_truncate(text, max_chars - 3);
+    char* buffer = (char*)sw_gc_alloc((uint64_t)prefix->len + 4);
+    memcpy(buffer, prefix->data, (uint64_t)prefix->len);
+    memcpy(buffer + prefix->len, "...", 3);
+    buffer[prefix->len + 3] = 0;
+    return sw_string_from_literal(buffer, prefix->len + 3);
+}
+
+// ---- math：角度转换 / 判定 / tau ----
+
+double sw_deg_to_rad(double degrees) {
+    return degrees * 3.14159265358979323846 / 180.0;
+}
+
+double sw_rad_to_deg(double radians) {
+    return radians * 180.0 / 3.14159265358979323846;
+}
+
+int64_t sw_is_nan(double value) {
+    return value != value ? 1 : 0;
+}
+
+int64_t sw_is_infinite(double value) {
+    double inf = 1.0 / 0.0;
+    return (value == inf || value == -inf) ? 1 : 0;
+}
+
+double sw_tau(void) {
+    return 6.28318530717958647692;
+}
+
+// ---- time：parse_datetime ----
+
+#define SW_IS_DIGIT(c) ((c) >= '0' && (c) <= '9')
+
+int64_t sw_parse_datetime(sw_string* text) {
+    if (text == NULL || text->len < 10) {
+        return -1;
+    }
+    const char* d = text->data;
+    if (!(SW_IS_DIGIT(d[0]) && SW_IS_DIGIT(d[1]) && SW_IS_DIGIT(d[2]) && SW_IS_DIGIT(d[3])) ||
+        d[4] != '-' || !(SW_IS_DIGIT(d[5]) && SW_IS_DIGIT(d[6])) || d[7] != '-' ||
+        !(SW_IS_DIGIT(d[8]) && SW_IS_DIGIT(d[9]))) {
+        return -1;
+    }
+    int64_t year = (d[0] - '0') * 1000 + (d[1] - '0') * 100 + (d[2] - '0') * 10 + (d[3] - '0');
+    int64_t month = (d[5] - '0') * 10 + (d[6] - '0');
+    int64_t day = (d[8] - '0') * 10 + (d[9] - '0');
+    if (month < 1 || month > 12 || day < 1 || day > 31) {
+        return -1;
+    }
+    if (text->len == 10) {
+        return sw_time_from_parts(year, month, day, 0, 0, 0);
+    }
+    if (text->len < 19 || (d[10] != ' ' && d[10] != 'T') ||
+        !(SW_IS_DIGIT(d[11]) && SW_IS_DIGIT(d[12])) || d[13] != ':' ||
+        !(SW_IS_DIGIT(d[14]) && SW_IS_DIGIT(d[15])) || d[16] != ':' ||
+        !(SW_IS_DIGIT(d[17]) && SW_IS_DIGIT(d[18]))) {
+        return -1;
+    }
+    int64_t hour = (d[11] - '0') * 10 + (d[12] - '0');
+    int64_t minute = (d[14] - '0') * 10 + (d[15] - '0');
+    int64_t second = (d[17] - '0') * 10 + (d[18] - '0');
+    if (hour > 23 || minute > 59 || second > 59) {
+        return -1;
+    }
+    return sw_time_from_parts(year, month, day, hour, minute, second);
+}
+
+#undef SW_IS_DIGIT
+
+// ---- encoding：base64url / html_escape ----
+
+sw_string* sw_base64url_encode(sw_string* text) {
+    sw_string* b64 = sw_base64_encode(text);
+    char* buffer = (char*)sw_gc_alloc((uint64_t)b64->len + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < b64->len; i++) {
+        char c = b64->data[i];
+        if (c == '=') {
+            continue;
+        }
+        buffer[out++] = c == '+' ? '-' : (c == '/' ? '_' : c);
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+sw_string* sw_base64url_decode(sw_string* text) {
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        buffer[out++] = c == '-' ? '+' : (c == '_' ? '/' : c);
+    }
+    sw_string* normalized = sw_string_from_literal(buffer, out);
+    return sw_base64_decode(normalized);
+}
+
+sw_string* sw_html_escape(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len * 6 + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        switch (c) {
+            case '&':
+                memcpy(buffer + out, "&amp;", 5);
+                out += 5;
+                break;
+            case '<':
+                memcpy(buffer + out, "&lt;", 4);
+                out += 4;
+                break;
+            case '>':
+                memcpy(buffer + out, "&gt;", 4);
+                out += 4;
+                break;
+            case '"':
+                memcpy(buffer + out, "&quot;", 6);
+                out += 6;
+                break;
+            case '\'':
+                memcpy(buffer + out, "&#39;", 5);
+                out += 5;
+                break;
+            default:
+                buffer[out++] = c;
+        }
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+// ---- json：stringify / object_keys / type_name ----
+
+typedef struct sw_str_builder {
+    char* data;
+    int64_t len;
+    int64_t cap;
+} sw_str_builder;
+
+static void sw_builder_grow(sw_str_builder* builder, int64_t extra) {
+    if (builder->len + extra + 1 <= builder->cap) {
+        return;
+    }
+    int64_t new_cap = builder->cap * 2 + extra + 64;
+    builder->data = (char*)realloc(builder->data, (sw_size)new_cap);
+    builder->cap = new_cap;
+}
+
+static void sw_builder_append(sw_str_builder* builder, const char* text, int64_t len) {
+    sw_builder_grow(builder, len);
+    memcpy(builder->data + builder->len, text, (uint64_t)len);
+    builder->len += len;
+}
+
+static void sw_builder_char(sw_str_builder* builder, char c) {
+    sw_builder_grow(builder, 1);
+    builder->data[builder->len++] = c;
+}
+
+static void sw_json_escape_append(sw_str_builder* builder, const char* text, int64_t len) {
+    static const char* hex = "0123456789abcdef";
+    sw_builder_char(builder, '"');
+    for (int64_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)text[i];
+        switch (c) {
+            case '"':
+                sw_builder_append(builder, "\\\"", 2);
+                break;
+            case '\\':
+                sw_builder_append(builder, "\\\\", 2);
+                break;
+            case '\n':
+                sw_builder_append(builder, "\\n", 2);
+                break;
+            case '\r':
+                sw_builder_append(builder, "\\r", 2);
+                break;
+            case '\t':
+                sw_builder_append(builder, "\\t", 2);
+                break;
+            default:
+                if (c < 0x20) {
+                    char escape[6] = {'\\', 'u', '0', '0', hex[(c >> 4) & 0xF], hex[c & 0xF]};
+                    sw_builder_append(builder, escape, 6);
+                } else {
+                    sw_builder_char(builder, (char)c);
+                }
+        }
+    }
+    sw_builder_char(builder, '"');
+}
+
+static void sw_json_write(sw_str_builder* builder, sw_json* value) {
+    switch (value->kind) {
+        case 0:
+            sw_builder_append(builder, "null", 4);
+            break;
+        case 1:
+            sw_builder_append(builder, value->int_value ? "true" : "false", value->int_value ? 4 : 5);
+            break;
+        case 2: {
+            char number[32];
+            int len = snprintf(number, sizeof(number), "%lld", (long long)value->int_value);
+            sw_builder_append(builder, number, len);
+            break;
+        }
+        case 3: {
+            char number[64];
+            int len = snprintf(number, sizeof(number), "%.17g", value->float_value);
+            sw_builder_append(builder, number, len);
+            break;
+        }
+        case 4:
+            sw_json_escape_append(builder, value->string_value, value->length);
+            break;
+        case 5:
+            sw_builder_char(builder, '[');
+            for (int64_t i = 0; i < value->length; i++) {
+                if (i > 0) {
+                    sw_builder_char(builder, ',');
+                }
+                sw_json_write(builder, value->items[i]);
+            }
+            sw_builder_char(builder, ']');
+            break;
+        case 6:
+            sw_builder_char(builder, '{');
+            for (int64_t i = 0; i < value->length; i++) {
+                if (i > 0) {
+                    sw_builder_char(builder, ',');
+                }
+                sw_json_escape_append(builder, value->keys[i], (int64_t)strlen(value->keys[i]));
+                sw_builder_char(builder, ':');
+                sw_json_write(builder, value->items[i]);
+            }
+            sw_builder_char(builder, '}');
+            break;
+        default:
+            sw_builder_append(builder, "null", 4);
+    }
+}
+
+sw_string* json_stringify(void* value) {
+    sw_json* node = (sw_json*)value;
+    if (node == NULL) {
+        return sw_string_from_literal("null", 4);
+    }
+    sw_str_builder builder = {NULL, 0, 0};
+    sw_json_write(&builder, node);
+    sw_builder_grow(&builder, 1);
+    builder.data[builder.len] = 0;
+    sw_string* result = sw_string_from_literal(builder.data, builder.len);
+    free(builder.data);
+    return result;
+}
+
+sw_array* json_object_keys(void* value) {
+    sw_json* node = (sw_json*)value;
+    sw_array* array = sw_array_new(8, node != NULL && node->kind == 6 ? node->length : 0);
+    if (node == NULL || node->kind != 6) {
+        return array;
+    }
+    for (int64_t i = 0; i < node->length; i++) {
+        ((int64_t*)array->data)[i] =
+            (int64_t)sw_string_from_literal(node->keys[i], (int64_t)strlen(node->keys[i]));
+    }
+    return array;
+}
+
+sw_string* json_type_name(void* value) {
+    sw_json* node = (sw_json*)value;
+    int64_t kind = node == NULL ? 0 : node->kind;
+    switch (kind) {
+        case 0:
+            return sw_string_from_literal("null", 4);
+        case 1:
+            return sw_string_from_literal("bool", 4);
+        case 2:
+            return sw_string_from_literal("int", 3);
+        case 3:
+            return sw_string_from_literal("float", 5);
+        case 4:
+            return sw_string_from_literal("string", 6);
+        case 5:
+            return sw_string_from_literal("array", 5);
+        default:
+            return sw_string_from_literal("object", 6);
+    }
+}

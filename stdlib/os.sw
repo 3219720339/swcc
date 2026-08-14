@@ -81,3 +81,39 @@ export extern c function env_keys(): string[];
 
 /// 设置环境变量（影响当前进程及其子进程）；成功返回 0，失败返回 -1。
 export extern c function setenv(name: string, value: string): int;
+
+/// 删除环境变量；成功返回 0，失败返回 -1。
+export extern c function unsetenv(name: string): int;
+
+/// 桌面目录（Windows 已知文件夹 / XDG 或 $HOME/Desktop）。
+export extern c function desktop_dir(): string;
+
+/// 文档目录（XDG 或 $HOME/Documents）。
+export extern c function documents_dir(): string;
+
+/// 下载目录（XDG 或 $HOME/Downloads）。
+export extern c function downloads_dir(): string;
+
+/// 图片目录（XDG 或 $HOME/Pictures）。
+export extern c function pictures_dir(): string;
+
+/// 音乐目录（XDG 或 $HOME/Music）。
+export extern c function music_dir(): string;
+
+/// 视频目录（XDG 或 $HOME/Videos）。
+export extern c function videos_dir(): string;
+
+/// 配置目录（Windows %APPDATA% / XDG 或 $HOME/.config）。
+export extern c function config_dir(): string;
+
+/// 系统目录（Windows System32 / macOS /System / Linux /usr）。
+export extern c function system_dir(): string;
+
+/// 当前用户名（Windows USERNAME / POSIX USER 或 LOGNAME）；未知返回空串。
+export extern c function username(): string;
+
+/// 当前进程 ID。
+export extern c function pid(): int;
+
+/// 机器架构："x86_64" / "aarch64"。
+export extern c function arch(): string;
