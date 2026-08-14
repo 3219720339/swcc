@@ -785,9 +785,24 @@ Sw 编译器（swcc）开发进度
                        - 验证：cargo test 51 全绿、53 examples 全部通过（无回归）；
                          反向推导使新场景编译通过但运行时待修
 
+    2026-08-15 02:50  泛型约束剩余项（完成）：where T: Container<U> 反向推导端到端：
+                       - 接 02:40 进行中的 vtable 运行时槽位对齐：
+                         MirCallee::InterfaceMethod 派发时分发用 bound 接口（含
+                         TypeParam 实参的实例 id）算 vtable 槽位，而实参类 vtable 注册的是
+                         具体接口实例 id → 槽位错位、运行时读野指针崩溃（0xC0000005）
+                       - 修复：FnLower::resolve_concrete_interface——把 bound 接口 id 经
+                         type_args 替换实参后查 generic_interface_instances，得到实参类
+                         实际注册的接口实例 id 用于派发；非泛型接口/未解析参数退回原 id
+                       - 效果：`where T: Container<U>` 反向推导全链路可用（此前运行到
+                         read_via(box) 即崩）
+                       - 新增 examples/probe-bound-reverse.sw（4 项断言：U=int / U=string
+                         反推 + vtable get/set、非泛型约束回归），注册进 run-examples.py
+                       - 验证：cargo test 51 全绿、examples 全部通过
+                       - 完成 02:40 的"反向推导编译器阶段"闭环
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
-       2. 泛型约束：where T: Container<U> 反向推导的 vtable 运行时对齐（接上）
+       2. 标准库继续扩充（unicode 等薄弱模块）
 
 二、已知限制
 

@@ -5550,6 +5550,36 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         concrete_bound
     }
 
+    /// 把约束/bound 接口 id 解析到实例化的具体接口 id，供泛型约束方法派发用。
+    /// 若 bound 是含类型参数的泛型接口实例（如 Container<U>），用 type_args 替换
+    /// 实参后查 generic_interface_instances，得到实参类实际注册的接口实例 id
+    /// （与 IntBox 等实现的 Container<int> 槽位一致），避免 vtable 槽位错位。
+    /// 非泛型接口或仍含未解析类型参数的场景返回原 id。
+    fn resolve_concrete_interface(&self, bound_iface_id: u32) -> u32 {
+        let types = &self.lowerer.types;
+        if let Some((template_id, bound_args)) = types
+            .generic_interface_instances
+            .iter()
+            .find(|entry| *entry.1 == bound_iface_id)
+            .map(|((t, args), _)| (*t, args.clone()))
+        {
+            let concrete_args: Vec<Type> = bound_args
+                .iter()
+                .map(|ty| substitute_type(ty, &self.type_args))
+                .collect();
+            if concrete_args.iter().any(|t| matches!(t, Type::TypeParam(_))) {
+                return bound_iface_id;
+            }
+            if let Some(&concrete_id) = types
+                .generic_interface_instances
+                .get(&(template_id, concrete_args))
+            {
+                return concrete_id;
+            }
+        }
+        bound_iface_id
+    }
+
     fn lower_target(&mut self, expr: &Expr) -> Option<MirTarget> {
         match &expr.kind {
             ExprKind::Ident(ident) => {
@@ -6115,6 +6145,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             extern_c: method_sig.extern_c,
                             span: method_sig.span,
                         };
+                        let interface = self.resolve_concrete_interface(interface);
                         MirCallee::InterfaceMethod {
                             interface,
                             index,
