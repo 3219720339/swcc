@@ -90,3 +90,30 @@ export extern c function read_file_bytes(path: string): u8[];
 
 /// 把 u8[] 原样写入文件（不存在则创建）；返回写入字节数，失败返回 -1。
 export extern c function write_file_bytes(path: string, bytes: u8[]): int;
+
+/// 文件大小（字节）；按路径打开读取，失败（如目录/不存在）返回 -1。
+/// 注意与 file_size(fd) 区分：本函数直接接受路径。
+export extern c function file_size_path(path: string): int;
+
+/// 文件最后修改时间（Unix 秒）；失败返回 -1。
+export extern c function file_mtime(path: string): int;
+
+/// 判断路径是否为普通文件（非目录）：1 是 / 0 否（不存在也返回 0）。
+export extern c function is_file(path: string): int;
+
+/// 修改文件权限（mode 为 POSIX 风格八进制值，如 0o644 传 420）；
+/// Windows 上仅区分只读（无写位）与可写。成功返回 0，失败返回 -1。
+export extern c function chmod(path: string, mode: int): int;
+
+/// 创建空文件（已存在则更新时间戳）；成功返回 0，失败返回 -1。
+export extern c function touch(path: string): int;
+
+/// 递归复制目录（含子目录与文件，不含符号链接）；成功返回 0，失败返回 -1。
+export extern c function copy_dir(src: string, dst: string): int;
+
+/// 递归删除文件或目录（危险：不可恢复）；成功返回 0，失败返回 -1。
+export extern c function remove_all(path: string): int;
+
+/// 通配匹配文件路径，支持 * 与 ?（作用于文件名部分）；
+/// 返回匹配项的完整路径，无匹配返回空数组。
+export extern c function glob(pattern: string): string[];

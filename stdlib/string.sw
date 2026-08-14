@@ -92,3 +92,42 @@ export extern c function format_int(value: int, width: int, pad_zero: int): stri
 
 /// 格式化浮点：保留 precision 位小数，如 format_float(3.14159, 2) == "3.14"。
 export extern c function format_float(value: float, precision: int): string;
+
+/// text 是否以 suffix 结尾。
+export extern c function ends_with(text: string, suffix: string): bool;
+
+/// 去除左侧空白（空格/制表/换行/回车）。
+export extern c function trim_left(text: string): string;
+
+/// 去除右侧空白。
+export extern c function trim_right(text: string): string;
+
+/// 按行拆分（\n 分隔，兼容 \r\n）；末尾换行不产生空行，空字符串返回空数组。
+export extern c function lines(text: string): string[];
+
+/// 按连续空白（空格/制表/换行/回车）拆分，空白段不产生空元素。
+export extern c function split_whitespace(text: string): string[];
+
+/// 统计 needle 在 text 中的非重叠出现次数；needle 为空返回 0。
+export extern c function count(text: string, needle: string): int;
+
+/// 返回 needle 在 text 中最后一次出现的字节偏移；未找到返回 -1。
+export extern c function last_index_of(text: string, needle: string): int;
+
+/// 按字符（码点）拆成单个字符的 string[]，如 "你好" -> ["你","好"]。
+export extern c function chars(text: string): string[];
+
+/// 把 u8[]（UTF-8 字节）按原样转为字符串（不做合法性校验）。
+export extern c function from_utf8_bytes(bytes: u8[]): string;
+
+/// 把字符串按 UTF-8 字节转为 u8[]。
+export extern c function to_utf8_bytes(text: string): u8[];
+
+/// 是否全部为 ASCII（每个字节 < 0x80）。
+export extern c function is_ascii(text: string): bool;
+
+/// C 风格转义：\" \\ \n \r \t 与控制字符（\xNN）；unescape 可逆。
+export extern c function escape(text: string): string;
+
+/// 反转义 escape 的输出（支持 \n \r \t \" \\ \xNN）；非法转义按字面保留。
+export extern c function unescape(text: string): string;

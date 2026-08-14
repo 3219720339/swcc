@@ -3198,6 +3198,14 @@ fn optional_fallback(ty: &Type) -> MirExpr {
 fn string_method(method: &str) -> Option<(String, Vec<Type>, Type)> {
     Some(match method {
         "to_upper" | "to_lower" | "trim" => (method.to_owned(), vec![], Type::Str),
+        "trim_left" | "trim_right" => (method.to_owned(), vec![], Type::Str),
+        "ends_with" => ("ends_with".to_owned(), vec![Type::Str], Type::Bool),
+        "lines" | "split_whitespace" | "chars" => {
+            (method.to_owned(), vec![], Type::Array(Box::new(Type::Str)))
+        }
+        "count" | "last_index_of" => (method.to_owned(), vec![Type::Str], Type::Int),
+        "is_ascii" => ("is_ascii".to_owned(), vec![], Type::Bool),
+        "escape" | "unescape" => (method.to_owned(), vec![], Type::Str),
         "contains" => ("contains".to_owned(), vec![Type::Str], Type::Bool),
         "index_of" => ("index_of".to_owned(), vec![Type::Str], Type::Int),
         "starts_with" => ("starts_with".to_owned(), vec![Type::Str], Type::Bool),

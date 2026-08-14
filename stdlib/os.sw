@@ -57,3 +57,27 @@ export extern c function poll(pid: int): int;
 
 /// 强制终止 pid 对应的进程；成功返回 0，失败返回 -1。
 export extern c function kill(pid: int): int;
+
+/// 当前工作目录（绝对路径）；失败返回空字符串。
+export extern c function cwd(): string;
+
+/// 切换当前工作目录；成功返回 0，失败返回 -1。
+export extern c function chdir(path: string): int;
+
+/// 系统临时目录（如 /tmp 或 %TEMP%）；未知时返回空字符串。
+export extern c function temp_dir(): string;
+
+/// 当前用户主目录；未知时返回空字符串。
+export extern c function home_dir(): string;
+
+/// 本机主机名；失败返回空字符串。
+export extern c function hostname(): string;
+
+/// 逻辑 CPU 核心数（>= 1）。
+export extern c function cpu_count(): int;
+
+/// 全部环境变量名（不含值），顺序不保证。
+export extern c function env_keys(): string[];
+
+/// 设置环境变量（影响当前进程及其子进程）；成功返回 0，失败返回 -1。
+export extern c function setenv(name: string, value: string): int;

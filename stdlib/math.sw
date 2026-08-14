@@ -42,3 +42,69 @@ export extern c function gcd(a: int, b: int): int;
 
 /// 最小公倍数；任一为 0 返回 0。
 export extern c function lcm(a: int, b: int): int;
+
+/// 四舍五入到最近整数（.5 远离零）。
+export extern c function round(value: float): float;
+
+/// 向零截断取整。
+export extern c function trunc(value: float): float;
+
+/// 符号：负数 -1、零 0、正数 1。
+export extern c function sign(value: float): float;
+
+/// 正弦（弧度）。
+export extern c function sin(value: float): float;
+
+/// 余弦（弧度）。
+export extern c function cos(value: float): float;
+
+/// 正切（弧度）。
+export extern c function tan(value: float): float;
+
+/// 反正弦（弧度，值域 [-π/2, π/2]）。
+export extern c function asin(value: float): float;
+
+/// 反余弦（弧度，值域 [0, π]）。
+export extern c function acos(value: float): float;
+
+/// 反正切（弧度，值域 [-π/2, π/2]）。
+export extern c function atan(value: float): float;
+
+/// 四象限反正切 atan2(y, x)，返回 [-π, π]。
+export extern c function atan2(y: float, x: float): float;
+
+/// e 的 value 次方。
+export extern c function exp(value: float): float;
+
+/// 自然对数。
+export extern c function log(value: float): float;
+
+/// 以 2 为底的对数。
+export extern c function log2(value: float): float;
+
+/// 以 10 为底的对数。
+export extern c function log10(value: float): float;
+
+/// 直角三角形斜边长度 sqrt(a²+b²)。
+export extern c function hypot(a: float, b: float): float;
+
+/// 立方根。
+export extern c function cbrt(value: float): float;
+
+/// 两数较小者（float）。
+export extern c function fmin(a: float, b: float): float;
+
+/// 两数较大者（float）。
+export extern c function fmax(a: float, b: float): float;
+
+/// [0, 1) 均匀随机浮点。
+export extern c function rand_float(): float;
+
+/// [min, max) 均匀随机浮点；min >= max 时返回 min。
+export extern c function rand_range(min: float, max: float): float;
+
+/// 圆周率 π。
+export extern c function pi(): float;
+
+/// 自然常数 e。
+export extern c function e(): float;

@@ -32,15 +32,19 @@ extern void exit(int code);
 extern void* __acrt_iob_func(unsigned int index);
 #define stdout __acrt_iob_func(1)
 #define stdin __acrt_iob_func(0)
+#define stderr __acrt_iob_func(2)
 #elif defined(__APPLE__)
 // macOS 上 stdin/stdout 是宏，真实符号为 ___stdinp / ___stdoutp。
 extern void* __stdinp;
 extern void* __stdoutp;
+extern void* __stderrp;
 #define stdin __stdinp
 #define stdout __stdoutp
+#define stderr __stderrp
 #else
 extern void* stdin;
 extern void* stdout;
+extern void* stderr;
 #endif
 
 // 汇编实现的 setjmp/longjmp（runtime_x64.S / runtime_aarch64.s）
@@ -567,12 +571,18 @@ int64_t file_size(int64_t fd) {
 }
 
 int64_t exists(sw_string* path) {
+#if defined(_WIN32)
+    // fopen 无法打开目录，目录存在性必须走 GetFileAttributesA。
+    extern unsigned int GetFileAttributesA(const char* path);
+    return GetFileAttributesA(path->data) != 0xFFFFFFFFu ? 1 : 0;
+#else
     sw_file_handle* file = fopen(path->data, "rb");
     if (file == NULL) {
         return 0;
     }
     fclose(file);
     return 1;
+#endif
 }
 
 sw_string* path_join(sw_string* a, sw_string* b) {
@@ -697,7 +707,11 @@ int64_t sw_rename(sw_string* old_path, sw_string* new_path) {
 
 int64_t sw_remove(sw_string* path) {
     extern int DeleteFileA(const char* path);
-    return DeleteFileA(path->data) ? 0 : -1;
+    extern int RemoveDirectoryA(const char* path);
+    if (DeleteFileA(path->data)) {
+        return 0;
+    }
+    return RemoveDirectoryA(path->data) ? 0 : -1;
 }
 #else
 int64_t sw_rename(sw_string* old_path, sw_string* new_path) {
@@ -2956,4 +2970,1103 @@ sw_string* sw_platform(void) {
 #else
     return sw_string_from_literal("linux", 5);
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// 标准库扩充批次 A+B：编码 / 字符串补充 / 数学补充 / 时间补充 / io /
+// os 系统信息 / fs 文件系统补充
+// ---------------------------------------------------------------------------
+
+// ---- 编码：base64 / hex / url ----
+
+static const char sw_base64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+sw_string* sw_base64_encode(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t out_len = ((text->len + 2) / 3) * 4;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)out_len + 1);
+    int64_t out = 0;
+    int64_t i = 0;
+    while (i + 2 < text->len) {
+        unsigned int value = ((unsigned char)text->data[i] << 16) |
+                             ((unsigned char)text->data[i + 1] << 8) |
+                             (unsigned char)text->data[i + 2];
+        buffer[out++] = sw_base64_chars[(value >> 18) & 0x3F];
+        buffer[out++] = sw_base64_chars[(value >> 12) & 0x3F];
+        buffer[out++] = sw_base64_chars[(value >> 6) & 0x3F];
+        buffer[out++] = sw_base64_chars[value & 0x3F];
+        i += 3;
+    }
+    int64_t remaining = text->len - i;
+    if (remaining == 1) {
+        unsigned int value = (unsigned char)text->data[i] << 16;
+        buffer[out++] = sw_base64_chars[(value >> 18) & 0x3F];
+        buffer[out++] = sw_base64_chars[(value >> 12) & 0x3F];
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+    } else if (remaining == 2) {
+        unsigned int value = ((unsigned char)text->data[i] << 16) |
+                             ((unsigned char)text->data[i + 1] << 8);
+        buffer[out++] = sw_base64_chars[(value >> 18) & 0x3F];
+        buffer[out++] = sw_base64_chars[(value >> 12) & 0x3F];
+        buffer[out++] = sw_base64_chars[(value >> 6) & 0x3F];
+        buffer[out++] = '=';
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+static int sw_base64_value(char c) {
+    if (c >= 'A' && c <= 'Z') {
+        return c - 'A';
+    }
+    if (c >= 'a' && c <= 'z') {
+        return c - 'a' + 26;
+    }
+    if (c >= '0' && c <= '9') {
+        return c - '0' + 52;
+    }
+    if (c == '+') {
+        return 62;
+    }
+    if (c == '/') {
+        return 63;
+    }
+    return -1;
+}
+
+sw_string* sw_base64_decode(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    int64_t out = 0;
+    int64_t i = 0;
+    while (i < text->len) {
+        int a = -1, b = -1, c = -1, d = -1;
+        while (i < text->len && a < 0) {
+            a = sw_base64_value(text->data[i++]);
+        }
+        while (i < text->len && b < 0) {
+            b = sw_base64_value(text->data[i++]);
+        }
+        if (a < 0 || b < 0) {
+            break;
+        }
+        while (i < text->len && c < 0) {
+            if (text->data[i] == '=') {
+                i++;
+                break;
+            }
+            c = sw_base64_value(text->data[i++]);
+        }
+        while (i < text->len && d < 0) {
+            if (text->data[i] == '=') {
+                i++;
+                break;
+            }
+            d = sw_base64_value(text->data[i++]);
+        }
+        buffer[out++] = (char)((a << 2) | (b >> 4));
+        if (c >= 0) {
+            buffer[out++] = (char)(((b & 0x0F) << 4) | (c >> 2));
+        }
+        if (d >= 0) {
+            buffer[out++] = (char)(((c & 0x03) << 6) | d);
+        }
+        if (c < 0) {
+            break;
+        }
+    }
+    return sw_string_from_literal(buffer, out);
+}
+
+static const char sw_hex_chars[] = "0123456789abcdef";
+
+sw_string* sw_hex_encode(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len * 2 + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char byte = (unsigned char)text->data[i];
+        buffer[out++] = sw_hex_chars[byte >> 4];
+        buffer[out++] = sw_hex_chars[byte & 0x0F];
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+static int sw_hex_value(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+sw_string* sw_hex_decode(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len / 2 + 1);
+    int64_t out = 0;
+    int64_t i = 0;
+    while (i + 1 < text->len) {
+        int high = sw_hex_value(text->data[i]);
+        int low = sw_hex_value(text->data[i + 1]);
+        if (high < 0 || low < 0) {
+            break;
+        }
+        buffer[out++] = (char)((high << 4) | low);
+        i += 2;
+    }
+    return sw_string_from_literal(buffer, out);
+}
+
+static int sw_url_unreserved(unsigned char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+           (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+}
+
+sw_string* sw_url_encode(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len * 3 + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char c = (unsigned char)text->data[i];
+        if (sw_url_unreserved(c)) {
+            buffer[out++] = (char)c;
+        } else {
+            buffer[out++] = '%';
+            buffer[out++] = sw_hex_chars[c >> 4];
+            buffer[out++] = sw_hex_chars[c & 0x0F];
+        }
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+sw_string* sw_url_decode(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    int64_t out = 0;
+    int64_t i = 0;
+    while (i < text->len) {
+        if (text->data[i] == '%' && i + 2 < text->len) {
+            int high = sw_hex_value(text->data[i + 1]);
+            int low = sw_hex_value(text->data[i + 2]);
+            if (high >= 0 && low >= 0) {
+                buffer[out++] = (char)((high << 4) | low);
+                i += 3;
+                continue;
+            }
+        }
+        buffer[out++] = text->data[i++];
+    }
+    return sw_string_from_literal(buffer, out);
+}
+
+// ---- 字符串补充 ----
+
+int64_t sw_ends_with(sw_string* text, sw_string* suffix) {
+    if (text == NULL || suffix == NULL) {
+        return 0;
+    }
+    if (suffix->len > text->len) {
+        return 0;
+    }
+    return memcmp(
+        text->data + text->len - suffix->len,
+        suffix->data,
+        (uint64_t)suffix->len
+    ) == 0
+        ? 1
+        : 0;
+}
+
+int64_t sw_is_ascii(sw_string* text) {
+    if (text == NULL) {
+        return 0;
+    }
+    for (int64_t i = 0; i < text->len; i++) {
+        if ((unsigned char)text->data[i] >= 0x80) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int sw_is_space(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+sw_string* sw_trim_left(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t start = 0;
+    while (start < text->len && sw_is_space(text->data[start])) {
+        start++;
+    }
+    return sw_string_from_literal(text->data + start, text->len - start);
+}
+
+sw_string* sw_trim_right(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t end = text->len;
+    while (end > 0 && sw_is_space(text->data[end - 1])) {
+        end--;
+    }
+    return sw_string_from_literal(text->data, end);
+}
+
+sw_array* sw_lines(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return sw_array_new(8, 0);
+    }
+    int64_t capacity = 1;
+    for (int64_t i = 0; i < text->len; i++) {
+        if (text->data[i] == '\n') {
+            capacity++;
+        }
+    }
+    sw_array* array = sw_array_new(8, capacity);
+    int64_t slot = 0;
+    int64_t start = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        if (text->data[i] == '\n') {
+            int64_t len = i - start;
+            if (len > 0 && text->data[start + len - 1] == '\r') {
+                len--;
+            }
+            ((int64_t*)array->data)[slot++] =
+                (int64_t)sw_string_from_literal(text->data + start, len);
+            start = i + 1;
+        }
+    }
+    // 末尾换行不产生空行；否则补最后一段。
+    if (start < text->len) {
+        int64_t len = text->len - start;
+        if (len > 0 && text->data[start + len - 1] == '\r') {
+            len--;
+        }
+        ((int64_t*)array->data)[slot++] =
+            (int64_t)sw_string_from_literal(text->data + start, len);
+    }
+    array->len = slot;
+    array->cap = slot;
+    return array;
+}
+
+sw_array* sw_split_whitespace(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return sw_array_new(8, 0);
+    }
+    int64_t capacity = text->len / 2 + 1;
+    sw_array* array = sw_array_new(8, capacity);
+    int64_t slot = 0;
+    int64_t i = 0;
+    while (i < text->len) {
+        while (i < text->len && sw_is_space(text->data[i])) {
+            i++;
+        }
+        int64_t start = i;
+        while (i < text->len && !sw_is_space(text->data[i])) {
+            i++;
+        }
+        if (i > start) {
+            ((int64_t*)array->data)[slot++] =
+                (int64_t)sw_string_from_literal(text->data + start, i - start);
+        }
+    }
+    array->len = slot;
+    array->cap = slot;
+    return array;
+}
+
+int64_t sw_count(sw_string* text, sw_string* needle) {
+    if (text == NULL || needle == NULL || needle->len == 0) {
+        return 0;
+    }
+    int64_t count = 0;
+    for (int64_t i = 0; i + needle->len <= text->len;) {
+        int64_t ok = 1;
+        for (int64_t j = 0; j < needle->len; j++) {
+            if (text->data[i + j] != needle->data[j]) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) {
+            count++;
+            i += needle->len;
+        } else {
+            i++;
+        }
+    }
+    return count;
+}
+
+int64_t sw_last_index_of(sw_string* text, sw_string* needle) {
+    if (text == NULL || needle == NULL || needle->len == 0) {
+        return -1;
+    }
+    int64_t found = -1;
+    for (int64_t i = 0; i + needle->len <= text->len; i++) {
+        int64_t ok = 1;
+        for (int64_t j = 0; j < needle->len; j++) {
+            if (text->data[i + j] != needle->data[j]) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) {
+            found = i;
+        }
+    }
+    return found;
+}
+
+sw_array* sw_chars(sw_string* text) {
+    if (text == NULL) {
+        return sw_array_new(8, 0);
+    }
+    int64_t count = utf8_len(text);
+    sw_array* array = sw_array_new(8, count);
+    int64_t slot = 0;
+    int64_t offset = 0;
+    while (offset < text->len) {
+        int64_t char_len = sw_utf8_char_length(text->data, offset, text->len);
+        ((int64_t*)array->data)[slot++] =
+            (int64_t)sw_string_from_literal(text->data + offset, char_len);
+        offset += char_len;
+    }
+    array->len = slot;
+    array->cap = slot;
+    return array;
+}
+
+sw_string* sw_from_utf8_bytes(sw_array* bytes) {
+    if (bytes == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal((const char*)bytes->data, bytes->len);
+}
+
+sw_array* sw_to_utf8_bytes(sw_string* text) {
+    if (text == NULL) {
+        return sw_array_new(1, 0);
+    }
+    sw_array* array = sw_array_new(1, text->len);
+    if (text->len > 0) {
+        memcpy(array->data, text->data, (uint64_t)text->len);
+    }
+    return array;
+}
+
+sw_string* sw_escape(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len * 4 + 1);
+    int64_t out = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        unsigned char c = (unsigned char)text->data[i];
+        switch (c) {
+            case '"':
+                buffer[out++] = '\\';
+                buffer[out++] = '"';
+                break;
+            case '\\':
+                buffer[out++] = '\\';
+                buffer[out++] = '\\';
+                break;
+            case '\n':
+                buffer[out++] = '\\';
+                buffer[out++] = 'n';
+                break;
+            case '\r':
+                buffer[out++] = '\\';
+                buffer[out++] = 'r';
+                break;
+            case '\t':
+                buffer[out++] = '\\';
+                buffer[out++] = 't';
+                break;
+            default:
+                if (c < 0x20 || c == 0x7F) {
+                    buffer[out++] = '\\';
+                    buffer[out++] = 'x';
+                    buffer[out++] = sw_hex_chars[c >> 4];
+                    buffer[out++] = sw_hex_chars[c & 0x0F];
+                } else {
+                    buffer[out++] = (char)c;
+                }
+        }
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+sw_string* sw_unescape(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    int64_t out = 0;
+    int64_t i = 0;
+    while (i < text->len) {
+        if (text->data[i] == '\\' && i + 1 < text->len) {
+            char next = text->data[i + 1];
+            if (next == 'n') {
+                buffer[out++] = '\n';
+                i += 2;
+                continue;
+            }
+            if (next == 'r') {
+                buffer[out++] = '\r';
+                i += 2;
+                continue;
+            }
+            if (next == 't') {
+                buffer[out++] = '\t';
+                i += 2;
+                continue;
+            }
+            if (next == '"') {
+                buffer[out++] = '"';
+                i += 2;
+                continue;
+            }
+            if (next == '\\') {
+                buffer[out++] = '\\';
+                i += 2;
+                continue;
+            }
+            if (next == 'x' && i + 3 < text->len) {
+                int high = sw_hex_value(text->data[i + 2]);
+                int low = sw_hex_value(text->data[i + 3]);
+                if (high >= 0 && low >= 0) {
+                    buffer[out++] = (char)((high << 4) | low);
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+        buffer[out++] = text->data[i++];
+    }
+    return sw_string_from_literal(buffer, out);
+}
+
+// ---- 数学补充（sign / 随机浮点 / 常量）----
+
+double sw_sign(double value) {
+    return value < 0 ? -1.0 : (value > 0 ? 1.0 : 0.0);
+}
+
+double sw_rand_float(void) {
+    extern int rand(void);
+    return (double)rand() / 2147483647.0;
+}
+
+double sw_rand_range(double min, double max) {
+    if (min >= max) {
+        return min;
+    }
+    return min + sw_rand_float() * (max - min);
+}
+
+double sw_pi(void) {
+    return 3.14159265358979323846;
+}
+
+double sw_e(void) {
+    return 2.71828182845904523536;
+}
+
+// ---- 时间补充：time_format / time_from_parts / timezone_offset_sec ----
+
+static const char* sw_month_short[12] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+};
+static const char* sw_month_long[12] = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+};
+static const char* sw_wday_short[7] = {
+    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
+};
+static const char* sw_wday_long[7] = {
+    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+};
+
+static void sw_append_str(char* buffer, int64_t* used, const char* text, int64_t len) {
+    if (*used + len < 256) {
+        memcpy(buffer + *used, text, (uint64_t)len);
+        *used += len;
+    }
+}
+
+sw_string* sw_time_format(int64_t seconds, sw_string* fmt) {
+    if (fmt == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int year = 1970, month = 1, day = 1, hour = 0, minute = 0, second = 0, wday = 0;
+#if defined(_WIN32)
+    unsigned char st[16];
+    sw_unix_to_local_systemtime(st, seconds);
+    year = *(unsigned short*)st;
+    month = *(unsigned short*)(st + 2);
+    wday = *(unsigned short*)(st + 4);
+    day = *(unsigned short*)(st + 6);
+    hour = *(unsigned short*)(st + 8);
+    minute = *(unsigned short*)(st + 10);
+    second = *(unsigned short*)(st + 12);
+#else
+    extern void* localtime_r(const void* time, void* tm);
+    unsigned char tm[64];
+    unsigned char t[8];
+    *(int64_t*)t = seconds;
+    if (localtime_r(t, tm) == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    second = *(int*)(tm + 0);
+    minute = *(int*)(tm + 4);
+    hour = *(int*)(tm + 8);
+    day = *(int*)(tm + 12);
+    month = *(int*)(tm + 16) + 1;
+    year = *(int*)(tm + 20) + 1900;
+    wday = *(int*)(tm + 24);
+#endif
+    char buffer[256];
+    int64_t used = 0;
+    char part[64];
+    int64_t i = 0;
+    while (i < fmt->len) {
+        if (fmt->data[i] != '%' || i + 1 >= fmt->len) {
+            if (used < 255) {
+                buffer[used++] = fmt->data[i++];
+            } else {
+                i++;
+            }
+            continue;
+        }
+        char conv = fmt->data[i + 1];
+        int len = 0;
+        switch (conv) {
+            case 'Y':
+                len = snprintf(part, sizeof(part), "%04d", year);
+                break;
+            case 'y':
+                len = snprintf(part, sizeof(part), "%02d", year % 100);
+                break;
+            case 'm':
+                len = snprintf(part, sizeof(part), "%02d", month);
+                break;
+            case 'd':
+                len = snprintf(part, sizeof(part), "%02d", day);
+                break;
+            case 'H':
+                len = snprintf(part, sizeof(part), "%02d", hour);
+                break;
+            case 'M':
+                len = snprintf(part, sizeof(part), "%02d", minute);
+                break;
+            case 'S':
+                len = snprintf(part, sizeof(part), "%02d", second);
+                break;
+            case 'e':
+                len = snprintf(part, sizeof(part), "%2d", day);
+                break;
+            case 'p':
+                len = snprintf(part, sizeof(part), "%s", hour < 12 ? "AM" : "PM");
+                break;
+            case 'a':
+                len = snprintf(part, sizeof(part), "%s", sw_wday_short[wday]);
+                break;
+            case 'A':
+                len = snprintf(part, sizeof(part), "%s", sw_wday_long[wday]);
+                break;
+            case 'b':
+                len = snprintf(part, sizeof(part), "%s", sw_month_short[month - 1]);
+                break;
+            case 'B':
+                len = snprintf(part, sizeof(part), "%s", sw_month_long[month - 1]);
+                break;
+            case '%':
+                part[0] = '%';
+                len = 1;
+                break;
+            default:
+                part[0] = '%';
+                part[1] = conv;
+                len = 2;
+        }
+        sw_append_str(buffer, &used, part, len);
+        i += 2;
+    }
+    return sw_string_from_literal(buffer, used);
+}
+
+int64_t sw_time_from_parts(
+    int64_t year,
+    int64_t month,
+    int64_t day,
+    int64_t hour,
+    int64_t minute,
+    int64_t second
+) {
+#if defined(_WIN32)
+    extern int SystemTimeToFileTime(const void* system_time, void* file_time);
+    extern int LocalFileTimeToFileTime(const void* local_file_time, void* file_time);
+    unsigned char st[16];
+    memset(st, 0, sizeof(st));
+    *(unsigned short*)(st + 0) = (unsigned short)year;
+    *(unsigned short*)(st + 2) = (unsigned short)month;
+    *(unsigned short*)(st + 6) = (unsigned short)day;
+    *(unsigned short*)(st + 8) = (unsigned short)hour;
+    *(unsigned short*)(st + 10) = (unsigned short)minute;
+    *(unsigned short*)(st + 12) = (unsigned short)second;
+    unsigned char local_ft[8];
+    unsigned char ft[8];
+    if (!SystemTimeToFileTime(st, local_ft) || !LocalFileTimeToFileTime(local_ft, ft)) {
+        return -1;
+    }
+    uint64_t since_1601 =
+        ((uint64_t)(*(unsigned int*)(ft + 4)) << 32) | (*(unsigned int*)ft);
+    return (int64_t)((since_1601 - 116444736000000000ULL) / 10000000ULL);
+#else
+    extern long mktime(void* tm);
+    unsigned char tm[64];
+    memset(tm, 0, sizeof(tm));
+    *(int*)(tm + 0) = (int)second;
+    *(int*)(tm + 4) = (int)minute;
+    *(int*)(tm + 8) = (int)hour;
+    *(int*)(tm + 12) = (int)day;
+    *(int*)(tm + 16) = (int)month - 1;
+    *(int*)(tm + 20) = (int)year - 1900;
+    *(int*)(tm + 32) = -1;  // 自动判断夏令时
+    return (int64_t)mktime(tm);
+#endif
+}
+
+int64_t sw_timezone_offset_sec(void) {
+#if defined(_WIN32)
+    extern int SystemTimeToFileTime(const void* system_time, void* file_time);
+    extern int LocalFileTimeToFileTime(const void* local_file_time, void* file_time);
+    int64_t now = now_sec();
+    unsigned char st[16];
+    sw_unix_to_local_systemtime(st, now);
+    unsigned char local_ft[8];
+    unsigned char ft[8];
+    if (!SystemTimeToFileTime(st, local_ft) || !LocalFileTimeToFileTime(local_ft, ft)) {
+        return 0;
+    }
+    uint64_t since_1601 =
+        ((uint64_t)(*(unsigned int*)(ft + 4)) << 32) | (*(unsigned int*)ft);
+    int64_t local_unix = (int64_t)((since_1601 - 116444736000000000ULL) / 10000000ULL);
+    return local_unix - now;
+#else
+    extern void* localtime_r(const void* time, void* tm);
+    extern void* gmtime_r(const void* time, void* tm);
+    extern long mktime(void* tm);
+    int64_t now = now_sec();
+    unsigned char t[8];
+    *(int64_t*)t = now;
+    unsigned char local_tm[64];
+    unsigned char utc_tm[64];
+    if (!localtime_r(t, local_tm) || !gmtime_r(t, utc_tm)) {
+        return 0;
+    }
+    *(int*)(local_tm + 32) = -1;
+    *(int*)(utc_tm + 32) = -1;
+    long local_epoch = mktime(local_tm);
+    long utc_epoch = mktime(utc_tm);
+    return (int64_t)(local_epoch - utc_epoch);
+#endif
+}
+
+// ---- io 补充：stderr 输出 / 读全部 stdin ----
+
+void sw_eprintln(sw_string* text) {
+    if (text != NULL && text->len > 0) {
+        fwrite(text->data, 1, (uint64_t)text->len, stderr);
+    }
+    fputc('\n', stderr);
+}
+
+void sw_eprint(sw_string* text) {
+    if (text != NULL && text->len > 0) {
+        fwrite(text->data, 1, (uint64_t)text->len, stderr);
+    }
+}
+
+sw_string* sw_read_all_stdin(void) {
+    char chunk[4096];
+    char* buffer = (char*)malloc(4096);
+    int64_t capacity = 4096;
+    int64_t length = 0;
+    while (1) {
+        uint64_t got = fread(chunk, 1, sizeof(chunk), stdin);
+        if (got == 0) {
+            break;
+        }
+        if (length + (int64_t)got > capacity) {
+            capacity = (length + (int64_t)got) * 2;
+            buffer = (char*)realloc(buffer, (sw_size)capacity);
+        }
+        memcpy(buffer + length, chunk, got);
+        length += (int64_t)got;
+    }
+    sw_string* result = sw_string_from_literal(buffer, length);
+    free(buffer);
+    return result;
+}
+
+// ---- os 补充：系统信息与目录 ----
+
+sw_string* sw_cwd(void) {
+    char buffer[4096];
+#if defined(_WIN32)
+    extern unsigned int GetCurrentDirectoryA(unsigned int size, char* buffer);
+    unsigned int len = GetCurrentDirectoryA(sizeof(buffer), buffer);
+    return sw_string_from_literal(buffer, (int64_t)len);
+#else
+    extern char* getcwd(char* buffer, unsigned long size);
+    if (getcwd(buffer, sizeof(buffer)) == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
+#endif
+}
+
+int64_t sw_chdir(sw_string* path) {
+#if defined(_WIN32)
+    extern int SetCurrentDirectoryA(const char* path);
+    return SetCurrentDirectoryA(path->data) ? 0 : -1;
+#else
+    extern int chdir(const char* path);
+    return chdir(path->data) == 0 ? 0 : -1;
+#endif
+}
+
+sw_string* sw_temp_dir(void) {
+#if defined(_WIN32)
+    extern unsigned int GetTempPathA(unsigned int size, char* buffer);
+    char buffer[4096];
+    unsigned int len = GetTempPathA(sizeof(buffer), buffer);
+    return sw_string_from_literal(buffer, (int64_t)len);
+#else
+    extern char* getenv(const char* name);
+    const char* dir = getenv("TMPDIR");
+    if (dir == NULL || dir[0] == 0) {
+        dir = "/tmp";
+    }
+    return sw_string_from_literal(dir, (int64_t)strlen(dir));
+#endif
+}
+
+sw_string* sw_home_dir(void) {
+    extern char* getenv(const char* name);
+#if defined(_WIN32)
+    const char* home = getenv("USERPROFILE");
+#else
+    const char* home = getenv("HOME");
+#endif
+    if (home == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(home, (int64_t)strlen(home));
+}
+
+sw_string* sw_hostname(void) {
+    char buffer[4096];
+#if defined(_WIN32)
+    extern int GetComputerNameA(char* buffer, unsigned int* size);
+    unsigned int size = sizeof(buffer);
+    if (!GetComputerNameA(buffer, &size)) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
+#else
+    extern int gethostname(char* name, unsigned long size);
+    if (gethostname(buffer, sizeof(buffer)) != 0) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(buffer, (int64_t)strlen(buffer));
+#endif
+}
+
+int64_t sw_cpu_count(void) {
+#if defined(_WIN32)
+    extern void GetSystemInfo(void* info);
+    unsigned char info[56];
+    memset(info, 0, sizeof(info));
+    GetSystemInfo(info);
+    return *(unsigned int*)(info + 40);
+#else
+    extern long sysconf(int name);
+#if defined(__APPLE__)
+    long count = sysconf(58);  // _SC_NPROCESSORS_ONLN（macOS）
+#else
+    long count = sysconf(84);  // _SC_NPROCESSORS_ONLN（Linux/musl）
+#endif
+    return count > 0 ? count : 1;
+#endif
+}
+
+sw_array* sw_env_keys(void) {
+    sw_array* array = sw_array_new(8, 16);
+    int64_t slot = 0;
+#if defined(_WIN32)
+    extern char* GetEnvironmentStringsA(void);
+    extern int FreeEnvironmentStringsA(char* block);
+    char* block = GetEnvironmentStringsA();
+    if (block != NULL) {
+        char* cursor = block;
+        while (cursor[0] != 0) {
+            int64_t len = 0;
+            while (cursor[len] != 0 && cursor[len] != '=') {
+                len++;
+            }
+            if (len > 0) {
+                if (slot >= array->len) {
+                    sw_array* bigger = sw_array_new(8, array->len * 2 + 1);
+                    for (int64_t i = 0; i < slot; i++) {
+                        ((int64_t*)bigger->data)[i] = ((int64_t*)array->data)[i];
+                    }
+                    array = bigger;
+                }
+                ((int64_t*)array->data)[slot++] =
+                    (int64_t)sw_string_from_literal(cursor, len);
+            }
+            while (cursor[len] != 0) {
+                len++;
+            }
+            cursor += len + 1;
+        }
+        FreeEnvironmentStringsA(block);
+    }
+#else
+    for (int64_t index = 0; environ[index] != NULL; index++) {
+        const char* entry = environ[index];
+        int64_t len = 0;
+        while (entry[len] != 0 && entry[len] != '=') {
+            len++;
+        }
+        if (len > 0) {
+            if (slot >= array->len) {
+                sw_array* bigger = sw_array_new(8, array->len * 2 + 1);
+                for (int64_t i = 0; i < slot; i++) {
+                    ((int64_t*)bigger->data)[i] = ((int64_t*)array->data)[i];
+                }
+                array = bigger;
+            }
+            ((int64_t*)array->data)[slot++] =
+                (int64_t)sw_string_from_literal(entry, len);
+        }
+    }
+#endif
+    array->len = slot;
+    array->cap = slot;
+    return array;
+}
+
+int64_t sw_setenv(sw_string* name, sw_string* value) {
+#if defined(_WIN32)
+    extern int SetEnvironmentVariableA(const char* name, const char* value);
+    return SetEnvironmentVariableA(name->data, value->data) ? 0 : -1;
+#else
+    extern int setenv(const char* name, const char* value, int overwrite);
+    return setenv(name->data, value->data, 1) == 0 ? 0 : -1;
+#endif
+}
+
+// ---- fs 补充：文件信息 / 权限 / 递归操作 / glob ----
+
+int64_t sw_file_size_path(sw_string* path) {
+    sw_file_handle* file = fopen(path->data, "rb");
+    if (file == NULL) {
+        return -1;
+    }
+    fseek(file, 0, 2);
+    long size = ftell(file);
+    fclose(file);
+    return size < 0 ? -1 : (int64_t)size;
+}
+
+#if defined(_WIN32)
+#define SW_STAT_MODE_OFFSET 4
+#define SW_STAT_MTIME_OFFSET 48
+#else
+#define SW_STAT_MODE_OFFSET 24
+#define SW_STAT_MTIME_OFFSET 88
+#endif
+
+int64_t sw_file_mtime(sw_string* path) {
+#if defined(_WIN32)
+    extern int GetFileAttributesExA(const char* path, int level, void* data);
+    unsigned char data[36];
+    memset(data, 0, sizeof(data));
+    if (!GetFileAttributesExA(path->data, 0, data)) {
+        return -1;
+    }
+    uint64_t since_1601 =
+        ((uint64_t)(*(unsigned int*)(data + 24)) << 32) | (*(unsigned int*)(data + 20));
+    return (int64_t)((since_1601 - 116444736000000000ULL) / 10000000ULL);
+#else
+    extern int stat(const char* path, void* buf);
+    unsigned char buf[160];
+    memset(buf, 0, sizeof(buf));
+    if (stat(path->data, buf) != 0) {
+        return -1;
+    }
+    return *(int64_t*)(buf + SW_STAT_MTIME_OFFSET);
+#endif
+}
+
+int64_t sw_is_file(sw_string* path) {
+#if defined(_WIN32)
+    extern unsigned int GetFileAttributesA(const char* path);
+    unsigned int attrs = GetFileAttributesA(path->data);
+    if (attrs == 0xFFFFFFFFu) {
+        return 0;
+    }
+    return (attrs & 0x10) ? 0 : 1;
+#else
+    extern int stat(const char* path, void* buf);
+    unsigned char buf[160];
+    memset(buf, 0, sizeof(buf));
+    if (stat(path->data, buf) != 0) {
+        return 0;
+    }
+    unsigned int mode = *(unsigned int*)(buf + SW_STAT_MODE_OFFSET);
+    return (mode & 0xF000) == 0x8000 ? 1 : 0;
+#endif
+}
+
+int64_t sw_chmod(sw_string* path, int64_t mode) {
+#if defined(_WIN32)
+    extern int _chmod(const char* path, int mode);
+    // POSIX 用户写位是 0o200（十进制 128）；MSVC 的 _S_IWRITE 是 0x80，_S_IREAD 是 0x100。
+    int windows_mode = (mode & 128) ? 0x80 : 0x100;
+    return _chmod(path->data, windows_mode) == 0 ? 0 : -1;
+#else
+    extern int chmod(const char* path, unsigned int mode);
+    return chmod(path->data, (unsigned int)mode) == 0 ? 0 : -1;
+#endif
+}
+
+int64_t sw_touch(sw_string* path) {
+    sw_file_handle* file = fopen(path->data, "ab");
+    if (file == NULL) {
+        return -1;
+    }
+    fclose(file);
+    return 0;
+}
+
+int64_t sw_copy_dir(sw_string* src, sw_string* dst) {
+    if (!is_dir(src)) {
+        return -1;
+    }
+    if (sw_mkdir(dst) != 0 && !is_dir(dst)) {
+        return -1;
+    }
+    sw_array* entries = list_dir(src);
+    for (int64_t i = 0; i < entries->len; i++) {
+        sw_string* name = (sw_string*)((int64_t*)entries->data)[i];
+        sw_string* full_src = path_join(src, name);
+        sw_string* full_dst = path_join(dst, name);
+        if (is_dir(full_src)) {
+            if (sw_copy_dir(full_src, full_dst) != 0) {
+                return -1;
+            }
+        } else {
+            if (copy_file(full_src, full_dst) < 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+int64_t sw_remove_all(sw_string* path) {
+    if (is_dir(path)) {
+        sw_array* entries = list_dir(path);
+        for (int64_t i = 0; i < entries->len; i++) {
+            sw_string* name = (sw_string*)((int64_t*)entries->data)[i];
+            sw_string* full = path_join(path, name);
+            if (sw_remove_all(full) != 0) {
+                return -1;
+            }
+        }
+    }
+    return sw_remove(path);
+}
+
+static int sw_glob_match(const char* pattern, int64_t plen, const char* text, int64_t tlen) {
+    int64_t p = 0;
+    int64_t t = 0;
+    int64_t star_p = -1;
+    int64_t star_t = 0;
+    while (t < tlen) {
+        if (p < plen && (pattern[p] == '?' || pattern[p] == text[t])) {
+            p++;
+            t++;
+        } else if (p < plen && pattern[p] == '*') {
+            star_p = p++;
+            star_t = t;
+        } else if (star_p >= 0) {
+            p = star_p + 1;
+            t = ++star_t;
+        } else {
+            return 0;
+        }
+    }
+    while (p < plen && pattern[p] == '*') {
+        p++;
+    }
+    return p == plen;
+}
+
+sw_array* sw_glob(sw_string* pattern) {
+    sw_string* dir = path_dirname(pattern);
+    sw_string* base = path_basename(pattern);
+    sw_array* result = sw_array_new(8, 0);
+    int64_t slot = 0;
+    sw_array* entries = list_dir(dir);
+    for (int64_t i = 0; i < entries->len; i++) {
+        sw_string* name = (sw_string*)((int64_t*)entries->data)[i];
+        if (sw_glob_match(base->data, base->len, name->data, name->len)) {
+            if (slot >= result->len) {
+                sw_array* bigger = sw_array_new(8, result->len * 2 + 1);
+                for (int64_t j = 0; j < slot; j++) {
+                    ((int64_t*)bigger->data)[j] = ((int64_t*)result->data)[j];
+                }
+                result = bigger;
+            }
+            ((int64_t*)result->data)[slot++] = (int64_t)path_join(dir, name);
+        }
+    }
+    result->len = slot;
+    result->cap = slot;
+    return result;
 }

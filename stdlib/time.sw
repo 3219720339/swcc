@@ -25,3 +25,20 @@ export extern c function parse_date(text: string): int;
 
 /// 阻塞当前线程指定毫秒数；非正数立即返回。
 export extern c function sleep_ms(milliseconds: int): void;
+
+/// 按自定义格式格式化本地时间。支持：%Y %y %m %d %H %M %S %a %A %b %B %e %p %%。
+/// 示例：time_format(now_sec(), "%Y-%m-%d %H:%M:%S")
+export extern c function time_format(seconds: int, fmt: string): string;
+
+/// 由年月日时分秒构造本地时间戳（month 1-12，hour 0-23）。
+export extern c function time_from_parts(
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+    second: int
+): int;
+
+/// 当前本地时区相对 UTC 的偏移秒数（东为正、西为负）。
+export extern c function timezone_offset_sec(): int;

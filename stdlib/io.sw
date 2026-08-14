@@ -19,3 +19,12 @@ export extern c function print(text: string): void;
 /// 从标准输入读取一行（UTF-8 文本），去掉行尾 \n 与 \r。
 /// 返回 string；EOF 或失败时返回空字符串。
 export extern c function read_line(): string;
+
+/// 向标准错误输出一行并换行。
+export extern c function eprintln(text: string): void;
+
+/// 向标准错误输出（不换行）。
+export extern c function eprint(text: string): void;
+
+/// 读取标准输入全部内容直到 EOF；无输入返回空字符串。
+export extern c function read_all_stdin(): string;
