@@ -123,6 +123,7 @@ pub struct FieldDecl {
 #[derive(Clone, Debug)]
 pub struct EnumDecl {
     pub name: Ident,
+    pub generics: Vec<Ident>,
     pub members: Vec<EnumMember>,
     pub span: Span,
 }
@@ -131,6 +132,27 @@ pub struct EnumDecl {
 pub struct EnumMember {
     pub name: Ident,
     pub value: Option<Expr>,
+    /// ADT 变体字段类型列表：`Some(T)`、`None`（空）。与 value 互斥。
+    pub fields: Vec<TypeRef>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum Pattern {
+    /// 枚举变体模式：`Some(x, y)`（绑定变体字段）。
+    Variant {
+        name: Ident,
+        bindings: Vec<Ident>,
+        span: Span,
+    },
+    /// 通配符 `_`。
+    Wildcard(Span),
+}
+
+#[derive(Clone, Debug)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Block,
     pub span: Span,
 }
 
@@ -282,6 +304,11 @@ pub enum StmtKind {
         value: Expr,
         cases: Vec<SwitchCase>,
         default: Option<Vec<Stmt>>,
+    },
+    /// ADT 枚举模式匹配：`match (value) { Variant(x) => { ... }, _ => { ... } }`。
+    Match {
+        value: Expr,
+        arms: Vec<MatchArm>,
     },
     Try {
         body: Block,

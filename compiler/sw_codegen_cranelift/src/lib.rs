@@ -292,12 +292,15 @@ impl Generator {
         builder.switch_to_block(entry);
         builder.append_block_params_for_function_params(entry);
 
-        let mut local_types: Vec<Type> = function
-            .params
+        // MirFunction.locals 已包含参数（FnLower 把参数 declare_local 进同一张表），
+        // MirExpr::Local 的 index 直接对应 locals 顺序；不能把 params 再拼一遍，
+        // 否则 index >= 参数个数的局部类型错位（潜伏 bug，float 局部在含参数
+        // 函数中会被当 int/其它类型）。
+        let local_types: Vec<Type> = function
+            .locals
             .iter()
-            .map(|param| param.ty.clone())
+            .map(|local| local.ty.clone())
             .collect();
-        local_types.extend(function.locals.iter().map(|local| local.ty.clone()));
 
         let struct_layout = struct_layout(types);
         let class_layout = class_layout(types, &struct_layout.1);
@@ -682,6 +685,24 @@ fn visit_expr(
             for arg in args {
                 visit_expr(arg, generator, mir, exports, ctx, refs)?;
             }
+        }
+        MirExpr::EnumNew { fields, .. } => {
+            let object_new = generator.declare_import(
+                "sw_object_new",
+                &object_new_signature(generator.module.isa()),
+            )?;
+            refs.func_refs.insert(
+                "sw_object_new".to_owned(),
+                generator
+                    .module
+                    .declare_func_in_func(object_new, &mut ctx.func),
+            );
+            for field in fields {
+                visit_expr(field, generator, mir, exports, ctx, refs)?;
+            }
+        }
+        MirExpr::EnumTag { object } | MirExpr::EnumField { object, .. } => {
+            visit_expr(object, generator, mir, exports, ctx, refs)?;
         }
         _ => {}
     }
@@ -2327,6 +2348,63 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 self.builder
                     .ins()
                     .load(types::I64, MemFlagsData::new(), env, offset)
+            }
+            MirExpr::EnumNew { tag, fields } => {
+                let size = (1 + fields.len()) as i64 * 8;
+                let size_value = self.builder.ins().iconst(types::I64, size);
+                let ptr = self.call_import(
+                    "sw_object_new",
+                    object_new_signature(self.module.isa()),
+                    &[size_value],
+                )?;
+                let tag_value = self.builder.ins().iconst(types::I64, *tag);
+                self.builder
+                    .ins()
+                    .store(MemFlagsData::new(), tag_value, ptr, 0);
+                for (index, field) in fields.iter().enumerate() {
+                    let value = self.expr(field)?;
+                    let value = if self.builder.func.dfg.value_type(value) == types::F64 {
+                        self.builder
+                            .ins()
+                            .bitcast(types::I64, MemFlagsData::new(), value)
+                    } else {
+                        value
+                    };
+                    self.builder.ins().store(
+                        MemFlagsData::new(),
+                        value,
+                        ptr,
+                        ((index + 1) * 8) as i32,
+                    );
+                }
+                ptr
+            }
+            MirExpr::EnumTag { object } => {
+                let object = self.expr(object)?;
+                self.builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), object, 0)
+            }
+            MirExpr::EnumField {
+                object,
+                index,
+                elem,
+            } => {
+                let object = self.expr(object)?;
+                let offset = ((index + 1) * 8) as i32;
+                if elem.is_float() {
+                    let bits =
+                        self.builder
+                            .ins()
+                            .load(types::I64, MemFlagsData::new(), object, offset);
+                    self.builder
+                        .ins()
+                        .bitcast(types::F64, MemFlagsData::new(), bits)
+                } else {
+                    self.builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), object, offset)
+                }
             }
         })
     }

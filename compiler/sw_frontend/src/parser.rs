@@ -591,6 +591,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::While) => self.parse_while().ok()?,
             TokenKind::Keyword(Keyword::For) => self.parse_for().ok()?,
             TokenKind::Keyword(Keyword::Switch) => self.parse_switch().ok()?,
+            TokenKind::Keyword(Keyword::Match) => self.parse_match().ok()?,
             TokenKind::Keyword(Keyword::Try) => self.parse_try().ok()?,
             TokenKind::Keyword(Keyword::Throw) => {
                 self.advance();
@@ -881,6 +882,57 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_match(&mut self) -> Result<StmtKind, ()> {
+        self.advance(); // match
+        self.expect(&TokenKind::LParen, "match 缺少 `(`")?;
+        let value = self.parse_expression()?;
+        self.expect(&TokenKind::RParen, "match 缺少 `)`")?;
+        self.expect(&TokenKind::LBrace, "match 缺少 `{`")?;
+
+        let mut arms = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let arm_start = self.peek().span.start;
+            let pattern = self.parse_pattern()?;
+            self.expect(&TokenKind::FatArrow, "match 分支缺少 `=>`")?;
+            let body = self.parse_block()?;
+            arms.push(MatchArm {
+                pattern,
+                body,
+                span: Span::new(arm_start, self.peek().span.start),
+            });
+            // 分支间换行分隔即可，逗号可选（Rust 风格）。
+            self.eat(&TokenKind::Comma);
+        }
+        self.expect(&TokenKind::RBrace, "match 缺少 `}`").ok();
+        Ok(StmtKind::Match { value, arms })
+    }
+
+    fn parse_pattern(&mut self) -> Result<Pattern, ()> {
+        let span = self.peek().span;
+        if matches!(&self.peek().kind, TokenKind::Ident(name) if name == "_") {
+            self.advance();
+            return Ok(Pattern::Wildcard(span));
+        }
+        let name = self.expect_ident("模式变体名")?;
+        let mut bindings = Vec::new();
+        if self.eat(&TokenKind::LParen) {
+            if !self.at(&TokenKind::RParen) {
+                loop {
+                    bindings.push(self.expect_ident("模式绑定变量")?);
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(&TokenKind::RParen, "模式缺少 `)`").ok();
+        }
+        Ok(Pattern::Variant {
+            name,
+            bindings,
+            span,
+        })
+    }
+
     fn parse_try(&mut self) -> Result<StmtKind, ()> {
         self.advance(); // try
         let body = self.parse_block()?;
@@ -997,19 +1049,34 @@ impl<'a> Parser<'a> {
         let start = self.peek().span.start;
         self.advance(); // enum
         let name = self.expect_ident("枚举名").ok()?;
+        let generics = self.parse_generic_parameters().ok()?;
         self.expect(&TokenKind::LBrace, "枚举缺少 `{`").ok()?;
         let mut members = Vec::new();
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
             let member_start = self.peek().span.start;
             let member_name = self.expect_ident("枚举成员名").ok()?;
-            let value = if self.eat(&TokenKind::Assign) {
-                self.parse_expression().ok()
+            let (value, fields) = if self.at(&TokenKind::LParen) {
+                self.advance();
+                let mut fields = Vec::new();
+                if !self.at(&TokenKind::RParen) {
+                    loop {
+                        fields.push(self.parse_type().ok()?);
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&TokenKind::RParen, "枚举变体字段缺少 `)`").ok();
+                (None, fields)
+            } else if self.eat(&TokenKind::Assign) {
+                (self.parse_expression().ok(), Vec::new())
             } else {
-                None
+                (None, Vec::new())
             };
             members.push(EnumMember {
                 name: member_name,
                 value,
+                fields,
                 span: Span::new(member_start, self.peek().span.start),
             });
             if !self.eat(&TokenKind::Comma) {
@@ -1022,6 +1089,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::RBrace, "枚举缺少 `}`").ok();
         Some(EnumDecl {
             name,
+            generics,
             members,
             span: Span::new(start, self.peek().span.start),
         })

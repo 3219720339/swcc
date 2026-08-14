@@ -99,6 +99,8 @@ struct CheckResult {
     field_targets: HashMap<usize, FieldTarget>,
     new_types: HashMap<usize, Type>,
     object_types: HashMap<usize, Type>,
+    /// 表达式起始偏移 → 目标枚举 id（带注解声明传播，供泛型枚举构造推断）。
+    enum_targets: HashMap<usize, u32>,
     /// 函数声明起始偏移 → 所属类（方法）。
     method_classes: HashMap<usize, u32>,
 }
@@ -118,6 +120,11 @@ enum CallTarget {
     StrMethod {
         runtime_name: String,
         sig: FunctionSig,
+    },
+    /// ADT 枚举变体构造：`EnumName.Variant(args)`。
+    EnumConstruct {
+        enum_id: u32,
+        variant_index: usize,
     },
 }
 
@@ -285,6 +292,7 @@ impl Analyzer {
                             self.types.enums.push(EnumInfo {
                                 module: module_id,
                                 name: enumeration.name.name.clone(),
+                                generics: Vec::new(),
                                 members: Vec::new(),
                             });
                             Some((
@@ -548,9 +556,31 @@ impl Analyzer {
                 }
                 ItemKind::Enum(enumeration) => {
                     let id = self.type_id_for(module_id, &enumeration.name.name);
+                    let generics = enumeration
+                        .generics
+                        .iter()
+                        .map(|g| g.name.clone())
+                        .collect::<Vec<_>>();
+                    let mut resolver = TypeResolver::new(
+                        &self.symbols,
+                        &mut self.types,
+                        &self.registry,
+                        &self.states[module_id.0 as usize].names,
+                    );
+                    let field_tys: Vec<Vec<Type>> = enumeration
+                        .members
+                        .iter()
+                        .map(|member| {
+                            member
+                                .fields
+                                .iter()
+                                .map(|ty| resolver.lower(ty, &generics))
+                                .collect()
+                        })
+                        .collect();
                     let mut members = Vec::new();
                     let mut next_value = 0i64;
-                    for member in &enumeration.members {
+                    for (index, member) in enumeration.members.iter().enumerate() {
                         let value = match &member.value {
                             Some(expr) => match self.const_int(expr) {
                                 Some(value) => value,
@@ -561,10 +591,18 @@ impl Analyzer {
                             },
                             None => next_value,
                         };
-                        members.push((member.name.name.clone(), value));
+                        if member.value.is_some() && !member.fields.is_empty() {
+                            self.error("枚举变体不能同时有判别值 `=` 和字段", member.span);
+                        }
+                        members.push(EnumVariant {
+                            name: member.name.name.clone(),
+                            discriminant: value,
+                            fields: field_tys[index].clone(),
+                        });
                         next_value = value + 1;
                     }
                     if let Some(SymbolKind::Type(SymbolType::Enum(id))) = id {
+                        self.types.enums[id as usize].generics = generics;
                         self.types.enums[id as usize].members = members;
                     }
                 }
@@ -1399,7 +1437,14 @@ impl<'a> TypeResolver<'a> {
                                 }
                                 Type::Struct(*id)
                             }
-                            SymbolType::Enum(id) => Type::Enum(*id),
+                            SymbolType::Enum(id) => {
+                                if !first.generics.is_empty()
+                                    || !self.types.enums[*id as usize].generics.is_empty()
+                                {
+                                    return self.instantiate_enum(*id, &first.generics, generics);
+                                }
+                                Type::Enum(*id)
+                            }
                             SymbolType::Class(id) => {
                                 if !first.generics.is_empty()
                                     || !self.types.classes[*id as usize].generics.is_empty()
@@ -1474,6 +1519,54 @@ impl<'a> TypeResolver<'a> {
         });
         self.types.generic_struct_instances.insert(key, id);
         Type::Struct(id)
+    }
+
+    fn instantiate_enum(
+        &mut self,
+        enum_id: u32,
+        arg_refs: &[TypeRef],
+        generics: &[String],
+    ) -> Type {
+        let info = self.types.enums[enum_id as usize].clone();
+        if info.generics.len() != arg_refs.len() {
+            return Type::Error;
+        }
+        let args: Vec<Type> = arg_refs
+            .iter()
+            .map(|arg| self.lower(arg, generics))
+            .collect();
+        let key = (enum_id, args.clone());
+        if let Some(&id) = self.types.generic_enum_instances.get(&key) {
+            return Type::Enum(id);
+        }
+        let type_args: HashMap<String, Type> = info
+            .generics
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        let members = info
+            .members
+            .iter()
+            .map(|member| EnumVariant {
+                name: member.name.clone(),
+                discriminant: member.discriminant,
+                fields: member
+                    .fields
+                    .iter()
+                    .map(|ty| substitute_type(ty, &type_args))
+                    .collect(),
+            })
+            .collect();
+        let id = self.types.enums.len() as u32;
+        self.types.enums.push(EnumInfo {
+            module: info.module,
+            name: info.name,
+            generics: Vec::new(),
+            members,
+        });
+        self.types.generic_enum_instances.insert(key, id);
+        Type::Enum(id)
     }
 
     /// 泛型 class 实例化：替换字段与方法签名，注册新 class id（方法体在降级阶段生成）。
@@ -1594,6 +1687,45 @@ impl<'s> Checker<'s> {
             .expr_types
             .insert((span.start, span.end), ty.clone());
         ty
+    }
+
+    /// 泛型枚举实例化（类型实参已推断）：生成/复用实例枚举 id。
+    fn instantiate_enum_types(&mut self, enum_id: u32, type_args: &HashMap<String, Type>) -> u32 {
+        let info = self.types.enums[enum_id as usize].clone();
+        if info.generics.is_empty() {
+            return enum_id;
+        }
+        let args: Vec<Type> = info
+            .generics
+            .iter()
+            .map(|name| type_args.get(name).cloned().unwrap_or(Type::Error))
+            .collect();
+        let key = (enum_id, args.clone());
+        if let Some(&id) = self.types.generic_enum_instances.get(&key) {
+            return id;
+        }
+        let members = info
+            .members
+            .iter()
+            .map(|member| EnumVariant {
+                name: member.name.clone(),
+                discriminant: member.discriminant,
+                fields: member
+                    .fields
+                    .iter()
+                    .map(|ty| substitute_type(ty, type_args))
+                    .collect(),
+            })
+            .collect();
+        let id = self.types.enums.len() as u32;
+        self.types.enums.push(EnumInfo {
+            module: info.module,
+            name: info.name,
+            generics: Vec::new(),
+            members,
+        });
+        self.types.generic_enum_instances.insert(key, id);
+        id
     }
 
     fn alloc_local(&mut self) -> SymbolId {
@@ -1822,6 +1954,83 @@ impl<'s> Checker<'s> {
                 }
                 self.switch_depth -= 1;
             }
+            StmtKind::Match { value, arms } => {
+                let value_ty = self.check_expr(value);
+                let Type::Enum(enum_id) = value_ty.without_nullable() else {
+                    self.error("match 目标必须是枚举类型", value.span);
+                    return;
+                };
+                let info = self.types.enums[*enum_id as usize].clone();
+                let mut covered = vec![false; info.members.len()];
+                let mut wildcard = false;
+                for arm in arms {
+                    match &arm.pattern {
+                        Pattern::Wildcard(_) => {
+                            wildcard = true;
+                            self.check_block(&arm.body);
+                        }
+                        Pattern::Variant {
+                            name,
+                            bindings,
+                            span,
+                        } => {
+                            let Some(index) = info
+                                .members
+                                .iter()
+                                .position(|member| member.name == name.name)
+                            else {
+                                self.error(
+                                    format!("枚举 {} 没有变体 `{}`", info.name, name.name),
+                                    name.span,
+                                );
+                                continue;
+                            };
+                            let variant = &info.members[index];
+                            if variant.fields.len() != bindings.len() {
+                                self.error(
+                                    format!(
+                                        "变体 `{}` 需要 {} 个绑定变量，实际 {}",
+                                        variant.name,
+                                        variant.fields.len(),
+                                        bindings.len()
+                                    ),
+                                    *span,
+                                );
+                            }
+                            covered[index] = true;
+                            self.scopes.push(HashMap::new());
+                            for (binding, ty) in bindings.iter().zip(variant.fields.iter()) {
+                                let id = self.alloc_local();
+                                self.symbols[id.0 as usize].kind = SymbolKind::Local {
+                                    ty: ty.clone(),
+                                    mutable: false,
+                                };
+                                self.scopes
+                                    .last_mut()
+                                    .expect("作用域存在")
+                                    .insert(binding.name.clone(), id);
+                            }
+                            self.check_block(&arm.body);
+                            self.scopes.pop();
+                        }
+                    }
+                }
+                if !wildcard {
+                    let uncovered: Vec<&str> = info
+                        .members
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| !covered[*index])
+                        .map(|(_, member)| member.name.as_str())
+                        .collect();
+                    if !uncovered.is_empty() {
+                        self.error(
+                            format!("match 未穷尽：缺少变体 {}", uncovered.join(", ")),
+                            value.span,
+                        );
+                    }
+                }
+            }
             StmtKind::Try {
                 body,
                 catches,
@@ -1920,6 +2129,21 @@ impl<'s> Checker<'s> {
                         .result
                         .object_types
                         .insert(init.span.start, ty.clone());
+                }
+                if let Type::Enum(enum_id) = ty.without_nullable() {
+                    let is_enum_ctor = match &init.kind {
+                        ExprKind::Call { callee, .. } => {
+                            matches!(callee.kind, ExprKind::Member { .. })
+                        }
+                        ExprKind::Member { .. } => true,
+                        _ => false,
+                    };
+                    if is_enum_ctor {
+                        self.state
+                            .result
+                            .enum_targets
+                            .insert(init.span.start, *enum_id);
+                    }
                 }
                 let init_ty = self.check_expr(init);
                 if !self.is_assignable(&init_ty, &ty) && !self.literal_target_ok(init, &ty) {
@@ -2538,6 +2762,42 @@ impl<'s> Checker<'s> {
     }
 
     fn check_member(&mut self, object: &Expr, name: &Ident, optional: bool, span: Span) -> Type {
+        // ADT 枚举无参变体构造：EnumName.Variant（类型名作为值解析为 Error，
+        // 这里直接识别枚举类型名）。
+        if let ExprKind::Ident(type_ident) = &object.kind {
+            if let Some(SymbolId(id)) = self.lookup(&type_ident.name) {
+                if let SymbolKind::Type(SymbolType::Enum(enum_id)) = &self.symbols[id as usize].kind
+                {
+                    let enum_id = *enum_id;
+                    let info = self.types.enums[enum_id as usize].clone();
+                    if info.members.iter().any(|m| !m.fields.is_empty()) {
+                        let Some(index) = info.members.iter().position(|m| m.name == name.name)
+                        else {
+                            self.error(
+                                format!("枚举 {} 没有变体 `{}`", info.name, name.name),
+                                name.span,
+                            );
+                            return Type::Error;
+                        };
+                        let resolved = self
+                            .state
+                            .result
+                            .enum_targets
+                            .get(&span.start)
+                            .copied()
+                            .unwrap_or(enum_id);
+                        self.state.result.call_targets.insert(
+                            (span.start, span.end),
+                            CallTarget::EnumConstruct {
+                                enum_id: resolved,
+                                variant_index: index,
+                            },
+                        );
+                        return Type::Enum(resolved);
+                    }
+                }
+            }
+        }
         let object_ty = self.check_expr(object);
         let base = object_ty.without_nullable().clone();
         let result = match &base {
@@ -2614,24 +2874,40 @@ impl<'s> Checker<'s> {
                 }
             }
             Type::Enum(id) => {
-                let has_member = self
-                    .types
-                    .enums
-                    .get(*id as usize)
-                    .map(|info| info.members.iter().any(|(m, _)| m == &name.name))
-                    .unwrap_or(false);
-                if has_member {
-                    Type::Enum(*id)
-                } else {
+                let Some(info) = self.types.enums.get(*id as usize) else {
                     self.error(
-                        format!(
-                            "枚举 {} 没有成员 `{}`",
-                            self.types.enum_name(*id),
-                            name.name
-                        ),
+                        format!("枚举 {} 不存在", self.types.enum_name(*id)),
                         name.span,
                     );
-                    Type::Error
+                    return Type::Error;
+                };
+                let Some(index) = info.members.iter().position(|m| m.name == name.name) else {
+                    self.error(
+                        format!("枚举 {} 没有成员 `{}`", info.name, name.name),
+                        name.span,
+                    );
+                    return Type::Error;
+                };
+                if info.members.iter().any(|m| !m.fields.is_empty()) {
+                    // ADT 无参变体构造：EnumName.Variant
+                    let resolved = self
+                        .state
+                        .result
+                        .enum_targets
+                        .get(&span.start)
+                        .copied()
+                        .unwrap_or(*id);
+                    self.state.result.call_targets.insert(
+                        (span.start, span.end),
+                        CallTarget::EnumConstruct {
+                            enum_id: resolved,
+                            variant_index: index,
+                        },
+                    );
+                    Type::Enum(resolved)
+                } else {
+                    // C 风格枚举成员（值 = discriminant）。
+                    Type::Enum(*id)
                 }
             }
             Type::Str | Type::Array(_) => {
@@ -2811,6 +3087,87 @@ impl<'s> Checker<'s> {
                 name,
                 optional,
             } => {
+                // ADT 枚举变体构造：EnumName.Variant(args)
+                if let ExprKind::Ident(type_ident) = &object.kind {
+                    if let Some(SymbolId(id)) = self.lookup(&type_ident.name) {
+                        if let SymbolKind::Type(SymbolType::Enum(enum_id)) =
+                            &self.symbols[id as usize].kind
+                        {
+                            let enum_id = *enum_id;
+                            let info = self.types.enums[enum_id as usize].clone();
+                            let Some(index) = info
+                                .members
+                                .iter()
+                                .position(|member| member.name == name.name)
+                            else {
+                                self.error(
+                                    format!("枚举 {} 没有变体 `{}`", info.name, name.name),
+                                    name.span,
+                                );
+                                return Type::Error;
+                            };
+                            let variant = &info.members[index];
+                            let args_ty: Vec<Type> =
+                                args.iter().map(|arg| self.check_expr(arg)).collect();
+                            let resolved_enum =
+                                match self.state.result.enum_targets.get(&span.start).copied() {
+                                    // 带注解声明提供了目标实例（如 Option<int> 的 None）。
+                                    Some(target_id) => target_id,
+                                    None => {
+                                        let mut type_args: HashMap<String, Type> = HashMap::new();
+                                        for (arg, field) in
+                                            args_ty.iter().zip(variant.fields.iter())
+                                        {
+                                            if let Type::TypeParam(param_name) = field {
+                                                type_args
+                                                    .entry(param_name.clone())
+                                                    .or_insert_with(|| arg.clone());
+                                            }
+                                        }
+                                        self.instantiate_enum_types(enum_id, &type_args)
+                                    }
+                                };
+                            let resolved_info = self.types.enums[resolved_enum as usize].clone();
+                            let resolved_variant = &resolved_info.members[index];
+                            if args_ty.len() != resolved_variant.fields.len() {
+                                self.error(
+                                    format!(
+                                        "变体 `{}` 需要 {} 个参数，实际 {}",
+                                        variant.name,
+                                        resolved_variant.fields.len(),
+                                        args_ty.len()
+                                    ),
+                                    span,
+                                );
+                            }
+                            for (i, (arg, field)) in args_ty
+                                .iter()
+                                .zip(resolved_variant.fields.iter())
+                                .enumerate()
+                            {
+                                if !self.is_assignable(arg, field) {
+                                    self.error(
+                                        format!(
+                                            "变体 `{}` 参数 {i} 类型不匹配：{} 不能赋给 {}",
+                                            variant.name,
+                                            arg.display(),
+                                            field.display()
+                                        ),
+                                        span,
+                                    );
+                                }
+                            }
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::EnumConstruct {
+                                    enum_id: resolved_enum,
+                                    variant_index: index,
+                                },
+                            );
+                            return Type::Enum(resolved_enum);
+                        }
+                    }
+                }
                 let object_ty = self.check_expr(object);
                 let args_ty: Vec<Type> = args.iter().map(|arg| self.check_expr(arg)).collect();
                 let result = match object_ty.without_nullable() {
@@ -3951,6 +4308,71 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
                 output.extend(chain);
             }
+            StmtKind::Match { value, arms } => {
+                let value_ty = self.expr_type(value);
+                let Type::Enum(enum_id) = value_ty.without_nullable() else {
+                    return;
+                };
+                let value_mir = self.lower_expr(value);
+                let info = self.lowerer.types.enums[*enum_id as usize].clone();
+                let mut chain: Vec<MirStmt> = Vec::new();
+                if let Some(wildcard) = arms
+                    .iter()
+                    .find(|arm| matches!(arm.pattern, Pattern::Wildcard(_)))
+                {
+                    chain = self.lower_stmts(&wildcard.body.statements);
+                }
+                for arm in arms.iter().rev() {
+                    let Pattern::Variant { name, bindings, .. } = &arm.pattern else {
+                        continue;
+                    };
+                    let Some(index) = info
+                        .members
+                        .iter()
+                        .position(|member| member.name == name.name)
+                    else {
+                        continue;
+                    };
+                    let variant = &info.members[index];
+                    let mut body = Vec::new();
+                    self.name_scopes.push(HashMap::new());
+                    for (bind_index, binding) in bindings.iter().enumerate() {
+                        let ty = variant
+                            .fields
+                            .get(bind_index)
+                            .cloned()
+                            .unwrap_or(Type::Error);
+                        let local = self.declare_local(&binding.name, ty.clone(), false);
+                        self.name_scopes
+                            .last_mut()
+                            .expect("作用域存在")
+                            .insert(binding.name.clone(), local);
+                        body.push(MirStmt::new(MirStmtKind::VarDecl {
+                            local,
+                            init: Some(MirExpr::EnumField {
+                                object: Box::new(value_mir.clone()),
+                                index: bind_index,
+                                elem: ty.clone(),
+                            }),
+                        }));
+                    }
+                    body.extend(self.lower_stmts(&arm.body.statements));
+                    self.name_scopes.pop();
+                    let cond = MirExpr::Binary {
+                        op: MirBinary::Eq,
+                        left: Box::new(MirExpr::EnumTag {
+                            object: Box::new(value_mir.clone()),
+                        }),
+                        right: Box::new(MirExpr::Int(variant.discriminant)),
+                    };
+                    chain = vec![MirStmt::new(MirStmtKind::If {
+                        cond,
+                        then: body,
+                        else_: chain,
+                    })];
+                }
+                output.extend(chain);
+            }
             StmtKind::Try {
                 body,
                 catches,
@@ -4851,7 +5273,20 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         self.append_default_args(*symbol, &mut args);
                     }
                 }
+                if let Some(CallTarget::EnumConstruct {
+                    enum_id,
+                    variant_index,
+                }) = &target
+                {
+                    let info = self.lowerer.types.enums[*enum_id as usize].clone();
+                    let variant = &info.members[*variant_index];
+                    return MirExpr::EnumNew {
+                        tag: variant.discriminant,
+                        fields: args,
+                    };
+                }
                 let callee = match target {
+                    Some(CallTarget::EnumConstruct { .. }) => unreachable!(),
                     Some(CallTarget::Function(symbol)) => {
                         let sig = match &self.lowerer.symbol(symbol).kind {
                             SymbolKind::Function(sig) => sig.clone(),
@@ -4976,6 +5411,25 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 name,
                 optional,
             } => {
+                // ADT 无参变体构造（EnumName.Variant）：检查阶段已登记 EnumConstruct。
+                if let Some(CallTarget::EnumConstruct {
+                    enum_id,
+                    variant_index,
+                }) = self
+                    .lowerer
+                    .state
+                    .result
+                    .call_targets
+                    .get(&(expr.span.start, expr.span.end))
+                    .cloned()
+                {
+                    let info = self.lowerer.types.enums[enum_id as usize].clone();
+                    let variant = &info.members[variant_index];
+                    return MirExpr::EnumNew {
+                        tag: variant.discriminant,
+                        fields: vec![],
+                    };
+                }
                 let access = if name.name == "length"
                     && matches!(
                         self.expr_type(object).without_nullable(),
@@ -5018,8 +5472,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                 .and_then(|info| {
                                     info.members
                                         .iter()
-                                        .find(|(member, _)| member == &name.name)
-                                        .map(|(_, value)| *value)
+                                        .find(|member| member.name == name.name)
+                                        .map(|member| member.discriminant)
                                 });
                         if let Some(value) = value {
                             MirExpr::Int(value)
@@ -5516,6 +5970,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
                 if let Some(statements) = default {
                     for statement in statements {
+                        self.collect_captures_stmt(statement, lambda_params, out, seen);
+                    }
+                }
+            }
+            StmtKind::Match { value, arms } => {
+                self.collect_captures_expr(value, lambda_params, out, seen);
+                for arm in arms {
+                    for statement in &arm.body.statements {
                         self.collect_captures_stmt(statement, lambda_params, out, seen);
                     }
                 }

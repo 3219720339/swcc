@@ -190,6 +190,22 @@ pub enum MirExpr {
         sig: FunctionSig,
         args: Vec<MirExpr>,
     },
+    /// ADT 枚举构造：运行时对象布局 tag@0、payload 字段 @8*(i+1)。
+    EnumNew {
+        tag: i64,
+        fields: Vec<MirExpr>,
+    },
+    /// 读取枚举对象的 tag。
+    EnumTag {
+        object: Box<MirExpr>,
+    },
+    /// 读取枚举对象的第 index 个 payload 字段。
+    EnumField {
+        object: Box<MirExpr>,
+        index: usize,
+        /// 字段类型（浮点字段按 f64 位模式存取）。
+        elem: Type,
+    },
 }
 
 #[derive(Clone, Debug)]

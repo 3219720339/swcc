@@ -60,7 +60,16 @@ pub struct StructInfo {
 pub struct EnumInfo {
     pub module: ModuleId,
     pub name: String,
-    pub members: Vec<(String, i64)>,
+    pub generics: Vec<String>,
+    /// 任一成员带字段即视为 ADT 枚举（值 = tag+payload 对象，可 match）。
+    pub members: Vec<EnumVariant>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumVariant {
+    pub name: String,
+    pub discriminant: i64,
+    pub fields: Vec<Type>,
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +104,7 @@ pub struct TypeTable {
     pub generic_struct_instances: HashMap<(u32, Vec<Type>), u32>,
     /// (泛型 class id, 类型实参) → 实例化 class id。
     pub generic_class_instances: HashMap<(u32, Vec<Type>), u32>,
+    pub generic_enum_instances: HashMap<(u32, Vec<Type>), u32>,
 }
 
 impl TypeTable {

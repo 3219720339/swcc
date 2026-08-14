@@ -586,6 +586,30 @@ Sw 编译器（swcc）开发进度
                          泛型类接口/虚表/字段类型替换），44 个 examples 全过；
                          cargo test 51 全绿；cargo fmt 通过
 
+    2026-08-15 01:15  ADT 枚举 + match（第一档特性 B）：
+                       - 语法：`enum Option<T> { Some(T), None }`（变体可带
+                         字段）、`match (v) { Variant(x) => { ... }, _ => { ... } }`
+                         （分支换行分隔，逗号可选；`_` 通配兜底）
+                       - 类型：EnumInfo 升级为 EnumVariant（名称/判别值/字段），
+                         支持泛型枚举 + 实例化缓存（TypeResolver::instantiate_enum +
+                         Checker::instantiate_enum_types）；带字段变体 = ADT 枚举
+                       - 检查：match 目标必须是枚举、模式变体存在、绑定数量/类型
+                         校验、穷尽检查（缺变体报错，`_` 豁免）
+                       - 构造：`Option.Some(42)`（有参，按实参推断泛型实参）、
+                         `Option.None`（无参，带注解声明时经 enum_targets 目标
+                         类型传播解析到实例；C 风格枚举 Color.Red 保持原语义）
+                       - 表示：枚举对象 = GC 分配的 [tag, payload...] 槽
+                         （tag@0、字段 @8*(i+1)），复用 sw_object_new；
+                         MIR 增 EnumNew/EnumTag/EnumField（float 字段按 f64
+                         位模式 bitcast），match 降级为 tag 比较嵌套 + 解构绑定
+                       - 修复潜伏 bug：codegen local_types 曾把参数又拼一遍
+                         （locals 已含参数），导致 index ≥ 参数个数的局部类型
+                         错位——float 局部在含参函数里被当 int/枚举；改为直接
+                         用 function.locals 建表（match 解构的 float 字段暴露）
+                       - 新增 examples/probe-adt.sw（5 项断言：Some/None 匹配、
+                         float 单字段、双字段、无字段变体），45 个 examples
+                         全过；cargo test 51 全绿
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
