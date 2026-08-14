@@ -28,8 +28,9 @@ swc run main.sw            # 直接编译运行
 > 说明：`swcc.toml` 会在入口文件所在目录向上查找；导出符号是固定名
 > `sw_fn_<模块文件名>_<函数名>`（重载函数追加参数类型缩写，如
 > `sw_fn_greeter_greet_s` = greet(string)）。
-> dll 可在 `[lib] exports = ["greet", "double"]` 自定义导出名（Windows
-> 生成 .def 别名，外部按自定义名调用；Linux/macOS 暂用 stable 名）。
+> **导出集合以 .sw 的 `export` 标记为准**：顶层 `export function` 自动成为
+> dll 导出（Windows .def 别名用用户函数名，外部按 `greet`/`double` 调用）
+> 与 lib 头文件声明；toml 不需要写函数名，.def 自动生成到 .swcache 缓存。
 
 ## DLL 动态加载（不需要 .lib）
 

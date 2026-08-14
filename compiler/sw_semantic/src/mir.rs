@@ -28,6 +28,8 @@ pub struct MirFunction {
     pub name: String,
     /// 源码中的用户函数名（导出头文件/符号映射用；隐藏函数为空）。
     pub user_name: String,
+    /// 顶层 `export function` 标记（dll 导出 / lib 头文件白名单依据）。
+    pub exported: bool,
     pub params: Vec<MirParam>,
     pub ret: Type,
     pub locals: Vec<MirLocal>,

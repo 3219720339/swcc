@@ -1013,6 +1013,17 @@ Sw 编译器（swcc）开发进度
                        - Linux/macOS 暂用 stable 名（.def 别名仅 PE）
                        - 66 个 examples 全过；cargo test 52 全绿；fmt 通过
 
+    2026-08-15 03:50  导出以 .sw export 标记为准（自动，免手写）：
+                       - MirFunction 增 exported（顶层 `export function`
+                         标记）；dll 的 .def 与 lib 头文件只包含 exported
+                         函数，toml 不再需要 exports 白名单
+                       - dll 导出名用用户函数名（greet/double/repeat，
+                         .def 别名）；.def 自动生成到 .swcache/obj 缓存目录，
+                         不污染项目目录
+                       - lib 头文件自动声明全部 export 函数
+                       - dynamic-load.c 按 greet/double 调用实测通过；
+                         66 个 examples 全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

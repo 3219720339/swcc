@@ -30,8 +30,6 @@ enum BuildKind {
 struct SwConfig {
     kind: BuildKind,
     lib_name: String,
-    /// dll 导出白名单：用户函数名（映射到 stable 符号，Windows .def 用）。
-    exports: Vec<String>,
 }
 
 /// 极简 swcc.toml 解析：只读 [build] kind 与 [lib] name。
@@ -62,17 +60,6 @@ fn load_config(entry: &Path) -> SwConfig {
                             }
                             ("lib", "name") | ("project", "name") if config.lib_name.is_empty() => {
                                 config.lib_name = value.to_string();
-                            }
-                            ("lib", "exports") => {
-                                config.exports = value
-                                    .trim_start_matches('[')
-                                    .trim_end_matches(']')
-                                    .split(',')
-                                    .map(|item| {
-                                        item.trim().trim_matches('"').trim_matches('\'').to_string()
-                                    })
-                                    .filter(|item| !item.is_empty())
-                                    .collect();
                             }
                             _ => {}
                         }
@@ -304,14 +291,7 @@ fn main() {
         _ => {
             let dll = config.kind == BuildKind::Dll;
             match target_family(&options.target) {
-                "windows" => link_windows(
-                    &options.target,
-                    &objects,
-                    &output,
-                    dll,
-                    &result.modules,
-                    &config.exports,
-                ),
+                "windows" => link_windows(&options.target, &objects, &output, dll, &result.modules),
                 "linux" => link_linux(&options.target, &objects, &output, dll),
                 "macos" => link_macos(&options.target, &objects, &output, dll),
                 other => {
@@ -372,7 +352,6 @@ fn link_windows(
     output: &Path,
     dll: bool,
     modules: &[MirModule],
-    exports: &[String],
 ) {
     let sdk = locate_sdk(target).unwrap_or_else(|| {
         eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
@@ -406,20 +385,25 @@ fn link_windows(
         let implib = output.with_extension("lib");
         args.push("--out-implib".into());
         args.push(implib.as_os_str().to_os_string());
-        // .def：自定义导出名 = stable 符号（白名单）。
-        let def_path = output.with_extension("def");
+        // .def：自动导出所有 `export` 标记的顶层函数（用户函数名 = stable 符号）。
+        let def_path = PathBuf::from(".swcache").join("obj").join(
+            output
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "sw.def".to_string())
+                .replace(".dll", ".def"),
+        );
         let mut def = String::from("EXPORTS\n");
         for module in modules {
             for function in &module.functions {
                 if function.extern_c
                     || function.user_name.is_empty()
                     || function.name == "sw_user_main"
+                    || !function.exported
                 {
                     continue;
                 }
-                if exports.iter().any(|name| name == &function.user_name) {
-                    def.push_str(&format!("{} = {}\n", function.user_name, function.name));
-                }
+                def.push_str(&format!("{} = {}\n", function.user_name, function.name));
             }
         }
         if let Err(error) = fs::write(&def_path, def) {
@@ -613,7 +597,10 @@ fn write_lib_header(modules: &[MirModule], output: &Path) {
     );
     for module in modules {
         for function in &module.functions {
-            if function.extern_c || function.user_name.is_empty() || function.name == "sw_user_main"
+            if function.extern_c
+                || function.user_name.is_empty()
+                || function.name == "sw_user_main"
+                || !function.exported
             {
                 continue;
             }

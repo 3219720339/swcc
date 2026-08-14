@@ -4393,6 +4393,8 @@ struct FnLower<'a, 'm, 's> {
     name: String,
     /// 源码用户函数名（导出头文件用；隐藏函数为空）。
     user_name: String,
+    /// 顶层 `export` 标记（仅顶层函数有意义）。
+    exported: bool,
     params: Vec<MirParam>,
     ret: Type,
     locals: Vec<MirLocal>,
@@ -4624,6 +4626,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         result_index,
                         name: name.clone(),
                         user_name: function.name.name.clone(),
+                        exported: item.exported,
                         params: Vec::new(),
                         ret: sig.ret.clone(),
                         locals: Vec::new(),
@@ -4708,6 +4711,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                                     result_index,
                                     name: name.clone(),
                                     user_name: function.name.name.clone(),
+                                    exported: false,
                                     params: Vec::new(),
                                     ret: sig.ret.clone(),
                                     locals: Vec::new(),
@@ -4751,6 +4755,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         result_index,
                         name: name.clone(),
                         user_name: sig.name.clone(),
+                        exported: false,
                         params: vec![MirParam {
                             name: "self".to_owned(),
                             ty: Type::Class(class_id),
@@ -4822,6 +4827,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     result_index,
                     name: name.clone(),
                     user_name: sig.name.clone(),
+                    exported: false,
                     params: vec![MirParam {
                         name: "self".to_owned(),
                         ty: Type::Class(instance_id),
@@ -5075,6 +5081,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
         Some(MirFunction {
             name: "sw_user_main".to_owned(),
             user_name: String::new(),
+            exported: false,
             params: Vec::new(),
             ret: Type::Int,
             locals,
@@ -5233,6 +5240,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         MirFunction {
             name: self.name.clone(),
             user_name: self.user_name.clone(),
+            exported: self.exported,
             params: self.params.clone(),
             ret: self.ret.clone(),
             locals,
@@ -6083,6 +6091,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             result_index: template.module.0 as usize,
             name: instance_name.clone(),
             user_name: template.name.clone(),
+            exported: false,
             params: instance_params,
             ret: instance_ret,
             locals: Vec::new(),
@@ -7437,6 +7446,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     result_index: self.result_index,
                     name: hidden_name.clone(),
                     user_name: String::new(),
+                    exported: false,
                     params: hidden_params,
                     ret: lambda_ret,
                     locals: Vec::new(),
