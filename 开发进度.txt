@@ -822,6 +822,15 @@ Sw 编译器（swcc）开发进度
                        - 新增 examples/probe-unicode.sw（13 项断言）注册进 run-examples.py
                        - 验证：cargo test 51 全绿、probe-unicode 通过
 
+    2026-08-15 03:20  标准库扩充：std/string 新增 parse_bool：
+                       - string 转 bool：true/1/yes → true，false/0/no → false（不区分
+                         大小写），无效 → false；并注册进 string_method 链式方法表
+                         （"YES".parse_bool()）
+                       - runtime.c 加 parse_bool + 辅助 sw_ascii_lower/sw_text_equals_ci，
+                         plain 链接
+                       - 新增 examples/probe-bool.sw（10 项断言）注册进 run-examples.py
+                       - 验证：cargo test 51 全绿、probe-bool 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充（io 6 个函数、regex/hash 新模块）

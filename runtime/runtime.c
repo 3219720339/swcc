@@ -1114,6 +1114,39 @@ int64_t is_number(sw_string* text) {
     return index == text->len ? 1 : 0;
 }
 
+static char sw_ascii_lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
+static int sw_text_equals_ci(sw_string* text, const char* literal) {
+    if (text == NULL || literal == NULL) {
+        return 0;
+    }
+    const char* data = text->data;
+    int64_t len = text->len;
+    for (int64_t i = 0; literal[i] != 0; i++) {
+        if (i >= len || sw_ascii_lower(data[i]) != literal[i]) {
+            return 0;
+        }
+    }
+    return len > 0 && literal[len] == 0;
+}
+
+int64_t parse_bool(sw_string* text) {
+    if (text == NULL) {
+        return 0;
+    }
+    if (sw_text_equals_ci(text, "true") || sw_text_equals_ci(text, "1") ||
+        sw_text_equals_ci(text, "yes")) {
+        return 1;
+    }
+    if (sw_text_equals_ci(text, "false") || sw_text_equals_ci(text, "0") ||
+        sw_text_equals_ci(text, "no")) {
+        return 0;
+    }
+    return 0;
+}
+
 int64_t parse_int_or(sw_string* text, int64_t fallback) {
     char* end = NULL;
     long long value = strtoll(text->data, &end, 10);

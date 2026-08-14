@@ -14,6 +14,7 @@ EXPECTED = {
     "hello.sw": 0,
     "lambda-probe.sw": 42,
     "probe-argv.sw": 0,
+    "probe-bool.sw": 0,
     "probe-array.sw": 10,
     "probe-adt.sw": 0,
     "probe-chmod.sw": 0,

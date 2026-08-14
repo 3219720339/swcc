@@ -59,6 +59,9 @@ export extern c function parse_float(text: string): float;
 /// 判断字符串是否为合法数字（整数或浮点，支持 +/- 与指数）。
 export extern c function is_number(text: string): bool;
 
+/// 解析布尔：true/1/yes → true，false/0/no → false（不区分大小写），否则 false。
+export extern c function parse_bool(text: string): bool;
+
 /// 解析整数；无法解析时返回 fallback（显式错误处理）。
 export extern c function parse_int_or(text: string, fallback: int): int;
 
