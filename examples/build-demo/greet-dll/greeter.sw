@@ -6,7 +6,7 @@ export function greet(name: string): string {
 export function repeat(text: string, times: int): string {
     let out = "";
     for (let i = 0; i < times; i++) {
-        out = out + text;
+        out += text;
     }
     return out;
 }

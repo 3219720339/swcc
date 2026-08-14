@@ -971,6 +971,22 @@ Sw 编译器（swcc）开发进度
                        - 66 个 examples 全过（console 无回归）；cargo test
                          52 全绿；fmt 通过
 
+    2026-08-15 03:38  string += + lib 配套头文件 + dll 动态加载演示：
+                       - `string += x`：检查端允许 Add 复合赋值作用于 string
+                         （右操作数须为 string 或可拼接标量）；降级生成
+                         string_concat（含标量 to_string）
+                       - lib 自动生成 C 头文件（swmath.lib → swmath.h）：
+                         MirFunction 增 user_name（源码函数名），build_lib
+                         遍历导出函数生成 C 签名声明（sw_string/sw_array
+                         布局 + stable 符号名 + 用户函数名注释）；C 程序
+                         include 头文件 + -lswmath 链接调用实测 12/36
+                       - dll 动态加载演示（greet-dll/dynamic-load.c）：
+                         Windows LoadLibrary/GetProcAddress（Linux/macOS
+                         dlopen/dlsym 分支），不链接导入库；
+                         实测 greet = Hello, Dynamic!、double(21) = 42
+                       - build-demo/README.md 补充动态加载与头文件用法
+                       - 66 个 examples 全过；cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

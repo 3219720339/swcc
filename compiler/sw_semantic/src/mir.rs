@@ -26,6 +26,8 @@ pub struct MirGlobal {
 #[derive(Clone, Debug)]
 pub struct MirFunction {
     pub name: String,
+    /// 源码中的用户函数名（导出头文件/符号映射用；隐藏函数为空）。
+    pub user_name: String,
     pub params: Vec<MirParam>,
     pub ret: Type,
     pub locals: Vec<MirLocal>,

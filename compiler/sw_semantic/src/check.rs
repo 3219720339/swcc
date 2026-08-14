@@ -2672,6 +2672,17 @@ impl<'s> Checker<'s> {
                             target.span,
                         );
                     }
+                } else if *op == AssignOp::Add && target_ty == Type::Str {
+                    // `string += x`：x 必须是字符串或可拼接标量。
+                    if value_ty != Type::Str
+                        && !Checker::concatable_with_string(&value_ty)
+                        && !self.is_assignable(&value_ty, &Type::Str)
+                    {
+                        self.error(
+                            format!("不能把 {} 拼接到 string", value_ty.display()),
+                            value.span,
+                        );
+                    }
                 } else if !target_ty.is_numeric() {
                     self.error("复合赋值需要数值目标", target.span);
                 }
@@ -4362,6 +4373,8 @@ struct FnLower<'a, 'm, 's> {
     /// 检查结果表所属模块（跨模块泛型实例化时指向模板模块）。
     result_index: usize,
     name: String,
+    /// 源码用户函数名（导出头文件用；隐藏函数为空）。
+    user_name: String,
     params: Vec<MirParam>,
     ret: Type,
     locals: Vec<MirLocal>,
@@ -4587,6 +4600,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         lowerer: self,
                         result_index,
                         name: name.clone(),
+                        user_name: function.name.name.clone(),
                         params: Vec::new(),
                         ret: sig.ret.clone(),
                         locals: Vec::new(),
@@ -4670,6 +4684,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                                     lowerer: self,
                                     result_index,
                                     name: name.clone(),
+                                    user_name: function.name.name.clone(),
                                     params: Vec::new(),
                                     ret: sig.ret.clone(),
                                     locals: Vec::new(),
@@ -4712,6 +4727,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         lowerer: self,
                         result_index,
                         name: name.clone(),
+                        user_name: sig.name.clone(),
                         params: vec![MirParam {
                             name: "self".to_owned(),
                             ty: Type::Class(class_id),
@@ -4782,6 +4798,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     lowerer: self,
                     result_index,
                     name: name.clone(),
+                    user_name: sig.name.clone(),
                     params: vec![MirParam {
                         name: "self".to_owned(),
                         ty: Type::Class(instance_id),
@@ -5029,6 +5046,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
         body.push(MirStmt::new(MirStmtKind::Return(Some(MirExpr::Local(0)))));
         Some(MirFunction {
             name: "sw_user_main".to_owned(),
+            user_name: String::new(),
             params: Vec::new(),
             ret: Type::Int,
             locals,
@@ -5186,6 +5204,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         let locals = std::mem::take(&mut self.locals);
         MirFunction {
             name: self.name.clone(),
+            user_name: self.user_name.clone(),
             params: self.params.clone(),
             ret: self.ret.clone(),
             locals,
@@ -5766,10 +5785,23 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         match &expr.kind {
             ExprKind::Assign { op, target, value } => {
                 let target_ast = target;
+                let value_ast = value;
                 let target = self.lower_target(target)?;
                 let value = self.lower_expr(value);
                 let value = match op {
                     AssignOp::Assign => value,
+                    AssignOp::Add if self.expr_type(target_ast) == Type::Str => {
+                        let right_ty = self.expr_type(value_ast);
+                        MirExpr::Call {
+                            callee: MirCallee::Intrinsic {
+                                name: "string_concat".to_owned(),
+                            },
+                            args: vec![
+                                self.lower_expr(target_ast),
+                                Self::to_string_expr(value, &right_ty),
+                            ],
+                        }
+                    }
                     AssignOp::Add => MirExpr::Binary {
                         op: MirBinary::Add,
                         left: Box::new(self.lower_expr(target_ast)),
@@ -6004,6 +6036,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             lowerer,
             result_index: template.module.0 as usize,
             name: instance_name.clone(),
+            user_name: template.name.clone(),
             params: instance_params,
             ret: instance_ret,
             locals: Vec::new(),
@@ -7350,6 +7383,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     lowerer,
                     result_index: self.result_index,
                     name: hidden_name.clone(),
+                    user_name: String::new(),
                     params: hidden_params,
                     ret: lambda_ret,
                     locals: Vec::new(),

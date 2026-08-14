@@ -8,7 +8,7 @@ use std::time::Instant;
 use sw_codegen_cranelift::compile_module_for_target;
 use sw_common::{Diagnostics, Severity, Source};
 use sw_frontend::Parser;
-use sw_semantic::analyze;
+use sw_semantic::{MirModule, Type, analyze};
 
 struct BuildOptions {
     output: Option<PathBuf>,
@@ -287,7 +287,7 @@ fn main() {
     });
 
     match config.kind {
-        BuildKind::Lib => build_lib(&options.target, &objects, &output),
+        BuildKind::Lib => build_lib(&options.target, &objects, &output, &result.modules),
         _ => {
             let dll = config.kind == BuildKind::Dll;
             match target_family(&options.target) {
@@ -508,7 +508,7 @@ fn run_cc(cc: &Path, args: &[std::ffi::OsString]) {
 }
 
 /// 静态库：用 llvm-ar 打包 Sw 模块对象（不含运行时，使用方自行链接运行时）。
-fn build_lib(target: &str, objects: &[PathBuf], output: &Path) {
+fn build_lib(target: &str, objects: &[PathBuf], output: &Path, modules: &[MirModule]) {
     let sdk = locate_sdk(target).unwrap_or_else(|| {
         eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
         std::process::exit(2);
@@ -528,6 +528,69 @@ fn build_lib(target: &str, objects: &[PathBuf], output: &Path) {
         eprintln!("打包静态库失败（llvm-ar）");
         std::process::exit(1);
     }
+    write_lib_header(modules, output);
+}
+
+/// Sw 类型 → C 声明类型。
+fn c_type(ty: &Type) -> String {
+    match ty.without_nullable() {
+        Type::Void => "void".to_string(),
+        Type::Str => "sw_string*".to_string(),
+        Type::Array(_) => "sw_array*".to_string(),
+        Type::Class(_) | Type::Struct(_) => "void*".to_string(),
+        Type::F32 | Type::F64 => "double".to_string(),
+        Type::Bool => "long long".to_string(),
+        Type::Char => "long long".to_string(),
+        _ => "long long".to_string(),
+    }
+}
+
+/// 生成配套 C 头文件（swmath.lib → swmath.h），声明全部导出函数的 C 签名。
+fn write_lib_header(modules: &[MirModule], output: &Path) {
+    let header_path = output.with_extension("h");
+    let stem = output
+        .file_stem()
+        .map(|s| {
+            s.to_string_lossy()
+                .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+        })
+        .unwrap_or_else(|| "sw".to_string());
+    let guard = format!("SW_{stem}_H");
+    let mut text = String::new();
+    text.push_str(&format!("#ifndef {guard}\n#define {guard}\n\n"));
+    text.push_str(
+        "// 由 swc 生成：Sw 模块导出的 C 接口（符号名为 Sw stable 名，\n\
+         // 源码函数名见末尾注释）。\n\
+         typedef struct sw_string { char* data; long long len; } sw_string;\n\
+         typedef struct sw_array { long long len; long long cap; void* data; } sw_array;\n\n",
+    );
+    for module in modules {
+        for function in &module.functions {
+            if function.extern_c || function.user_name.is_empty() || function.name == "sw_user_main"
+            {
+                continue;
+            }
+            let ret = c_type(&function.ret);
+            let params: Vec<String> = function
+                .params
+                .iter()
+                .map(|param| format!("{} {}", c_type(&param.ty), param.name))
+                .collect();
+            text.push_str(&format!(
+                "extern {} {}({});  // {}\n",
+                ret,
+                function.name,
+                params.join(", "),
+                function.user_name
+            ));
+        }
+    }
+    text.push_str(&format!("\n#endif // {guard}\n"));
+    if let Err(error) = fs::write(&header_path, text) {
+        eprintln!("无法写出头文件 {}：{error}", header_path.display());
+        std::process::exit(2);
+    }
+    println!("头文件已生成：{}", header_path.display());
 }
 
 fn compile_runtime_objects(
