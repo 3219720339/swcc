@@ -68,10 +68,30 @@ function main(): int {
     // 随机增强
     let r = rand_int_range(5, 10);
     passed = passed & check(r >= 5 && r < 10, "rand_int_range in range");
-    const b1 = rand_bool();
-    const b2 = rand_bool();
-    passed = passed & check(b1 == true || b2 == true, "rand_bool");
-    passed = passed & check(取随机布尔() == true || 取随机布尔() == true, "cn rand_bool");
+    let saw_true = false;
+    let saw_false = false;
+    let bi = 0;
+    while (bi < 20) {
+        if (rand_bool()) {
+            saw_true = true;
+        } else {
+            saw_false = true;
+        }
+        bi = bi + 1;
+    }
+    passed = passed & check(saw_true && saw_false, "rand_bool");
+    saw_true = false;
+    saw_false = false;
+    bi = 0;
+    while (bi < 20) {
+        if (取随机布尔()) {
+            saw_true = true;
+        } else {
+            saw_false = true;
+        }
+        bi = bi + 1;
+    }
+    passed = passed & check(saw_true && saw_false, "cn rand_bool");
     const uuid = random_uuid();
     passed = passed & check(uuid.length == 36 && uuid[14] == '4', "random_uuid v4");
     passed = passed & check(uuid[8] == '-' && uuid[13] == '-' && uuid[18] == '-' && uuid[23] == '-', "uuid dashes");

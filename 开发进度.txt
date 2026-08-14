@@ -1264,6 +1264,22 @@ Sw 编译器（swcc）开发进度
                        - 验证：77 examples 全过；cargo test 52 全绿；
                          fmt 通过；runtime.c 三平台交叉编译通过
 
+    2026-08-15 07:00  跨文件 + 基础库组合测试：
+                       - 新增 examples/lib-std.sw：模块内部全部使用标准库
+                         （string/math/time/array/map/json/hash/regex/fs/
+                         encoding/random），导出 describe/math_report/today/
+                         now_text/array_sum/unique_words/counter_report/
+                         json_report/hash_report/regex_report/file_report/
+                         encode_report/random_report
+                       - 新增 examples/probe-cross-stdlib.sw：主文件 import
+                         并调用 lib-std.sw 全部导出（13 断言），验证跨文件
+                         调用 + 基础库组合端到端
+                       - 修正：%d 不能格式化 float（sqrt 返回值用 %.0f）；
+                         rand_bool 断言改为 20 次循环验证 true/false 均出现
+                         （避免偶发全 false）
+                       - run-examples.py 登记；78 examples 全过；
+                         cargo test 52 全绿；fmt 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
