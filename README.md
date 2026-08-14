@@ -19,13 +19,13 @@ Sw 是一门静态强类型、面向本机程序的编译型语言，表层语�
 - 标准库：`std/io`（print/println/read_line）、`std/math`、`std/fs`（文件读写）、`std/string`（查找/子串）
 - CLI：`swc help`、`--version`、构建耗时输出、`--target` 交叉编译、`--emit-object`
 
-## 下载与发布（v0.1.0）
+## 下载与发布（v0.1.1）
 
 三平台解压即用 SDK 由 GitHub Actions 在 `v*` 标签上自动构建并挂到 Release：
 
-- Windows：`swc-windows-x64.zip`（swc + lld + MinGW UCRT 库 + 预编译运行时）
-- Linux：`swc-linux-x64.tar.gz`（swc + lld + musl 静态库 + 预编译运行时，无需安装任何工具链）
-- macOS：`swc-macos.zip`（原生链接使用系统 `cc`，仅需 swc + 标准库）
+- Windows：`swc-windows-x64-0.1.1.zip`（swc + lld + MinGW UCRT 库 + 预编译运行时）
+- Linux：`swc-linux-x64-0.1.1.tar.gz`（swc + lld + musl 静态库 + 预编译运行时，无需安装任何工具链）
+- macOS：`swc-macos-0.1.1.zip`（原生链接使用系统 `cc`，仅需 swc + 标准库）
 
 仓库当前托管在 Gitee；要让 CI/Release 在 GitHub 上运行，需要把仓库镜像过去：
 

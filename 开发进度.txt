@@ -222,7 +222,30 @@ Sw 编译器（swcc）开发进度
                           examples/probe-template-escape.sw（已注册进
                           tools/run-examples.py，退出码 0）；13 个含模板示例全量回归通过
 
-    待办（下一批）：网络/进程交互等进阶标准库、泛型 struct/class、JSON/Unicode 字符串深化
+    2026-08-14 20:00  打包版本化 + 0.1.1 构建：
+                       - workspace 版本 0.1.0→0.1.1；swc --version / help 改为读
+                         CARGO_PKG_VERSION（不再写死）
+                       - make-sdk.py / make-sdk-linux.py / make-sdk-macos.py：
+                         产物名带版本号（swc-windows-x64-<版本号>.zip、
+                         swc-linux-x64-<版本号>.tar.gz、swc-macos-<版本号>.zip），
+                         SDK 内写 version.txt，版本号统一从根 Cargo.toml 读取
+                       - 新增 tools/make-sdk.ps1（本机无 python 时的 Windows SDK
+                         打包脚本；纯 ASCII 兼容 PowerShell 5.1，不删除既有文件）
+                       - ci.yml Windows SDK 上传改通配 dist/swc-windows-x64-*.zip
+                       - 修复打包缺口：SDK 缺 libshell32.a（链接参数 -lshell32 需要，
+                         runtime main 的 CommandLineToArgvW 来自 shell32），
+                         旧 0.1.0 zip 在 Windows 上无法链接任何程序
+                       - 验证：dist/swc-windows-x64-0.1.1.zip（约 34MB）解压后无外部
+                         工具链端到端编译运行 fib/probe-argv/probe-dir/probe-exceptions
+                         全部通过；--version 输出 swc 0.1.1
+
+    待办（下一批，按推荐优先级）：
+       1. 进程交互：spawn/管道读写/退出码/等待（工具类程序最后一块基础）
+       2. 网络：TCP 连接/收发基础
+       3. 数据模型补齐：struct 数组、类字段存 struct、struct 相等比较、
+          接口方法 struct 返回值、闭包 struct 参数
+       4. 内存管理强化：异常对象/异常帧纳入 GC、GC 压测调优
+       5. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
 二、已知限制
 

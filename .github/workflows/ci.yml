@@ -102,11 +102,11 @@ jobs:
         shell: pwsh
         run: |
           python tools/make-sdk.py "${{ github.workspace }}/toolchain/${{ matrix.toolchain_dir }}" dist
-          Get-Item dist/swc-windows-x64.zip | Select-Object Name, Length
+          Get-ChildItem dist/swc-windows-x64-*.zip | Select-Object Name, Length
 
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
         with:
           name: swc-windows-x64
-          path: dist/swc-windows-x64.zip
+          path: dist/swc-windows-x64-*.zip
           retention-days: 14

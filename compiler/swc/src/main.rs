@@ -22,7 +22,7 @@ fn main() {
     let started = Instant::now();
     let args: Vec<String> = env::args().collect();
     if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
-        println!("swc 0.1.0");
+        println!("swc {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     if args.len() == 2 && matches!(args[1].as_str(), "help" | "--help" | "-h") {
@@ -242,7 +242,7 @@ fn main() {
 }
 
 fn print_help() {
-    println!("Sw 编译器 swc 0.1.0");
+    println!("Sw 编译器 swc {}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("用法: swc <命令> <文件.sw> [选项]");
     println!();

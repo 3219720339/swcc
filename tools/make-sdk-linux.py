@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """构建 Linux x64 解压即用 SDK：swc + lld + musl 静态库 + 预编译运行时。
 用法：python3 tools/make-sdk-linux.py <llvm-mingw 目录> <输出目录>
-产物：<输出>/swc-linux-x64.tar.gz（无需安装任何工具链即可静态链接 Linux 目标）
+产物：<输出>/swc-linux-x64-<版本号>.tar.gz（无需安装任何工具链即可静态链接 Linux 目标）
+版本号取自仓库根 Cargo.toml 的 workspace.package.version。
 """
 
 import os
@@ -9,12 +10,22 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import re
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRIPLES = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+
+
+def read_version():
+    with open(os.path.join(ROOT, "Cargo.toml"), encoding="utf-8") as f:
+        for line in f:
+            match = re.match(r'\s*version\s*=\s*"([^"]+)"', line)
+            if match:
+                return match.group(1)
+    return "0.0.0"
 
 
 def run(command, cwd=None):
@@ -42,6 +53,7 @@ def find_builtins(lib_dir):
 def main():
     toolchain = sys.argv[1]
     out_root = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "dist")
+    version = read_version()
     clang = os.path.join(toolchain, "bin", "clang")
     lld = os.path.join(toolchain, "bin", "ld.lld")
     for path in (clang, lld):
@@ -54,6 +66,8 @@ def main():
     sdk = os.path.join(out_root, "swc-linux-x64")
     for sub in ("bin", "lib", "stdlib"):
         os.makedirs(os.path.join(sdk, sub), exist_ok=True)
+    with open(os.path.join(sdk, "version.txt"), "w", encoding="utf-8") as f:
+        f.write(f"swc {version}\n")
     shutil.copy2(swc, os.path.join(sdk, "swc"))
     shutil.copy2(lld, os.path.join(sdk, "bin", "ld.lld"))
 
@@ -80,7 +94,7 @@ def main():
     for name in os.listdir(os.path.join(ROOT, "stdlib")):
         shutil.copy2(os.path.join(ROOT, "stdlib", name), os.path.join(sdk, "stdlib", name))
 
-    archive = os.path.join(out_root, "swc-linux-x64.tar.gz")
+    archive = os.path.join(out_root, f"swc-linux-x64-{version}.tar.gz")
     with tarfile.open(archive, "w:gz") as tf:
         tf.add(sdk, arcname="swc-linux-x64")
     print(f"SDK 完成：{archive}")
