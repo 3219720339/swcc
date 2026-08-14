@@ -522,6 +522,34 @@ Sw 编译器（swcc）开发进度
                        - 待确认：examples/tmp-vars-a~e.sw、tmp-ns.sw 为诊断
                          临时文件，是否删除待用户确认
 
+    2026-08-14 23:56  综合功能案例 + 回归登记：
+                       - 新增 examples/showcase.sw：可直接 swc run 的综合案例，
+                         覆盖全局变量、类型别名、枚举声明、struct、泛型推导、
+                         数组、循环、类/继承/接口、可空链、闭包、异常、模板字符串、
+                         JSON、编码、时间、系统和路径 API
+                       - tools/run-examples.py 登记 showcase.sw，端到端回归由 42 项增至 43 项
+                       - 验证：cargo fmt --check、cargo test 51 项、43 个 examples 全通过
+                       - 提交：1ca664e 新增综合功能示例
+
+    2026-08-15 00:04  默认参数调用 + switch/break：
+                       - MIR 降级在同模块顶层函数调用处补齐缺失的默认表达式，
+                         add(4) 可按声明默认值调用
+                       - switch 改为互斥的嵌套分支；case 内 break 合法并结束当前 case，
+                         default 不再错误绑定到最后一个 case
+                       - showcase 新增默认参数和 switch/case/break/default 运行断言
+                       - 验证：cargo fmt --check、cargo test 51 项、showcase 通过
+                       - 提交：a91322f 完善默认参数与 switch 控制流
+
+    2026-08-15 00:33  继承类接口虚表修复：
+                       - vtable 生成沿基类链收集接口；派生类现在继承基类接口的
+                         方法地址，并可由自身覆盖方法替换实现
+                       - 修复“派生类作为基类接口使用”会读取空函数指针、程序进入
+                         main 前访问冲突的问题
+                       - showcase 使用 InheritedCircle extends Circle（Circle implements Shape）
+                         覆盖该组合路径
+                       - 验证：cargo test 51 项、showcase 通过
+                       - 提交：375c816 修复继承类接口虚表
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
