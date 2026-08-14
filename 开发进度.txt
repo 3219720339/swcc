@@ -874,6 +874,14 @@ Sw 编译器（swcc）开发进度
                          跨行写法等价）
                        - 提交：本次（probe-test 格式 + 进度复核记录）
 
+    2026-08-15 02:45  修复 CI 三平台 fmt 失败：
+                       - GitHub CI 三平台 cargo fmt --check 全挂：用户新提交
+                         的泛型约束代码（check.rs 829/5568）与 semantic 测试
+                         （tests/semantic.rs 478/486）未按 rustfmt 格式化
+                       - 本地 cargo fmt --all 修复 2 个文件（16+/8-），
+                         fmt --check 通过；61 examples、52 测试全绿
+                       - 提交推 Gitee + GitHub 复跑三平台 CI
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）

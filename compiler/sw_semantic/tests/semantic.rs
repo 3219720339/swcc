@@ -478,7 +478,11 @@ fn reports_generic_interface_bound_without_type_args() {
     let entry = dir.join("main.sw");
     std::fs::write(&entry, source).expect("写入测试源码");
     let result = analyze(&entry, None);
-    assert!(result.diagnostics.has_errors(), "{:?}", result.diagnostics.items);
+    assert!(
+        result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
     let messages: Vec<&str> = result
         .diagnostics
         .items
@@ -486,7 +490,9 @@ fn reports_generic_interface_bound_without_type_args() {
         .map(|item| item.message.as_str())
         .collect();
     assert!(
-        messages.iter().any(|m| m.contains("泛型接口约束必须带类型实参")),
+        messages
+            .iter()
+            .any(|m| m.contains("泛型接口约束必须带类型实参")),
         "{messages:?}"
     );
 }

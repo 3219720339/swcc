@@ -829,12 +829,11 @@ impl Analyzer {
                                     .get(&segment.name.name)
                                     .and_then(|ids| ids.first())
                                     .and_then(|id| match &self.symbols[id.0 as usize].kind {
-                                        SymbolKind::Type(SymbolType::Interface(iface_id)) => {
-                                            Some(!self.types.interfaces
-                                                [*iface_id as usize]
+                                        SymbolKind::Type(SymbolType::Interface(iface_id)) => Some(
+                                            !self.types.interfaces[*iface_id as usize]
                                                 .generics
-                                                .is_empty())
-                                        }
+                                                .is_empty(),
+                                        ),
                                         _ => None,
                                     })
                                     .unwrap_or(false);
@@ -5568,7 +5567,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 .iter()
                 .map(|ty| substitute_type(ty, &self.type_args))
                 .collect();
-            if concrete_args.iter().any(|t| matches!(t, Type::TypeParam(_))) {
+            if concrete_args
+                .iter()
+                .any(|t| matches!(t, Type::TypeParam(_)))
+            {
                 return bound_iface_id;
             }
             if let Some(&concrete_id) = types
