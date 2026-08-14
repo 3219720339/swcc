@@ -4496,6 +4496,18 @@ int64_t sw_disk_free(sw_string* path) {
         return -1;
     }
     return (int64_t)free_bytes;
+#elif defined(__APPLE__)
+    // macOS statvfs：f_bsize@0、f_frsize@8（unsigned long），
+    // f_blocks@16/f_bfree@20/f_bavail@24 都是 fsblkcnt_t = uint32（4 字节）。
+    extern int statvfs(const char* path, void* buf);
+    unsigned char buf[128];
+    memset(buf, 0, sizeof(buf));
+    if (statvfs(path->data, buf) != 0) {
+        return -1;
+    }
+    uint64_t frsize = *(uint64_t*)(buf + 8);
+    uint32_t bavail = *(uint32_t*)(buf + 24);
+    return (int64_t)(frsize * (uint64_t)bavail);
 #else
     extern int statvfs(const char* path, void* buf);
     unsigned char buf[128];
@@ -4522,6 +4534,16 @@ int64_t sw_disk_total(sw_string* path) {
         return -1;
     }
     return (int64_t)total_bytes;
+#elif defined(__APPLE__)
+    extern int statvfs(const char* path, void* buf);
+    unsigned char buf[128];
+    memset(buf, 0, sizeof(buf));
+    if (statvfs(path->data, buf) != 0) {
+        return -1;
+    }
+    uint64_t frsize = *(uint64_t*)(buf + 8);
+    uint32_t blocks = *(uint32_t*)(buf + 16);
+    return (int64_t)(frsize * (uint64_t)blocks);
 #else
     extern int statvfs(const char* path, void* buf);
     unsigned char buf[128];
@@ -5331,7 +5353,13 @@ sw_array* sw_map_keys(void* handle) {
 // ---------------------------------------------------------------------------
 
 typedef struct sw_sockaddr_in {
+#if defined(__APPLE__)
+    // macOS：sin_len(1 字节) + sin_family(1 字节)，端口在偏移 2。
+    unsigned char sin_len;
+    unsigned char family;
+#else
     unsigned short family;
+#endif
     unsigned short port;
     unsigned int addr;
     unsigned char zero[8];
@@ -5499,6 +5527,9 @@ int64_t sw_net_listen(int64_t port) {
     }
     sw_sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
+#if defined(__APPLE__)
+    addr.sin_len = (unsigned char)sizeof(addr);
+#endif
     addr.family = 2;
     addr.port = (unsigned short)sw_net_be16(port);
     addr.addr = 0;  // INADDR_ANY
@@ -5518,6 +5549,9 @@ int64_t sw_net_listen(int64_t port) {
     }
     sw_sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
+#if defined(__APPLE__)
+    addr.sin_len = (unsigned char)sizeof(addr);
+#endif
     addr.family = 2;
     addr.port = (unsigned short)sw_net_be16(port);
     addr.addr = 0;

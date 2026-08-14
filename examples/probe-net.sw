@@ -22,24 +22,47 @@ function check(prev: int, cond: bool, label: string): int {
 }
 
 function main(): int {
-    let ok = 1;
     const server = net_listen(0);
-    ok = check(ok, server >= 0, "net_listen");
+    if (check(1, server >= 0, "net_listen") == 0) {
+        return 1;
+    }
     const port = net_port(server);
-    ok = check(ok, port > 0, "net_port");
+    if (check(1, port > 0, "net_port") == 0) {
+        return 1;
+    }
     const client = net_connect("127.0.0.1", port);
-    ok = check(ok, client >= 0, "net_connect");
+    if (check(1, client >= 0, "net_connect") == 0) {
+        return 1;
+    }
     const peer = net_accept(server);
-    ok = check(ok, peer >= 0, "net_accept");
-    ok = check(ok, net_send(client, "hello") == 5, "net_send");
-    ok = check(ok, net_recv(peer, 16) == "hello", "net_recv");
-    ok = check(ok, net_send(peer, "world") == 5, "net_send2");
-    ok = check(ok, net_recv(client, 16) == "world", "net_recv2");
-    ok = check(ok, net_close(peer) == 0, "net_close_peer");
-    ok = check(ok, net_close(client) == 0, "net_close_client");
-    ok = check(ok, net_close(server) == 0, "net_close_server");
+    if (check(1, peer >= 0, "net_accept") == 0) {
+        return 1;
+    }
+    if (check(1, net_send(client, "hello") == 5, "net_send") == 0) {
+        return 1;
+    }
+    if (check(1, net_recv(peer, 16) == "hello", "net_recv") == 0) {
+        return 1;
+    }
+    if (check(1, net_send(peer, "world") == 5, "net_send2") == 0) {
+        return 1;
+    }
+    if (check(1, net_recv(client, 16) == "world", "net_recv2") == 0) {
+        return 1;
+    }
+    if (check(1, net_close(peer) == 0, "net_close_peer") == 0) {
+        return 1;
+    }
+    if (check(1, net_close(client) == 0, "net_close_client") == 0) {
+        return 1;
+    }
+    if (check(1, net_close(server) == 0, "net_close_server") == 0) {
+        return 1;
+    }
     const refused = net_connect("127.0.0.1", 1);
-    ok = check(ok, refused < 0, "net_connect_refused");
-    println(`final=${ok == 1 ? "PASS" : "FAIL"}`);
-    return ok == 1 ? 0 : 1;
+    if (check(1, refused < 0, "net_connect_refused") == 0) {
+        return 1;
+    }
+    println("final=PASS");
+    return 0;
 }

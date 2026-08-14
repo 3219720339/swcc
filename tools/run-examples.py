@@ -72,6 +72,8 @@ def main() -> int:
             )
         except subprocess.TimeoutExpired:
             failed.append(f"{name}: 超时（120s）")
+            if proc.stdout:
+                print((proc.stdout or "")[-3000:])
             continue
         if proc.returncode != want:
             failed.append(f"{name}: 期望 {want}，实际 {proc.returncode}")

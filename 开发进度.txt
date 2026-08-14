@@ -463,6 +463,24 @@ Sw 编译器（swcc）开发进度
                          tools/run-examples.py 补 UTF-8 解码（Windows 控制台
                          GBK 读乱码报错）；cargo fmt 通过
 
+    2026-08-14 23:07  macOS CI 修复（probe-stdlib2 disk_total + probe-net 超时）：
+                       - disk_total/disk_free：macOS statvfs 的 fsblkcnt_t 是
+                         uint32（Linux 是 uint64），原代码按 Linux 布局硬读 8 字节，
+                         把 f_blocks 和 f_bfree 拼成天文数字导致 disk_total 断言
+                         失败；按 __APPLE__ 分支读 4 字节（f_blocks@16、
+                         f_bavail@24），frsize@8 不变
+                       - probe-net 超时（120s）：探针某步失败后仍继续执行阻塞的
+                         accept，直接卡死；改为每步失败立即 return 1，任何失败
+                         都可在 CI 日志直接看到 [FAIL] 点，不再靠超时掩盖
+                       - 顺手修 macOS sockaddr_in 布局：macOS 是 sin_len(1 字节)
+                         + sin_family(1 字节)，端口在偏移 2；原结构体按 2 字节
+                         family 定义，macOS 上 bind 会把 family 写进 sin_len、
+                         sin_family 恒为 0；按 __APPLE__ 分支排字段并补 sin_len
+                       - run-examples.py：超时也打印探针输出尾部，便于定位卡点
+                       - 验证：runtime.c clang 交叉编译 aarch64-apple-darwin /
+                         x86_64-linux 通过；Windows 41 个 examples 全过；
+                         cargo test 51 全绿；提交推 Gitee + GitHub 复跑 CI
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
 
