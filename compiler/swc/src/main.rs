@@ -36,6 +36,7 @@ struct SwConfig {
     copyright: String,
     icon: String,
     language: String,
+    entry: String,
     config_dir: Option<PathBuf>,
 }
 
@@ -87,6 +88,9 @@ fn load_config(entry: &Path) -> SwConfig {
                             ("project", "language") => {
                                 config.language = value.to_string();
                             }
+                            ("project", "entry") | ("build", "entry") => {
+                                config.entry = value.to_string();
+                            }
                             _ => {}
                         }
                     }
@@ -125,11 +129,29 @@ fn main() {
         eprintln!("未知命令 `{command}`；可用 `swc help` 查看用法");
         std::process::exit(2);
     }
-    let Some(path) = args.get(2) else {
-        eprintln!(
-            "用法: swc {command} <文件.sw> [-o 输出] [--target <triple>] [--emit-object <目标文件>]"
-        );
-        std::process::exit(2);
+    let path = match args.get(2) {
+        Some(path) => PathBuf::from(path),
+        None => {
+            // 未指定文件：优先 swcc.toml 的 entry，其次当前目录 main.sw。
+            let config = load_config(Path::new("."));
+            let candidate = if !config.entry.is_empty() {
+                if let Some(dir) = &config.config_dir {
+                    dir.join(&config.entry)
+                } else {
+                    PathBuf::from(&config.entry)
+                }
+            } else {
+                PathBuf::from("main.sw")
+            };
+            if !candidate.is_file() {
+                eprintln!(
+                    "未指定源文件且找不到入口：{}（可在 swcc.toml [project] entry 配置）",
+                    candidate.display()
+                );
+                std::process::exit(2);
+            }
+            candidate
+        }
     };
     let options = parse_options(&args);
     if matches!(command, "run" | "test") && options.target != default_target() {
@@ -137,15 +159,15 @@ fn main() {
         std::process::exit(2);
     }
 
-    let text = match fs::read_to_string(path) {
+    let text = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) => {
-            eprintln!("无法读取 `{path}`：{error}");
+            eprintln!("无法读取 `{}`：{error}", path.display());
             std::process::exit(2);
         }
     };
     eprintln!("正在读取并检查语法...");
-    let source = Source::new(PathBuf::from(path), text);
+    let source = Source::new(path.clone(), text);
     let mut diagnostics = Diagnostics::new();
     let mut parser = Parser::new(&source, &mut diagnostics);
     let module = parser.parse_module();
@@ -161,10 +183,14 @@ fn main() {
         }
         match item.span.map(|span| source.line_col(span.start)) {
             Some((line, column)) => {
-                eprintln!("{path}:{line}:{column}: {severity}: {}", item.message);
+                eprintln!(
+                    "{}:{line}:{column}: {severity}: {}",
+                    path.display(),
+                    item.message
+                );
             }
             None => {
-                eprintln!("{path}: {severity}: {}", item.message);
+                eprintln!("{}: {severity}: {}", path.display(), item.message);
             }
         }
     }
@@ -186,7 +212,7 @@ fn main() {
             candidate.is_dir().then_some(candidate)
         });
     eprintln!("正在语义分析...");
-    let result = analyze(Path::new(path), stdlib_dir.as_deref());
+    let result = analyze(&path, stdlib_dir.as_deref());
 
     let mut sources: HashMap<PathBuf, Source> = result
         .module_sources
@@ -199,7 +225,7 @@ fn main() {
         })
         .collect();
     sources.insert(
-        fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)),
+        fs::canonicalize(&path).unwrap_or_else(|_| path.clone()),
         source.clone(),
     );
 
@@ -212,7 +238,7 @@ fn main() {
         if item.severity == Severity::Error {
             semantic_errors += 1;
         }
-        let file = item.file.clone().unwrap_or_else(|| PathBuf::from(path));
+        let file = item.file.clone().unwrap_or_else(|| path.clone());
         let location = item.span.and_then(|span| {
             sources
                 .get(&file)
@@ -292,8 +318,8 @@ fn main() {
         return;
     }
 
-    let config = load_config(Path::new(path));
-    let stem = Path::new(path)
+    let config = load_config(&path);
+    let stem = path
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| "main".to_owned());
@@ -413,6 +439,7 @@ author = ""
 copyright = ""
 icon = ""
 language = "zh-CN"   # Windows 版本信息语言：zh-CN / en-US
+entry = "main.sw"    # 默认入口（swc run/check/build 不带文件名时使用）
 
 [build]
 kind = "console"   # console | dll | lib

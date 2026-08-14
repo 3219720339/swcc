@@ -1323,6 +1323,15 @@ Sw 编译器（swcc）开发进度
                          正常；78 examples 全过；cargo test 52 全绿；
                          fmt 通过
 
+    2026-08-15 08:10  默认入口：swc run/check/build 可不带文件名：
+                       - 未指定源文件时：优先 swcc.toml [project] entry
+                         （相对 swcc.toml 目录解析），否则用当前目录 main.sw；
+                         都找不到时报错并提示配置方法
+                       - swc init 模板补充 entry 字段
+                       - 验证：hello-app 目录 `swc run`（默认 main.sw）、
+                         greet-dll 目录 `swc check`（entry=greeter.sw）
+                         均正常；空目录报错 exit=2
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/io 补实用函数（或用纯 Sw 包 format 做 print_format）
