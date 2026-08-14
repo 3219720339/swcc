@@ -272,6 +272,8 @@ impl Generator {
             .collect();
         local_types.extend(function.locals.iter().map(|local| local.ty.clone()));
 
+        let struct_layout = struct_layout(types);
+        let class_layout = class_layout(types, &struct_layout.1);
         let mut lower = LowerCtx {
             builder,
             refs,
@@ -280,8 +282,10 @@ impl Generator {
             module: &self.module,
             types,
             class_field_counts: class_field_counts(types),
-            struct_field_offsets: struct_layout(types).0,
-            struct_sizes: struct_layout(types).1,
+            struct_field_offsets: struct_layout.0,
+            struct_sizes: struct_layout.1,
+            class_field_offsets: class_layout.0,
+            class_sizes: class_layout.1,
             struct_field_types: struct_field_types(types),
             class_field_types: class_field_types(types),
             vtable_data: self.vtable_data.clone(),
@@ -1074,6 +1078,40 @@ fn struct_layout(types: &TypeTable) -> (HashMap<u32, Vec<usize>>, HashMap<u32, u
     (offsets, sizes)
 }
 
+/// 类字段布局：基类优先展平（与 MIR 字段序号一致），标量 8 字节、
+/// struct 值字段内联其大小；对象头部第 0 个字是 vtable 指针。
+/// 返回 (字段偏移表, 对象总大小表)。
+fn class_layout(
+    types: &TypeTable,
+    struct_sizes: &HashMap<u32, usize>,
+) -> (HashMap<u32, Vec<usize>>, HashMap<u32, usize>) {
+    let mut offsets: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut sizes: HashMap<u32, usize> = HashMap::new();
+    for (index, class) in types.classes.iter().enumerate() {
+        let mut chain = vec![class];
+        let mut base = class.base;
+        while let Some(id) = base {
+            chain.push(&types.classes[id as usize]);
+            base = types.classes[id as usize].base;
+        }
+        chain.reverse();
+        let mut off = 8usize; // vtable 指针
+        let mut field_offsets = Vec::new();
+        for field in chain.iter().flat_map(|class| class.fields.iter()) {
+            field_offsets.push(off);
+            match &field.ty {
+                Type::Struct(inner) => {
+                    off += struct_sizes.get(inner).copied().unwrap_or(8);
+                }
+                _ => off += 8,
+            }
+        }
+        offsets.insert(index as u32, field_offsets);
+        sizes.insert(index as u32, off);
+    }
+    (offsets, sizes)
+}
+
 fn struct_field_types(types: &TypeTable) -> HashMap<u32, Vec<Type>> {
     types
         .structs
@@ -1134,6 +1172,8 @@ struct LowerCtx<'a, 'f> {
     class_field_counts: HashMap<u32, usize>,
     struct_field_offsets: HashMap<u32, Vec<usize>>,
     struct_sizes: HashMap<u32, usize>,
+    class_field_offsets: HashMap<u32, Vec<usize>>,
+    class_sizes: HashMap<u32, usize>,
     struct_field_types: HashMap<u32, Vec<Type>>,
     class_field_types: HashMap<u32, Vec<Type>>,
     /// class id → vtable 数据。
@@ -1384,6 +1424,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
     fn array_elem_size(&self, expr: &MirExpr) -> usize {
         match self.expr_array_elem(expr) {
             Some(Type::U8) => 1,
+            Some(Type::Struct(id)) => self.struct_sizes.get(&id).copied().unwrap_or(8),
             _ => 8,
         }
     }
@@ -1404,8 +1445,13 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 .and_then(|offsets| offsets.get(index))
                 .copied()
                 .unwrap_or(index * 8),
-            // 类对象头部第 0 个字是 vtable 指针，字段从 +8 开始。
-            Type::Class(_) => 8 + index * 8,
+            // 类字段内联布局（基类优先展平，struct 值字段按大小内联），头部 +8 是 vtable。
+            Type::Class(id) => self
+                .class_field_offsets
+                .get(id)
+                .and_then(|offsets| offsets.get(index))
+                .copied()
+                .unwrap_or(8 + index * 8),
             _ => index * 8,
         }
     }
@@ -1425,16 +1471,13 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
         Ok(())
     }
 
-    /// 数组元素地址 = data 指针 + index * 步长（u8 为 1，其余 8）。
-    fn index_address(&mut self, object: Value, index: Value, compact: bool) -> Value {
+    /// 数组元素地址 = data 指针 + index * 步长（u8 为 1、struct 为其内联大小、其余 8）。
+    fn index_address(&mut self, object: Value, index: Value, elem_size: usize) -> Value {
         let data = self
             .builder
             .ins()
             .load(types::I64, MemFlagsData::new(), object, 16);
-        let stride = self
-            .builder
-            .ins()
-            .iconst(types::I64, if compact { 1 } else { 8 });
+        let stride = self.builder.ins().iconst(types::I64, elem_size as i64);
         let scaled = self.builder.ins().imul(index, stride);
         self.builder.ins().iadd(data, scaled)
     }
@@ -1496,16 +1539,19 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 index,
                 elem,
             } => {
-                let compact = self.array_elem_size(object) == 1;
+                let elem_size = self.array_elem_size(object);
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
-                let address = self.index_address(object, index, compact);
-                if compact {
+                let address = self.index_address(object, index, elem_size);
+                if elem_size == 1 {
                     let byte = self
                         .builder
                         .ins()
                         .load(types::I8, MemFlagsData::new(), address, 0);
                     Ok(self.builder.ins().uextend(types::I64, byte))
+                } else if matches!(&**elem, Type::Struct(_)) {
+                    // struct 元素：返回元素地址（值语义由调用方复制）。
+                    Ok(address)
                 } else {
                     let value =
                         self.builder
@@ -1571,10 +1617,13 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 index,
                 elem,
             } => {
-                let compact = self.array_elem_size(object) == 1;
+                let elem_size = self.array_elem_size(object);
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
-                let address = self.index_address(object, index, compact);
+                let address = self.index_address(object, index, elem_size);
+                if matches!(&**elem, Type::Struct(_)) {
+                    return self.copy_struct(elem, value, address);
+                }
                 let value = if elem.is_float() {
                     self.builder
                         .ins()
@@ -1582,7 +1631,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 } else {
                     value
                 };
-                if compact {
+                if elem_size == 1 {
                     let byte = self.builder.ins().ireduce(types::I8, value);
                     self.builder
                         .ins()
@@ -1888,16 +1937,18 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 index,
                 elem,
             } => {
-                let compact = self.array_elem_size(object) == 1;
+                let elem_size = self.array_elem_size(object);
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
-                let address = self.index_address(object, index, compact);
-                if compact {
+                let address = self.index_address(object, index, elem_size);
+                if elem_size == 1 {
                     let byte = self
                         .builder
                         .ins()
                         .load(types::I8, MemFlagsData::new(), address, 0);
                     self.builder.ins().uextend(types::I64, byte)
+                } else if matches!(&**elem, Type::Struct(_)) {
+                    address
                 } else {
                     let value =
                         self.builder
@@ -1920,10 +1971,16 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .load(types::I64, MemFlagsData::new(), object, offset)
             }
             MirExpr::Array { elem, items } => {
-                let compact = matches!(**elem, Type::U8);
-                let elem_size = if compact { 1 } else { 8 };
+                let elem_size = if matches!(**elem, Type::U8) {
+                    1
+                } else if let Type::Struct(id) = &**elem {
+                    self.struct_sizes.get(id).copied().unwrap_or(8)
+                } else {
+                    8
+                };
+                let is_struct = matches!(&**elem, Type::Struct(_));
                 let count = self.builder.ins().iconst(types::I64, items.len() as i64);
-                let elem_size_value = self.builder.ins().iconst(types::I64, elem_size);
+                let elem_size_value = self.builder.ins().iconst(types::I64, elem_size as i64);
                 let array = self.call_import(
                     "sw_array_new",
                     array_new_signature(self.module.isa()),
@@ -1933,25 +1990,34 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 self.builder.ins().stack_store(types::I64, array, slot, 0);
                 for (index, item) in items.iter().enumerate() {
                     let item = self.expr(item)?;
-                    let item = if elem.is_float() {
-                        self.builder
-                            .ins()
-                            .bitcast(types::I64, MemFlagsData::new(), item)
-                    } else {
-                        item
-                    };
                     let index_value = self.builder.ins().iconst(types::I64, index as i64);
                     let array = self
                         .builder
                         .ins()
                         .stack_load(types::I64, types::I64, slot, 0);
-                    if compact {
+                    if elem_size == 1 {
                         self.call_import(
                             "sw_array_set_u8",
                             array_set_signature(self.module.isa()),
                             &[array, index_value, item],
                         )?;
+                    } else if is_struct {
+                        let data =
+                            self.builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::new(), array, 16);
+                        let stride = self.builder.ins().iconst(types::I64, elem_size as i64);
+                        let offset = self.builder.ins().imul(index_value, stride);
+                        let dst = self.builder.ins().iadd(data, offset);
+                        self.copy_struct(elem, item, dst)?;
                     } else {
+                        let item = if elem.is_float() {
+                            self.builder
+                                .ins()
+                                .bitcast(types::I64, MemFlagsData::new(), item)
+                        } else {
+                            item
+                        };
                         self.call_import(
                             "sw_array_set",
                             array_set_signature(self.module.isa()),
@@ -2035,12 +2101,9 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 address
             }
             MirExpr::New { class, args } => {
-                let field_count = self.class_field_counts.get(class).copied().unwrap_or(0);
-                // 对象头部第 0 个字是 vtable 指针。
-                let size = self
-                    .builder
-                    .ins()
-                    .iconst(types::I64, ((field_count + 1) * 8) as i64);
+                // 对象头部第 0 个字是 vtable 指针，字段内联（可能含 struct 值字段）。
+                let object_size = self.class_sizes.get(class).copied().unwrap_or(8);
+                let size = self.builder.ins().iconst(types::I64, object_size as i64);
                 let object = self.call_import(
                     "sw_object_new",
                     object_new_signature(self.module.isa()),

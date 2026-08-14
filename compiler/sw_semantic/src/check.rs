@@ -791,7 +791,7 @@ impl Analyzer {
         result
     }
 
-    /// struct 字段允许嵌套 struct 值字段；class 字段 v0.1 仅允许标量；struct 数组暂不支持。
+    /// struct/class 字段允许嵌套 struct 值字段；struct 数组作为字段类型暂不支持。
     fn reject_complex_field(&mut self, ty: &Type, span: Span, allow_struct_value: bool) {
         let bad = (!allow_struct_value && matches!(ty, Type::Struct(_)))
             || matches!(ty, Type::Array(inner) if matches!(**inner, Type::Struct(_)));
@@ -822,7 +822,7 @@ impl Analyzer {
                         &self.states[module_id.0 as usize].names,
                     );
                     let ty = resolver.lower(&field.ty, generics);
-                    self.reject_complex_field(&ty, field.span, false);
+                    self.reject_complex_field(&ty, field.span, true);
                     fields.push(FieldInfo {
                         name: field.name.name.clone(),
                         ty,
@@ -2058,14 +2058,6 @@ impl<'s> Checker<'s> {
                 }
                 let target_ty = self.check_expr(target);
                 let value_ty = self.check_expr(value);
-                if matches!(target_ty, Type::Struct(_))
-                    && matches!(
-                        &target.kind,
-                        ExprKind::Member { .. } | ExprKind::Index { .. }
-                    )
-                {
-                    self.error("v0.1 暂不支持 struct 存入数组元素/类字段", target.span);
-                }
                 if *op == AssignOp::Assign {
                     if !self.is_assignable(&value_ty, &target_ty)
                         && !self.literal_target_ok(value, &target_ty)
@@ -2169,12 +2161,7 @@ impl<'s> Checker<'s> {
                     }
                 }
                 match element {
-                    Some(element) => {
-                        if matches!(element, Type::Struct(_)) {
-                            self.error("v0.1 暂不支持 struct 数组字面量", expr.span);
-                        }
-                        Type::Array(Box::new(element))
-                    }
+                    Some(element) => Type::Array(Box::new(element)),
                     None => Type::Array(Box::new(Type::Error)),
                 }
             }
