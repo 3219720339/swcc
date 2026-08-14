@@ -27,6 +27,7 @@ EXPECTED = {
     "probe-exc-nested.sw": 1,
     "probe-exc-nothrow.sw": 42,
     "probe-exc-setup.sw": 0,
+    "probe-enum-c.sw": 0,
     "probe-exceptions.sw": 42,
     "probe-format.sw": 0,
     "probe-gc.sw": 0,

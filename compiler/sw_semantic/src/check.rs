@@ -3050,7 +3050,7 @@ impl<'s> Checker<'s> {
                 {
                     let enum_id = *enum_id;
                     let info = self.types.enums[enum_id as usize].clone();
-                    if info.members.iter().any(|m| !m.fields.is_empty()) {
+                    if !info.members.is_empty() {
                         let Some(index) = info.members.iter().position(|m| m.name == name.name)
                         else {
                             self.error(

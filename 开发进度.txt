@@ -800,6 +800,19 @@ Sw 编译器（swcc）开发进度
                        - 验证：cargo test 51 全绿、examples 全部通过
                        - 完成 02:40 的"反向推导编译器阶段"闭环
 
+    2026-08-15 03:00  修复纯 C 风格枚举（无字段变体）成员访问损坏：
+                       - 实测复现：`enum Color { Red, Green, Blue }` 的 `Color.Red`
+                         报"成员访问未解析"（语言研读发现）
+                       - 根因：check_member 的 EnumName.Variant 分支被 `成员任一带
+                         字段`门控，纯 C 风格枚举（全空变体）不满足，落入把类型名
+                         当值解析的错误路径
+                       - 修复：去掉"任一成员带字段"门控，枚举类型名成员访问一律登记
+                         EnumConstruct（tag=discriminant，变体不存在才报错）
+                       - 新增 examples/probe-enum-c.sw（C 风格枚举构造+match、ADT
+                         枚举回归），注册进 run-examples.py
+                       - 验证：cargo test 51 全绿、probe-enum-c / probe-adt /
+                         probe-result / showcase 通过
+
     待办（下一批，按推荐优先级）：
        1. 泛型类 implements 接口；Windows aarch64；调试信息/LSP
        2. 标准库继续扩充（unicode 等薄弱模块）
