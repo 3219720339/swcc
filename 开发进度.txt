@@ -1696,6 +1696,18 @@ Sw 编译器（swcc）开发进度
                          交叉编译通过（macOS 行为待 CI 复验）
 
     待办（下一批，按推荐优先级）：
+    2026-08-15 07:55  修复 macOS net_connect_timeout 根因（batch8 CI 再次暴露）：
+                       - 上一轮 13:00 误用 SO_ERROR=0x1007，但 macOS/BSD
+                         0x1007 实际是 SO_RCVTIMEO，SO_ERROR 应为 0x1008，
+                         导致 macOS 连接成功仍被误判失败
+                       - 一并纠正 macOS 收发超时常量：SO_RCVTIMEO=0x1007、
+                         SO_SNDTIMEO=0x1006（原代码与 SO_SNDLOWAT/RCVLOWAT
+                         混淆）；Linux SO_SNDTIMEO 纠正为 21（原 19 是
+                         SO_SNDLOWAT，仅因探针只查返回值未暴露）
+                       - 验证：runtime.c 三平台交叉编译通过；cargo test
+                         56 全绿；本机 89 examples 全过（macOS 待 CI 复验）
+
+    待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、
           或 std/console 补扩展键/方向键、或 std/string 更多实用

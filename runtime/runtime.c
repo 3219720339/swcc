@@ -6865,7 +6865,7 @@ static int sw_net_connect_result(int64_t fd) {
     unsigned int len = sizeof(error);
     int so_error = 4;  // SO_ERROR（Linux）
 #if defined(__APPLE__)
-    so_error = 0x1007;  // SO_ERROR（macOS/BSD）
+    so_error = 0x1008;  // SO_ERROR（macOS/BSD，0x1007 实为 SO_RCVTIMEO）
 #endif
     if (getsockopt((int)fd, 1 /*SOL_SOCKET*/, so_error, &error, &len) != 0) {
         return -1;
@@ -6980,7 +6980,7 @@ int64_t sw_net_set_recv_timeout(int64_t fd, int64_t timeout_ms) {
     tv.tv_usec = (timeout_ms % 1000) * 1000;
     int optname = 20;  // SO_RCVTIMEO（Linux）
 #if defined(__APPLE__)
-    optname = 0x1006;  // SO_RCVTIMEO（macOS/BSD）
+    optname = 0x1007;  // SO_RCVTIMEO（macOS/BSD，0x1006 实为 SO_SNDTIMEO）
 #endif
     return setsockopt((int)fd, 1 /*SOL_SOCKET*/, optname, &tv, sizeof(tv)) == 0 ? 0 : -1;
 #endif
@@ -6999,9 +6999,9 @@ int64_t sw_net_set_send_timeout(int64_t fd, int64_t timeout_ms) {
     } tv;
     tv.tv_sec = timeout_ms / 1000;
     tv.tv_usec = (timeout_ms % 1000) * 1000;
-    int optname = 19;  // SO_SNDTIMEO（Linux）
+    int optname = 21;  // SO_SNDTIMEO（Linux，19 是 SO_SNDLOWAT）
 #if defined(__APPLE__)
-    optname = 0x1005;  // SO_SNDTIMEO（macOS/BSD）
+    optname = 0x1006;  // SO_SNDTIMEO（macOS/BSD，0x1005 实为 SO_RCVLOWAT）
 #endif
     return setsockopt((int)fd, 1 /*SOL_SOCKET*/, optname, &tv, sizeof(tv)) == 0 ? 0 : -1;
 #endif
