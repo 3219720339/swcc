@@ -3,6 +3,19 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-14（main）
 
+2026-08-15 20:40  修复 macOS GC 崩溃（上批段过滤常量错误）：
+   - 根因：macOS LC_SEGMENT_64 的 initprot 判断可执行段用了 VM_PROT_READ=0x1
+     而非 VM_PROT_EXECUTE=0x4——__DATA（rw-）与 __DATA_CONST（r--）都被排除，
+     GC 扫不到全局变量/字符串池，误回收存活对象 → probe-gc/probe-gc-memory
+     信号 11 崩溃。修正为 (initprot & 0x4) == 0，数据段（含只读字符串池）
+     全部保留，仅排除 __TEXT。
+   - 调用栈膨胀：异常（throw→longjmp）跳过 return 的 sw_dbg_pop，帧累积。
+     修复：sw_dbg_print_trace 只打印最近 16 层（崩溃点最内层定位足够）；
+     sw_dbg_push 满 256 时整体下移丢弃最旧帧，保证最新调用链可查。
+   - 验证：Windows gc-memory/crash-trace/18 探针全过；cargo test 全绿；
+     darwin 交叉编译通过；macOS 段过滤逻辑确认（__TEXT 排除、__DATA/
+     __DATA_CONST/__BSS 保留）。
+
 2026-08-15 20:00  修复 CI 三平台回归失败（Ubuntu/macOS）：
    - 根因 1（GC 代码段误扫）：Linux dl_iterate_phdr 注册全部 PT_LOAD 段（含
      .text 代码段）、macOS LC_SEGMENT_64 注册全部段（含 __TEXT）——指令字节被

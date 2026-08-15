@@ -238,12 +238,12 @@ static void sw_gc_init_platform(void) {
                 uint64_t filesize = *(uint64_t*)(cmd + 48);
                 // initprot 在 +60（LC_SEGMENT_64：+8 segname[16], +24 vmaddr,
                 // +32 vmsize, +40 fileoff, +48 filesize, +56 maxprot, +60 initprot）。
-                // 排除可执行段（VM_PROT_EXECUTE=0x1，__TEXT 代码段）——指令字节
+                // 排除可执行段（VM_PROT_EXECUTE=0x4，__TEXT 代码段）——指令字节
                 // 会被保守式扫描误判为指向堆块的指针，导致全部块被标记、GC
                 // 永不回收/极慢。数据段（__DATA/__DATA_CONST/__BSS 含字符串池）
-                // 都保留。
+                // 都保留。注意：0x1 是 VM_PROT_READ，不能用它判断可执行。
                 uint32_t initprot = *(uint32_t*)(cmd + 60);
-                if (vmsize > 0 && (initprot & 0x1) == 0) {
+                if (vmsize > 0 && (initprot & 0x4) == 0) {
                     uint64_t size = vmsize ? vmsize : filesize;
                     sw_gc_add_data_range(
                         (uintptr_t)(slide + vmaddr),
@@ -3085,6 +3085,13 @@ void sw_dbg_push(int64_t index) {
     }
     if (sw_dbg_depth < SW_DBG_MAX_FRAMES) {
         sw_dbg_stack[sw_dbg_depth++] = index;
+    } else {
+        // 满：整体下移丢弃最旧帧，保留最新（异常传播可能膨胀，保证
+        // 崩溃点所在的最内层调用链始终可查）。
+        for (int64_t i = 1; i < SW_DBG_MAX_FRAMES; i++) {
+            sw_dbg_stack[i - 1] = sw_dbg_stack[i];
+        }
+        sw_dbg_stack[SW_DBG_MAX_FRAMES - 1] = index;
     }
 }
 
@@ -3094,14 +3101,16 @@ void sw_dbg_pop(void) {
     }
 }
 
-/// 打印调用栈（崩溃处理器调用）。
+/// 打印调用栈（崩溃处理器调用）。异常传播（longjmp）会跳过 return 的 pop，
+/// 栈可能膨胀；只打印最近 16 层（崩溃点所在的最内层调用链），定位足够。
 static void sw_dbg_print_trace(void) {
     if (sw_dbg_table_base == 0) {
         fwrite("Sw 崩溃：调用栈不可用（无调试表）\n", 1, 24, stderr);
         return;
     }
     char line[512];
-    for (int64_t depth = sw_dbg_depth - 1; depth >= 0; depth--) {
+    int64_t printed = 0;
+    for (int64_t depth = sw_dbg_depth - 1; depth >= 0 && printed < 16; depth--, printed++) {
         int64_t index = sw_dbg_stack[depth];
         // 扫描表到第 index 项
         uintptr_t cursor = sw_dbg_table_base;
