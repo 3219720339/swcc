@@ -107,6 +107,49 @@ jobs:
           python tools/make-sdk.py "${{ github.workspace }}/toolchain/${{ matrix.toolchain_dir }}" dist
           Get-ChildItem dist/swc-windows-x64-*.zip | Select-Object Name, Length
 
+      - name: SDK artifact smoke (no external toolchain)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          # 模拟分发用户：无 SW_TOOLCHAIN / SW_STDLIB，仅解压 zip 使用
+          SW_TOOLCHAIN: ''
+          SW_STDLIB: ''
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 模拟分发用户：彻底清掉工具链/标准库环境变量（即使 runner 有全局设置）
+          Remove-Item Env:SW_TOOLCHAIN -ErrorAction SilentlyContinue
+          Remove-Item Env:SW_STDLIB -ErrorAction SilentlyContinue
+          Remove-Item Env:SW_RUNTIME -ErrorAction SilentlyContinue
+          $zip = Get-ChildItem dist/swc-windows-x64-*.zip | Select-Object -First 1
+          if (-not $zip) { throw 'SDK zip not found' }
+          $extract = Join-Path $env:RUNNER_TEMP 'sdk-smoke'
+          if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
+          Expand-Archive -Path $zip.FullName -DestinationPath $extract -Force
+          # 兼容两种 zip 布局：make-sdk.py 生成 swc-windows-x64/ 前缀，
+          # make-sdk.ps1 生成扁平布局 —— 统一按"含 swc.exe 与 lib/ 的目录"定位
+          $sdk = Join-Path $extract 'swc-windows-x64'
+          if (-not (Test-Path (Join-Path $sdk 'swc.exe'))) { $sdk = $extract }
+          if (-not (Test-Path (Join-Path $sdk 'swc.exe'))) { throw 'swc.exe missing in extracted SDK' }
+          # 关键链接库必须随包分发（编译器固定链接 -lole32 -lws2_32）
+          foreach ($lib in @('libucrt.a','libucrtbase.a','libkernel32.a','libshell32.a','libole32.a','libws2_32.a','libclang_rt.builtins-x86_64.a')) {
+            if (-not (Test-Path (Join-Path $sdk "lib\$lib"))) { throw "SDK missing lib/$lib" }
+          }
+          $work = Join-Path $env:RUNNER_TEMP 'sdk-smoke-work'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          Copy-Item "${{ github.workspace }}/examples/probe-batch11.sw" $work
+          Copy-Item "${{ github.workspace }}/examples/hello.sw" $work
+          # 联网能力探针（std/http → ws2_32/ole32）：仅编译链接验证库完整
+          Push-Location $work
+          & "$sdk/swc.exe" build probe-batch11.sw -o probe-b11.exe
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'SDK failed to compile networking probe' }
+          # 端到端：编译并运行 hello
+          & "$sdk/swc.exe" build hello.sw -o hello.exe
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'SDK failed to compile hello' }
+          & "$work/hello.exe"
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'SDK hello run failed' }
+          Pop-Location
+          Write-Host 'SDK artifact smoke passed (networking probe linked, hello ran)'
+
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
         with:

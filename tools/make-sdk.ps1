@@ -35,7 +35,7 @@ foreach ($path in @($clang, $lld, $mingwLib, $builtins)) {
     }
 }
 
-$sdk = Join-Path $Root (Join-Path $OutDir "swc-windows-x64-$Version")
+$sdk = [System.IO.Path]::Combine($Root, $OutDir, "swc-windows-x64-$Version")
 foreach ($sub in @("bin", "lib", "stdlib")) {
     New-Item -ItemType Directory -Force (Join-Path $sdk $sub) | Out-Null
 }
@@ -48,8 +48,13 @@ foreach ($dll in @("libLLVM-22.dll", "libc++.dll", "libunwind.dll")) {
         Copy-Item $source (Join-Path $sdk "bin\$dll") -Force
     }
 }
-foreach ($name in @("libucrt.a", "libucrtbase.a", "libkernel32.a", "libshell32.a")) {
-    Copy-Item (Join-Path $mingwLib $name) (Join-Path $sdk "lib\$name") -Force
+foreach ($name in @("libucrt.a", "libucrtbase.a", "libkernel32.a", "libshell32.a",
+                    "libole32.a", "libws2_32.a")) {
+    $source = Join-Path $mingwLib $name
+    if (-not (Test-Path $source)) {
+        throw "Toolchain missing link library: $source"
+    }
+    Copy-Item $source (Join-Path $sdk "lib\$name") -Force
 }
 Copy-Item $builtins (Join-Path $sdk "lib\libclang_rt.builtins-x86_64.a") -Force
 
@@ -69,6 +74,6 @@ Copy-Item (Join-Path $Root "stdlib\*.sw") (Join-Path $sdk "stdlib") -Force
     (New-Object System.Text.UTF8Encoding($false))
 )
 
-$archive = Join-Path $Root (Join-Path $OutDir "swc-windows-x64-$Version.zip")
+$archive = [System.IO.Path]::Combine($Root, $OutDir, "swc-windows-x64-$Version.zip")
 Compress-Archive -Path (Join-Path $sdk "*") -DestinationPath $archive -CompressionLevel Optimal -Force
 Write-Host "SDK ready: $archive"

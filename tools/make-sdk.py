@@ -65,8 +65,12 @@ def main():
         source = os.path.join(toolchain, "bin", dll)
         if os.path.exists(source):
             shutil.copy2(source, os.path.join(sdk, "bin", dll))
-    for name in ("libucrt.a", "libucrtbase.a", "libkernel32.a", "libshell32.a"):
-        shutil.copy2(os.path.join(mingw_lib, name), os.path.join(sdk, "lib", name))
+    for name in ("libucrt.a", "libucrtbase.a", "libkernel32.a", "libshell32.a",
+                 "libole32.a", "libws2_32.a"):
+        source = os.path.join(mingw_lib, name)
+        if not os.path.exists(source):
+            sys.exit(f"工具链缺少链接库：{source}")
+        shutil.copy2(source, os.path.join(sdk, "lib", name))
     shutil.copy2(builtins, os.path.join(sdk, "lib", "libclang_rt.builtins-x86_64.a"))
 
     # 3) 预编译运行时（不再需要 clang）
