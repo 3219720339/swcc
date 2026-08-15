@@ -6850,6 +6850,12 @@ static int sw_net_set_nonblocking(int64_t fd, int on) {
 }
 
 // 检查 connect 结果（非阻塞 connect 完成后读 SO_ERROR）。
+// SOL_SOCKET: Linux=1, macOS/BSD/Windows=0xFFFF
+#if defined(__APPLE__)
+#define SW_SOL_SOCKET 0xFFFF
+#else
+#define SW_SOL_SOCKET 1
+#endif
 static int sw_net_connect_result(int64_t fd) {
 #if defined(_WIN32)
     extern int getsockopt(uintptr_t s, int level, int optname, char* optval, int* optlen);
@@ -6867,7 +6873,7 @@ static int sw_net_connect_result(int64_t fd) {
 #if defined(__APPLE__)
     so_error = 0x1007;  // SO_ERROR（macOS/BSD）
 #endif
-    if (getsockopt((int)fd, 1 /*SOL_SOCKET*/, so_error, &error, &len) != 0) {
+    if (getsockopt((int)fd, SW_SOL_SOCKET, so_error, &error, &len) != 0) {
         return -1;
     }
     return error == 0 ? 0 : -1;
@@ -7009,7 +7015,7 @@ int64_t sw_net_set_recv_timeout(int64_t fd, int64_t timeout_ms) {
 #if defined(__APPLE__)
     optname = 0x1006;  // SO_RCVTIMEO（macOS/BSD）
 #endif
-    return setsockopt((int)fd, 1 /*SOL_SOCKET*/, optname, &tv, sizeof(tv)) == 0 ? 0 : -1;
+    return setsockopt((int)fd, SW_SOL_SOCKET, optname, &tv, sizeof(tv)) == 0 ? 0 : -1;
 #endif
 }
 
@@ -7030,7 +7036,7 @@ int64_t sw_net_set_send_timeout(int64_t fd, int64_t timeout_ms) {
 #if defined(__APPLE__)
     optname = 0x1005;  // SO_SNDTIMEO（macOS/BSD）
 #endif
-    return setsockopt((int)fd, 1 /*SOL_SOCKET*/, optname, &tv, sizeof(tv)) == 0 ? 0 : -1;
+    return setsockopt((int)fd, SW_SOL_SOCKET, optname, &tv, sizeof(tv)) == 0 ? 0 : -1;
 #endif
 }
 
@@ -7141,7 +7147,7 @@ int64_t sw_net_set_keepalive(int64_t fd, int64_t enabled) {
 #if defined(__APPLE__)
     optname = 0x0008;  // SO_KEEPALIVE（macOS/BSD）
 #endif
-    return setsockopt((int)fd, 1 /*SOL_SOCKET*/, optname, &value, sizeof(value)) == 0 ? 0 : -1;
+    return setsockopt((int)fd, SW_SOL_SOCKET, optname, &value, sizeof(value)) == 0 ? 0 : -1;
 #endif
 }
 

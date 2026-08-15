@@ -1730,6 +1730,16 @@ Sw 编译器（swcc）开发进度
                        - 验证：cargo test 56 全绿、89 examples 全过、runtime.c 三平台
                          交叉编译通过（本批不修行为，纯加诊断，等 CI 打出失败点）
 
+    2026-08-15 08:23  定位 macOS net_connect_timeout 真正根因：SOL_SOCKET
+                       - 诊断输出 so_error(-1)：getsockopt 本身调用失败；查证 xnu 源码，
+                         macOS/BSD 的 SOL_SOCKET=0xFFFF（与 Windows 相同），Linux=1，
+                         代码 POSIX 分支全部写死 1 → macOS 上 getsockopt/setsockopt 全失败
+                       - 修复：新增 SW_SOL_SOCKET 宏按平台取值，替换 connect_result/
+                         set_recv_timeout/set_send_timeout/set_keepalive 4 处调用；
+                         SO_ERROR=0x1007 等常量经核实本就正确（前两轮误改已还原）
+                       - 验证：runtime.c 三平台交叉编译零警告；cargo test 56 全绿；
+                         本机 89 examples 全过（macOS 待 CI 复验）
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、
