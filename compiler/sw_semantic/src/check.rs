@@ -198,6 +198,8 @@ struct Analyzer {
     module_names: HashMap<ModuleId, HashMap<String, Vec<SymbolId>>>,
     current_path: PathBuf,
     next_module_id: u32,
+    /// 跨模块共享崩溃定位表（debug_index 全局连续；入口模块导出全量表）。
+    debug_table: Vec<(String, String, u32)>,
 }
 
 impl Analyzer {
@@ -215,6 +217,7 @@ impl Analyzer {
             module_names: HashMap::new(),
             current_path: PathBuf::new(),
             next_module_id: 0,
+            debug_table: Vec::new(),
         }
     }
 
@@ -1633,6 +1636,7 @@ impl Analyzer {
         let types = &mut self.types;
         let registry = &self.registry;
         let diagnostics = &mut self.diagnostics;
+        let debug_table = &mut self.debug_table;
         let mut decl_names = HashMap::new();
         for st in &self.states {
             for (name, ids) in &st.names {
@@ -1673,6 +1677,7 @@ impl Analyzer {
                 registry,
                 diagnostics,
                 state,
+                debug_table,
                 global_index_by_symbol: HashMap::new(),
                 decl_names,
                 hidden_functions: Vec::new(),
@@ -4604,6 +4609,20 @@ impl<'s> Checker<'s> {
     }
 }
 
+/// 字节偏移 → 源码行号（1 基）。越界返回 1。
+fn source_line_of(offset: usize, text: &str) -> u32 {
+    let mut line = 1u32;
+    let limit = offset.min(text.len());
+    for (index, byte) in text.bytes().enumerate() {
+        if index >= limit {
+            break;
+        }
+        if byte == b'\n' {
+            line += 1;
+        }
+    }
+    line
+}
 fn binary_op_name(op: &BinaryOp) -> &'static str {
     match op {
         BinaryOp::Add => "+",
@@ -4655,6 +4674,8 @@ struct MirLowerer<'m, 's> {
     generic_counter: u32,
     /// static 字段全局名 → 当前模块 MirGlobal 索引。
     static_field_globals: HashMap<String, u32>,
+    /// 跨模块共享崩溃定位表（debug_index 全局连续）。
+    debug_table: &'m mut Vec<(String, String, u32)>,
 }
 
 struct FnLower<'a, 'm, 's> {
@@ -4684,6 +4705,10 @@ struct FnLower<'a, 'm, 's> {
     loop_defer_depths: Vec<usize>,
     /// 含 defer 的函数入口异常帧。未捕获异常先在此处清理再向外重抛。
     unwind_frame: Option<usize>,
+    /// 崩溃定位表索引（sw_dbg_push 参数）。
+    debug_index: u32,
+    /// 函数定义起始行（1 基）。
+    source_line: u32,
 }
 
 #[derive(Clone)]
@@ -5286,7 +5311,15 @@ impl<'m, 's> MirLowerer<'m, 's> {
             functions: Vec::new(),
             globals: Vec::new(),
             strings: Vec::new(),
+            debug_table: Vec::new(),
         };
+        // 崩溃定位：本模块源文件路径（诊断用文件名）。
+        let module_file = self
+            .state
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "module.sw".to_string());
 
         let items = self.module.items.clone();
 
@@ -5373,6 +5406,15 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         .unwrap_or_else(|| "mod".to_owned());
                     let name = stable_function_name(&sig, &module_stem);
                     let result_index = self.state.id.0 as usize;
+                    // 崩溃定位：从全局表分配索引（跨模块连续）并记录。
+                    let debug_index = self.debug_table.len() as u32;
+                    let source_line =
+                        source_line_of(function.span.start, self.state.source_text.as_str());
+                    self.debug_table.push((
+                        function.name.name.clone(),
+                        module_file.clone(),
+                        source_line,
+                    ));
                     let mut lower = FnLower {
                         lowerer: self,
                         result_index,
@@ -5391,6 +5433,8 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         all_deferred: Vec::new(),
                         loop_defer_depths: Vec::new(),
                         unwind_frame: None,
+                        debug_index,
+                        source_line,
                     };
                     for param in &sig.params {
                         lower.params.push(MirParam {
@@ -5480,6 +5524,8 @@ impl<'m, 's> MirLowerer<'m, 's> {
                                     all_deferred: Vec::new(),
                                     loop_defer_depths: Vec::new(),
                                     unwind_frame: None,
+                                    debug_index: u32::MAX,
+                                    source_line: 0,
                                 };
                                 for param in &sig.params {
                                     lower.params.push(MirParam {
@@ -5531,6 +5577,8 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         all_deferred: Vec::new(),
                         loop_defer_depths: Vec::new(),
                         unwind_frame: None,
+                        debug_index: u32::MAX,
+                        source_line: 0,
                     };
                     for param in &sig.params {
                         lower.params.push(MirParam {
@@ -5559,6 +5607,8 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         locals: Vec::new(),
                         body: Vec::new(),
                         extern_c: false,
+                        debug_index: u32::MAX,
+                        source_line: 0,
                     });
                 }
             }
@@ -5632,6 +5682,8 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     all_deferred: Vec::new(),
                     loop_defer_depths: Vec::new(),
                     unwind_frame: None,
+                    debug_index: u32::MAX,
+                    source_line: 0,
                 };
                 for param in &sig.params {
                     lower.params.push(MirParam {
@@ -5688,6 +5740,8 @@ impl<'m, 's> MirLowerer<'m, 's> {
             }
         }
         module_mir.strings = self.state.mir_strings.clone();
+        // 崩溃定位表：填全局表快照（codegen 仅入口模块导出，其余 Local）。
+        module_mir.debug_table = self.debug_table.clone();
         module_mir
     }
 
@@ -5880,6 +5934,8 @@ impl<'m, 's> MirLowerer<'m, 's> {
             locals,
             body,
             extern_c: false,
+            debug_index: u32::MAX,
+            source_line: 0,
         })
     }
 
@@ -6082,7 +6138,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             .map(|body| self.lower_stmts(&body.statements))
             .unwrap_or_default();
         self.emit_defer_cleanup_from(0, &mut inner);
-        let statements;
+        let mut statements;
         if let Some(frame) = self.unwind_frame {
             inner.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
                 callee: MirCallee::Intrinsic {
@@ -6157,6 +6213,18 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         } else {
             statements = inner;
         }
+        // 崩溃定位：函数入口压调用栈（debug_index 有效时）。
+        if self.debug_index != u32::MAX {
+            statements.insert(
+                0,
+                MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "sw_dbg_push".to_owned(),
+                    },
+                    args: vec![MirExpr::Int(self.debug_index as i64)],
+                })),
+            );
+        }
         self.defer_scopes.pop();
         self.unwind_frame = None;
         let locals = std::mem::take(&mut self.locals);
@@ -6169,6 +6237,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             locals,
             body: statements,
             extern_c,
+            debug_index: self.debug_index,
+            source_line: self.source_line,
         }
     }
 
@@ -6781,6 +6851,15 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         args: vec![MirExpr::Local(frame)],
                     })));
                 }
+                // 崩溃定位：函数返回前弹出调用栈。
+                if self.debug_index != u32::MAX {
+                    output.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "sw_dbg_pop".to_owned(),
+                        },
+                        args: vec![],
+                    })));
+                }
                 output.push(MirStmt::new(MirStmtKind::Return(value)));
             }
             StmtKind::Expr(expr) => {
@@ -7130,6 +7209,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             all_deferred: Vec::new(),
             loop_defer_depths: Vec::new(),
             unwind_frame: None,
+            debug_index: u32::MAX,
+            source_line: 0,
         };
         let instance_function = nested.lower_function(Some(&body), false);
         self.lowerer.hidden_functions.push(instance_function);
@@ -8504,6 +8585,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     all_deferred: Vec::new(),
                     loop_defer_depths: Vec::new(),
                     unwind_frame: None,
+                    debug_index: u32::MAX,
+                    source_line: 0,
                 };
                 let hidden_function = nested.lower_function(Some(&body_block), false);
                 self.lowerer.hidden_functions.push(hidden_function);

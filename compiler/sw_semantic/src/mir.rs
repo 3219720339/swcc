@@ -10,6 +10,9 @@ pub struct MirModule {
     pub globals: Vec<MirGlobal>,
     /// 字符串字面量池（去重后）。
     pub strings: Vec<String>,
+    /// 崩溃定位表：函数索引 → (函数名, 模块文件, 源码起始行)。
+    /// 运行期崩溃时按 sw_dbg_push 的索引查此表打印调用栈。
+    pub debug_table: Vec<(String, String, u32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -35,6 +38,10 @@ pub struct MirFunction {
     pub locals: Vec<MirLocal>,
     pub body: Vec<MirStmt>,
     pub extern_c: bool,
+    /// 崩溃定位表索引（sw_dbg_push 参数）。
+    pub debug_index: u32,
+    /// 函数定义起始行（1 基，供崩溃定位表）。
+    pub source_line: u32,
 }
 
 #[derive(Clone, Debug)]

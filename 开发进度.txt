@@ -3,6 +3,29 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-14（main）
 
+2026-08-15 19:10  轻量崩溃定位（sw_dbg_push/pop + 崩溃处理器）：
+   - 编译期：MirFunction 加 debug_index/source_line；MirModule 加 debug_table；
+     Analyzer 持有跨模块共享 debug_table（debug_index 全局连续）；lower_function
+     函数入口插 sw_dbg_push(index)，Return 前插 sw_dbg_pop；codegen 生成扁平
+     sw_dbg_table（名称\0文件\0行号 le32，表尾哨兵）+ sw_dbg_table_len 符号，
+     仅入口模块 Export。
+   - 运行期：sw_dbg_push/pop 维护 256 层调用栈；崩溃处理器 Windows 用
+     AddVectoredExceptionHandler、POSIX 用 signal(SIGSEGV/ABRT/ILL/FPE)，
+     崩溃时打印「函数名 (文件:行号)」调用栈后 exit(3)。
+   - 修复过程：SetUnhandledExceptionFilter 未触发改用 Vectored handler；
+     表边界改用 sw_dbg_table_len 符号（哨兵扫描不可靠）；去掉 signal.h 依赖
+     （runtime.c 无系统头文件原则，手动声明 signal/_Exit）。
+   - 新增 examples/probe-crash-trace.sw（数组越界崩溃，预期 exit 3，不注册
+     run-examples）；验证输出：
+       Sw 程序崩溃（访问违规
+         at crash_site (probe-crash-trace.sw:6)
+         at middle (probe-crash-trace.sw:12)
+         at outer (probe-crash-trace.sw:16)
+         at main (probe-crash-trace.sw:20)
+   - 验证：崩溃调用栈层级/行号精确；16 探针回归全过（batch11 因外网 httpbin
+     不可达失败，与本次改动无关）；cargo test 全绿（9+13+12+22）；
+     交叉编译 musl x64/aarch64 + darwin 通过。
+
 2026-08-15 18:20  LSP 语言服务器（swc lsp）：
    - 新增 compiler/swc/src/lsp.rs：JSON-RPC 2.0 over stdio（手写最小 JSON，
      不引入 serde 依赖），支持 initialize/initialized/shutdown/exit、

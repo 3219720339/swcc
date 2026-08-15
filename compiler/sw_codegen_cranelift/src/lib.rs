@@ -66,6 +66,8 @@ struct Generator {
     imports: HashMap<String, cranelift_module::FuncId>,
     string_data: HashMap<usize, cranelift_module::DataId>,
     global_data: HashMap<u32, cranelift_module::DataId>,
+    /// 崩溃定位表（sw_dbg_table 数据）。
+    dbg_table_data: Option<cranelift_module::DataId>,
     /// class id → vtable 数据（类对象头部引用）。
     vtable_data: HashMap<u32, cranelift_module::DataId>,
 }
@@ -100,6 +102,7 @@ impl Generator {
             imports: HashMap::new(),
             string_data: HashMap::new(),
             global_data: HashMap::new(),
+            dbg_table_data: None,
             vtable_data: HashMap::new(),
         })
     }
@@ -124,6 +127,66 @@ impl Generator {
                 .define_data(data_id, &description)
                 .map_err(|error| error.to_string())?;
             self.string_data.insert(index, data_id);
+        }
+
+        // 崩溃定位表：sw_dbg_table 为扁平字节流，每项 `名称\0文件\0行号(le32)`，
+        // 索引与 MIR debug_index 对应；表尾追加 0xDEADBEEF 哨兵供运行时定位边界。
+        // 仅入口模块（module_id==0）导出；其它模块 Local（避免重复符号，
+        // 且入口模块表已覆盖全部函数——多模块函数索引全局连续）。
+        if !mir.debug_table.is_empty() {
+            let mut table_bytes: Vec<u8> = Vec::new();
+            for (func_name, file_name, line) in &mir.debug_table {
+                table_bytes.extend_from_slice(func_name.as_bytes());
+                table_bytes.push(0);
+                table_bytes.extend_from_slice(file_name.as_bytes());
+                table_bytes.push(0);
+                table_bytes.extend_from_slice(&(*line as u32).to_le_bytes());
+            }
+            table_bytes.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
+            let name = if mir.module_id == 0 {
+                "sw_dbg_table"
+            } else {
+                "sw_dbg_table_local"
+            };
+            let data_id = self
+                .module
+                .declare_data(
+                    name,
+                    if mir.module_id == 0 {
+                        Linkage::Export
+                    } else {
+                        Linkage::Local
+                    },
+                    false,
+                    false,
+                )
+                .map_err(|error| error.to_string())?;
+            let mut description = DataDescription::new();
+            description.init = Init::Bytes {
+                contents: table_bytes.clone().into_boxed_slice(),
+            };
+            self.module
+                .define_data(data_id, &description)
+                .map_err(|error| error.to_string())?;
+            self.dbg_table_data = Some(data_id);
+
+            // 表总长符号（运行时定位边界用；仅入口模块导出）。
+            if mir.module_id == 0 {
+                let len_data = self
+                    .module
+                    .declare_data("sw_dbg_table_len", Linkage::Export, false, false)
+                    .map_err(|error| error.to_string())?;
+                let mut len_desc = DataDescription::new();
+                len_desc.init = Init::Bytes {
+                    contents: (table_bytes.len() as u32)
+                        .to_le_bytes()
+                        .to_vec()
+                        .into_boxed_slice(),
+                };
+                self.module
+                    .define_data(len_data, &len_desc)
+                    .map_err(|error| error.to_string())?;
+            }
         }
 
         // 全局变量
@@ -1208,6 +1271,10 @@ fn intrinsic_signature(name: &str, isa: &dyn cranelift_codegen::isa::TargetIsa) 
         "sw_try_begin" => {
             sig.returns.push(AbiParam::new(types::I64));
         }
+        "sw_dbg_push" => {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        "sw_dbg_pop" => {}
         "sw_security_cookie" | "sw_func_name_addr" => {
             sig.returns.push(AbiParam::new(types::I64));
         }

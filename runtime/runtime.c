@@ -3050,6 +3050,120 @@ void rust_eh_personality(void) {}
 #endif
 
 // ---------------------------------------------------------------------------
+// 轻量崩溃定位：函数入口 sw_dbg_push(index) 压调用栈，崩溃时打印
+// 「函数名 (文件:行号)」调用栈。sw_dbg_table 由编译期生成（扁平字节流，
+// 每项 名称\0 文件\0 行号 le32），索引与 MIR debug_index 对应。
+// ---------------------------------------------------------------------------
+
+#define SW_DBG_MAX_FRAMES 256
+
+static uintptr_t sw_dbg_table_base = 0;
+static uintptr_t sw_dbg_table_end = 0;
+static int64_t sw_dbg_stack[SW_DBG_MAX_FRAMES];
+static int64_t sw_dbg_depth = 0;
+
+// 由链接器提供的表边界符号（codegen Export sw_dbg_table）。
+extern unsigned char sw_dbg_table[];
+// 表总长（codegen 生成符号 sw_dbg_table_len）。
+extern uint32_t sw_dbg_table_len;
+
+void sw_dbg_push(int64_t index) {
+    if (sw_dbg_table_base == 0) {
+        sw_dbg_table_base = (uintptr_t)sw_dbg_table;
+        sw_dbg_table_end = sw_dbg_table_base + (uintptr_t)sw_dbg_table_len;
+    }
+    if (sw_dbg_depth < SW_DBG_MAX_FRAMES) {
+        sw_dbg_stack[sw_dbg_depth++] = index;
+    }
+}
+
+void sw_dbg_pop(void) {
+    if (sw_dbg_depth > 0) {
+        sw_dbg_depth--;
+    }
+}
+
+/// 打印调用栈（崩溃处理器调用）。
+static void sw_dbg_print_trace(void) {
+    if (sw_dbg_table_base == 0) {
+        fwrite("Sw 崩溃：调用栈不可用（无调试表）\n", 1, 24, stderr);
+        return;
+    }
+    char line[512];
+    for (int64_t depth = sw_dbg_depth - 1; depth >= 0; depth--) {
+        int64_t index = sw_dbg_stack[depth];
+        // 扫描表到第 index 项
+        uintptr_t cursor = sw_dbg_table_base;
+        for (int64_t i = 0; i < index && cursor < sw_dbg_table_end; i++) {
+            // 跳过 名称\0
+            while (cursor < sw_dbg_table_end && *(char*)cursor != 0) cursor++;
+            if (cursor < sw_dbg_table_end) cursor++;  // 跳过 \0
+            // 跳过 文件\0
+            while (cursor < sw_dbg_table_end && *(char*)cursor != 0) cursor++;
+            if (cursor < sw_dbg_table_end) cursor++;  // 跳过 \0
+            cursor += 4;  // 行号
+        }
+        if (cursor >= sw_dbg_table_end) {
+            continue;
+        }
+        const char* name = (const char*)cursor;
+        while (cursor < sw_dbg_table_end && *(char*)cursor != 0) cursor++;
+        if (cursor >= sw_dbg_table_end) continue;
+        cursor++;
+        const char* file = (const char*)cursor;
+        while (cursor < sw_dbg_table_end && *(char*)cursor != 0) cursor++;
+        if (cursor + 4 > sw_dbg_table_end) continue;
+        cursor++;
+        uint32_t line_no = *(uint32_t*)cursor;
+        int len = snprintf(line, sizeof(line), "  at %s (%s:%u)\n",
+            name, file, (unsigned int)line_no);
+        fwrite(line, 1, (uint64_t)(len > 0 ? len : 0), stderr);
+    }
+}
+
+// 崩溃处理器：Windows 用未处理异常过滤器，POSIX 用信号。
+#if defined(_WIN32)
+// 手动声明（不 include windows.h，避免与 runtime.c 手写声明冲突）。
+typedef struct sw_exception_pointers { void* record; void* context; } sw_exception_pointers;
+typedef long (*sw_vectored_handler)(sw_exception_pointers*);
+extern long SetUnhandledExceptionFilter(void* filter);
+extern void ExitProcess(unsigned int code);
+static long sw_crash_handler(sw_exception_pointers* info) {
+    (void)info;
+    fwrite("Sw 程序崩溃（访问违规/非法指令）\n", 1, 30, stderr);
+    sw_dbg_print_trace();
+    fflush(stderr);
+    ExitProcess(3);
+    return 1;  // 非 0 = vectored handler 已处理
+}
+#else
+// POSIX：不 include signal.h（runtime.c 无系统头文件依赖），手动声明。
+extern void* signal(int, void*);
+extern void _Exit(int);
+static void sw_crash_handler(int signum) {
+    char line[128];
+    int len = snprintf(line, sizeof(line), "Sw 程序崩溃（信号 %d）\n", signum);
+    fwrite(line, 1, (uint64_t)(len > 0 ? len : 0), stderr);
+    sw_dbg_print_trace();
+    fflush(stderr);
+    _Exit(3);
+}
+#endif
+
+/// 安装崩溃处理器（进程入口调用一次）。
+void sw_dbg_install(void) {
+#if defined(_WIN32)
+    extern void* AddVectoredExceptionHandler(unsigned int first, void* handler);
+    AddVectoredExceptionHandler(1, (void*)sw_crash_handler);
+#else
+    signal(11, (void*)sw_crash_handler);   // SIGSEGV
+    signal(6, (void*)sw_crash_handler);    // SIGABRT
+    signal(4, (void*)sw_crash_handler);    // SIGILL
+    signal(8, (void*)sw_crash_handler);    // SIGFPE
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // 进程入口：把命令行参数构造成 string[]，调用用户 main(args)。
 // 用户 main 可声明为 `function main(): int` 或 `function main(args: string[]): int`。
 // ---------------------------------------------------------------------------
@@ -3109,6 +3223,12 @@ int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
 #endif
+    // 轻量崩溃定位：安装崩溃处理器，崩溃时打印函数调用栈。
+    sw_dbg_install();
+    {
+
+
+    }
     sw_array* args_array = sw_array_new(8, argc);
     for (int64_t index = 0; index < argc; index++) {
         const char* arg = argv[index];
