@@ -7045,7 +7045,11 @@ int64_t sw_net_available(int64_t fd) {
 #if defined(_WIN32)
     extern int ioctlsocket(uintptr_t s, long cmd, unsigned long* argp);
     unsigned long n = 0;
-    return ioctlsocket((uintptr_t)fd, 0x4004667Fu /*FIONREAD*/, &n) == 0 ? (int64_t)n : -1;
+    if (ioctlsocket((uintptr_t)fd, 0x4004667Fu /*FIONREAD*/, &n) != 0) {
+        sw_net_record_error("net_available", sw_net_errno_value());
+        return -1;
+    }
+    return (int64_t)n;
 #else
     extern int ioctl(int fd, unsigned long request, void* arg);
     int n = 0;
@@ -7053,7 +7057,11 @@ int64_t sw_net_available(int64_t fd) {
 #if defined(__APPLE__)
     request = 0x4004667Fu;           // FIONREAD（macOS/BSD）
 #endif
-    return ioctl((int)fd, request, &n) == 0 ? (int64_t)n : -1;
+    if (ioctl((int)fd, request, &n) != 0) {
+        sw_net_record_error("net_available", sw_net_errno_value());
+        return -1;
+    }
+    return (int64_t)n;
 #endif
 }
 

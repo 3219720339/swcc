@@ -1740,6 +1740,15 @@ Sw 编译器（swcc）开发进度
                        - 验证：runtime.c 三平台交叉编译零警告；cargo test 56 全绿；
                          本机 89 examples 全过（macOS 待 CI 复验）
 
+    2026-08-15 08:27  macOS batch8 只剩 net_available（FIONREAD）一项：
+                       - SOL_SOCKET 修复后 connect/keepalive/收发超时已全过；
+                         net_available 在 macOS 返回非 5（值/errno 未知）
+                       - 已核实 FIONREAD=0x4004667F（_IOR('f',127,int)）无误
+                       - 措施：sw_net_available 失败时记录 errno 到 net_last_error；
+                         probe 打印实际返回值 + 详情，待 CI 打出值再定修复方向
+                       - 验证：runtime.c 三平台交叉编译零警告、cargo test 56 全绿、
+                         89 examples 全过
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、

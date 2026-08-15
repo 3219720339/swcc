@@ -64,7 +64,11 @@ function main(): int {
         passed = passed & check(net_set_keepalive(client, true) == 0, "net_set_keepalive");
 
         passed = passed & check(net_send_all(client, "hello") == 5, "net_send_all");
-        passed = passed & check(net_available(peer) == 5, "net_available");
+        const avail = net_available(peer);
+        if (avail != 5) {
+            println(`net_available 异常: 值=${avail} 详情=${net_last_error()}`);
+        }
+        passed = passed & check(avail == 5, "net_available");
         passed = passed & check(net_recv(peer, 1024) == "hello", "net_recv echo");
 
         // 接收超时：服务器不发数据，客户端 300ms 后返回空串
