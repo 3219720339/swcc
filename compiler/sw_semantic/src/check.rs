@@ -2534,6 +2534,15 @@ impl<'s> Checker<'s> {
                                 .insert(expr.span.start, *ret_enum);
                         }
                     }
+                    // 对象字面量按函数返回类型传播目标类型。
+                    if matches!(expr.kind, ExprKind::Object(_)) {
+                        if matches!(self.ret, Type::Struct(_) | Type::Class(_)) {
+                            self.state
+                                .result
+                                .object_types
+                                .insert(expr.span.start, self.ret.clone());
+                        }
+                    }
                     let ty = self.check_expr(expr);
                     self.saw_return_value = true;
                     if self.ret == Type::Unknown {
@@ -2629,6 +2638,7 @@ impl<'s> Checker<'s> {
         let ty = if let Some(annotation) = &variable.ty {
             let ty = self.lower_type(annotation);
             if let Some(init) = &variable.init {
+                self.register_object_target(init, &ty);
                 if matches!(init.kind, ExprKind::Object(_)) {
                     self.state
                         .result
@@ -2831,6 +2841,15 @@ impl<'s> Checker<'s> {
                     self.error("赋值目标不可写", target.span);
                 }
                 let target_ty = self.check_expr(target);
+                // 赋值对象字面量按目标类型传播（如 `p = { x: 1, y: 2 }`）。
+                if *op == AssignOp::Assign && matches!(value.kind, ExprKind::Object(_)) {
+                    if matches!(target_ty, Type::Struct(_) | Type::Class(_)) {
+                        self.state
+                            .result
+                            .object_types
+                            .insert(value.span.start, target_ty.clone());
+                    }
+                }
                 let value_ty = self.check_expr(value);
                 if *op == AssignOp::Assign {
                     if !self.is_assignable(&value_ty, &target_ty)
@@ -3802,6 +3821,7 @@ impl<'s> Checker<'s> {
                         .result
                         .call_targets
                         .insert((span.start, span.end), CallTarget::Function(symbol_id));
+                    self.check_object_args(&sig, args);
                     return self.record_call_result(span, sig.ret);
                 }
                 Type::Error
@@ -3861,6 +3881,7 @@ impl<'s> Checker<'s> {
                             let sig = info.static_methods[index].sig.clone();
                             let args_ty = self.call_args_ty(args);
                             self.match_call_args(&sig, &args_ty, span, true);
+                            self.check_object_args(&sig, args);
                             self.state.result.call_targets.insert(
                                 (span.start, span.end),
                                 CallTarget::StaticMethod {
@@ -4030,6 +4051,7 @@ impl<'s> Checker<'s> {
                                 index,
                             },
                         );
+                        self.check_object_args(&sig, args);
                         sig.ret
                     }
                     Type::Interface(id) => {
@@ -4040,6 +4062,7 @@ impl<'s> Checker<'s> {
                         {
                             let sig = self.types.interfaces[*id as usize].methods[index].clone();
                             self.match_call_args(&sig, &args_ty, span, true);
+                            self.check_object_args(&sig, args);
                             self.state.result.call_targets.insert(
                                 (span.start, span.end),
                                 CallTarget::InterfaceMethod {
@@ -4298,11 +4321,62 @@ impl<'s> Checker<'s> {
                         out.push(Type::Error);
                     }
                 }
+            } else if matches!(arg.kind, ExprKind::Object(_)) {
+                // 对象字面量暂不检查：目标类型由调用签名传播后重查（见 check_object_args）。
+                out.push(Type::Error);
             } else {
                 out.push(self.check_expr(arg));
             }
         }
         out
+    }
+
+    /// 按目标类型登记对象字面量（含数组字面量内的对象元素，如 `const p: Point[] = [{...}]`）。
+    fn register_object_target(&mut self, expr: &Expr, target: &Type) {
+        match &expr.kind {
+            ExprKind::Object(_) => {
+                self.state
+                    .result
+                    .object_types
+                    .insert(expr.span.start, target.clone());
+            }
+            ExprKind::Array(items) => {
+                if let Type::Array(elem) = target {
+                    for item in items {
+                        self.register_object_target(item, elem);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 按函数签名给对象字面量实参登记目标类型并检查（调用点选好签名后调用）。
+    fn check_object_args(&mut self, sig: &FunctionSig, args: &[Expr]) {
+        let variadic = sig.params.last().map(|param| param.rest).unwrap_or(false);
+        let fixed_count = if variadic {
+            sig.params.len().saturating_sub(1)
+        } else {
+            sig.params.len()
+        };
+        for (index, arg) in args.iter().enumerate() {
+            if !matches!(arg.kind, ExprKind::Object(_)) {
+                continue;
+            }
+            let param = if variadic && index >= fixed_count {
+                &sig.params[sig.params.len() - 1]
+            } else if let Some(param) = sig.params.get(index) {
+                param
+            } else {
+                continue;
+            };
+            let param_ty = self.substitute(&param.ty, &HashMap::new());
+            self.state
+                .result
+                .object_types
+                .insert(arg.span.start, param_ty);
+            self.check_expr(arg);
+        }
     }
 
     fn pick_overload(

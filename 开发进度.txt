@@ -3,6 +3,23 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-14（main）
 
+2026-08-15 16:40  语言完整度批：浮点全局 + 对象字面量传播 + 对象解构：
+   - 浮点全局变量修复（严重 bug）：declare_global 按全局类型存初始值字节
+     （F32/F64 用 f64 位模式），MirExpr::Global 加载按类型 load F64/I64
+     （此前全局恒按 i64 存/取，float 全局参与 fmul 直接崩溃）；新增 const_f64
+     常量折叠与 LowerCtx.global_types 类型表。mutable float 全局赋值/读取验证通过。
+   - 对象字面量目标类型传播：check_call 选好签名后按参数类型登记 object_types
+     并重查（普通函数/静态方法/实例方法/接口方法）；return 字面量按函数返回类型；
+     赋值字面量按目标类型；类型化声明递归登记数组内对象元素（Point[] = [{...}]）。
+     call_args_ty 对对象字面量返回 Error 占位避免先报错。嵌套字段字面量（inner: {v:7}）
+     与嵌套实参均验证通过。
+   - 对象解构验证：const { x, y } = 类型化变量/struct 字段正常工作（此前从匿名
+     对象字面量解构报「无法降级标识符」，匿名字面量无目标类型属合理限制）。
+   - 新增 examples/probe-language-complete.sw（14 断言：浮点全局/实参/返回/赋值/
+     数组元素/嵌套/解构），登记 run-examples。
+   - 验证：probe 14/14 PASS；18 个相关探针回归 0 失败；cargo test 全绿
+     （9+13+12+22）；交叉编译 musl x64/aarch64 + darwin 通过。
+
 2026-08-15 15:40  空值窄化（if/三元/while 分支可空变量自动非空）：
    - Checker 增加 narrowed 窄化栈（符号 id → 非空类型）与 else_narrow_id。
    - symbol_type 优先查窄化表；if (x != null) then 分支、if (x == null) else 分支、

@@ -249,12 +249,21 @@ impl Generator {
             .map_err(|error| error.to_string())?;
         if defining {
             let mut description = DataDescription::new();
-            let bytes = global
-                .init
-                .as_ref()
-                .and_then(const_i64)
-                .map(|value| value.to_le_bytes().to_vec())
-                .unwrap_or_else(|| vec![0u8; 8]);
+            // 按全局类型存储初始值：float 用 f64 位模式，其余按 i64 字节。
+            let bytes = match &global.ty {
+                Type::F32 | Type::F64 => global
+                    .init
+                    .as_ref()
+                    .and_then(const_f64)
+                    .map(|value| value.to_le_bytes().to_vec())
+                    .unwrap_or_else(|| 0.0f64.to_le_bytes().to_vec()),
+                _ => global
+                    .init
+                    .as_ref()
+                    .and_then(const_i64)
+                    .map(|value| value.to_le_bytes().to_vec())
+                    .unwrap_or_else(|| vec![0u8; 8]),
+            };
             description.init = Init::Bytes {
                 contents: bytes.into_boxed_slice(),
             };
@@ -335,6 +344,12 @@ impl Generator {
             vtable_data: self.vtable_data.clone(),
             interface_slot_bases: interface_slot_bases(types).0,
             local_types,
+            global_types: mir
+                .globals
+                .iter()
+                .enumerate()
+                .map(|(index, global)| (index as u32, global.ty.clone()))
+                .collect(),
             ret_ty: function.ret.clone(),
             sret: None,
             strings: &mir.strings,
@@ -1357,6 +1372,22 @@ fn const_i64(expr: &MirExpr) -> Option<i64> {
     }
 }
 
+/// 常量浮点折叠：仅处理可直接求值的 float 字面量与一元负号。
+fn const_f64(expr: &MirExpr) -> Option<f64> {
+    match expr {
+        MirExpr::Float(value) => Some(*value),
+        MirExpr::Unary {
+            op: MirUnary::Neg,
+            expr,
+        } => const_f64(expr).map(|value| -value),
+        MirExpr::Unary {
+            op: MirUnary::Pos,
+            expr,
+        } => const_f64(expr),
+        _ => None,
+    }
+}
+
 fn class_field_counts(types: &TypeTable) -> HashMap<u32, usize> {
     types
         .classes
@@ -1532,6 +1563,8 @@ struct LowerCtx<'a, 'f> {
     interface_slot_bases: HashMap<u32, usize>,
     /// 参数 + 局部变量的类型（槽索引与 MIR 局部索引一致）。
     local_types: Vec<Type>,
+    /// 全局变量类型（MirExpr::Global 索引 → 类型，float 全局按 f64 加载）。
+    global_types: HashMap<u32, Type>,
     ret_ty: Type,
     /// 结构体返回值的隐藏 sret 指针（入口参数）。
     sret: Option<Value>,
@@ -2059,9 +2092,20 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .copied()
                     .ok_or("全局未声明")?;
                 let address = self.builder.ins().symbol_value(types::I64, gv);
-                self.builder
-                    .ins()
-                    .load(types::I64, MemFlagsData::new(), address, 0)
+                // float 全局按 f64 位模式加载（存储时也按 f64 字节），其余按 i64。
+                let is_float = matches!(
+                    self.global_types.get(index),
+                    Some(Type::F32) | Some(Type::F64)
+                );
+                if is_float {
+                    self.builder
+                        .ins()
+                        .load(types::F64, MemFlagsData::new(), address, 0)
+                } else {
+                    self.builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), address, 0)
+                }
             }
             MirExpr::Unary { op, expr: inner } => {
                 let value = self.expr(inner)?;
