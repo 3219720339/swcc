@@ -33,6 +33,7 @@ import { chunk_int, chunk_float, chunk_string } from "std/array";
 import { write_all, remove } from "std/fs";
 import { temp_dir, platform } from "std/os";
 import { path_join } from "std/fs";
+import { sleep_ms } from "std/time";
 
 function check(condition: bool, label: string): int {
     if (condition) {
@@ -64,6 +65,13 @@ function main(): int {
         passed = passed & check(net_set_keepalive(client, true) == 0, "net_set_keepalive");
 
         passed = passed & check(net_send_all(client, "hello") == 5, "net_send_all");
+        // macOS 回环 TCP 投递是异步的（内核线程处理接收），send 返回后数据可能
+        // 仍在路上——轮询等待对端可读字节达到 5（上限 2 秒），消除平台竞态。
+        let tries = 0;
+        while (net_available(peer) < 5 && tries < 200) {
+            sleep_ms(10);
+            tries++;
+        }
         const avail = net_available(peer);
         if (avail != 5) {
             println(`net_available 异常: 值=${avail} 详情=${net_last_error()}`);

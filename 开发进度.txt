@@ -1760,6 +1760,17 @@ Sw 编译器（swcc）开发进度
                        - 验证：runtime.c 三平台交叉编译零警告、cargo test 56 全绿、
                          89 examples 全过（macOS 待 CI 复验）
 
+    2026-08-15 08:55  修复 probe-batch8 net_available 的 macOS 投递竞态：
+                        - 背景：SO_NREAD 修复（08:45）后 API 正确，但 macOS 回环
+                          TCP 投递是异步的（内核线程处理接收路径），send 返回后
+                          数据可能仍在路上——立即查对端可读字节恒为 0，随后
+                          阻塞 recv 能等到数据（CI 复现 值=0）
+                        - 修复（探针层）：send_all 后轮询等待对端可读字节达到
+                          5（sleep_ms(10) 上限 2 秒），消除平台投递延迟差异；
+                          Linux/Windows 回环同步投递无此问题
+                        - 验证：本机 89 examples 全过、cargo test 56 全绿
+                          （macOS 待 CI 复验）
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、
