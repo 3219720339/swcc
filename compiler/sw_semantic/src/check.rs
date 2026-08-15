@@ -4504,6 +4504,59 @@ struct FnLower<'a, 'm, 's> {
     captures: HashMap<u32, usize>,
     /// 泛型实例化的类型实参（非泛型函数为空）。
     type_args: HashMap<String, Type>,
+    /// 每个词法作用域登记的 defer；flag 防止提前退出后重复执行。
+    defer_scopes: Vec<Vec<DeferredExpr>>,
+    /// 函数内全部 defer，供函数级异常边界在跨作用域异常时清理仍活跃的条目。
+    all_deferred: Vec<DeferredExpr>,
+    /// 当前循环进入时的 defer 作用域深度，用于 break/continue 清理循环体内资源。
+    loop_defer_depths: Vec<usize>,
+    /// 含 defer 的函数入口异常帧。未捕获异常先在此处清理再向外重抛。
+    unwind_frame: Option<usize>,
+}
+
+#[derive(Clone)]
+struct DeferredExpr {
+    expr: MirExpr,
+    flag: usize,
+}
+
+fn block_contains_defer(block: &Block) -> bool {
+    block.statements.iter().any(stmt_contains_defer)
+}
+
+fn stmt_contains_defer(statement: &Stmt) -> bool {
+    match &statement.kind {
+        StmtKind::Defer(_) => true,
+        StmtKind::Block(block) => block_contains_defer(block),
+        StmtKind::If { then, else_, .. } => {
+            stmt_contains_defer(then)
+                || else_.as_ref().is_some_and(|stmt| stmt_contains_defer(stmt))
+        }
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForEach { body, .. } => stmt_contains_defer(body),
+        StmtKind::Switch { cases, default, .. } => {
+            cases
+                .iter()
+                .any(|case| case.body.iter().any(stmt_contains_defer))
+                || default
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_contains_defer))
+        }
+        StmtKind::Match { arms, .. } => arms.iter().any(|arm| block_contains_defer(&arm.body)),
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+        } => {
+            block_contains_defer(body)
+                || catches
+                    .iter()
+                    .any(|catch| block_contains_defer(&catch.body))
+                || finally.as_ref().is_some_and(block_contains_defer)
+        }
+        _ => false,
+    }
 }
 
 fn substitute_type(ty: &Type, type_args: &HashMap<String, Type>) -> Type {
@@ -5162,6 +5215,10 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         this_class: None,
                         captures: HashMap::new(),
                         type_args: HashMap::new(),
+                        defer_scopes: Vec::new(),
+                        all_deferred: Vec::new(),
+                        loop_defer_depths: Vec::new(),
+                        unwind_frame: None,
                     };
                     for param in &sig.params {
                         lower.params.push(MirParam {
@@ -5247,6 +5304,10 @@ impl<'m, 's> MirLowerer<'m, 's> {
                                     this_class: None,
                                     captures: HashMap::new(),
                                     type_args: HashMap::new(),
+                                    defer_scopes: Vec::new(),
+                                    all_deferred: Vec::new(),
+                                    loop_defer_depths: Vec::new(),
+                                    unwind_frame: None,
                                 };
                                 for param in &sig.params {
                                     lower.params.push(MirParam {
@@ -5294,6 +5355,10 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         this_class: Some(class_id),
                         captures: HashMap::new(),
                         type_args: HashMap::new(),
+                        defer_scopes: Vec::new(),
+                        all_deferred: Vec::new(),
+                        loop_defer_depths: Vec::new(),
+                        unwind_frame: None,
                     };
                     for param in &sig.params {
                         lower.params.push(MirParam {
@@ -5391,6 +5456,10 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     this_class: Some(instance_id),
                     captures: HashMap::new(),
                     type_args: type_args.clone(),
+                    defer_scopes: Vec::new(),
+                    all_deferred: Vec::new(),
+                    loop_defer_depths: Vec::new(),
+                    unwind_frame: None,
                 };
                 for param in &sig.params {
                     lower.params.push(MirParam {
@@ -5829,11 +5898,95 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             scope.insert(param.name.clone(), index);
         }
         self.name_scopes = vec![scope];
+        self.defer_scopes.clear();
+        self.all_deferred.clear();
+        self.loop_defer_depths.clear();
+        let has_defer = body.is_some_and(block_contains_defer);
+        self.defer_scopes.push(Vec::new());
+        self.unwind_frame = has_defer
+            .then(|| self.declare_local("$defer_frame", Type::Ptr(Box::new(Type::I8)), false));
 
-        let mut statements = Vec::new();
-        if let Some(body) = body {
-            statements = self.lower_stmts(&body.statements);
+        let mut inner = body
+            .map(|body| self.lower_stmts(&body.statements))
+            .unwrap_or_default();
+        self.emit_defer_cleanup_from(0, &mut inner);
+        let statements;
+        if let Some(frame) = self.unwind_frame {
+            inner.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                callee: MirCallee::Intrinsic {
+                    name: "sw_try_leave".to_owned(),
+                },
+                args: vec![MirExpr::Local(frame)],
+            })));
+            let exc = self.declare_local("$defer_exception", Type::Ptr(Box::new(Type::I8)), false);
+            let mut unwind = vec![MirStmt::new(MirStmtKind::VarDecl {
+                local: exc,
+                init: Some(MirExpr::Call {
+                    callee: MirCallee::Intrinsic {
+                        name: "sw_try_value".to_owned(),
+                    },
+                    args: vec![MirExpr::Local(frame)],
+                }),
+            })];
+            unwind.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                callee: MirCallee::Intrinsic {
+                    name: "sw_try_leave".to_owned(),
+                },
+                args: vec![MirExpr::Local(frame)],
+            })));
+            self.emit_defer_entries(&self.all_deferred.clone(), &mut unwind);
+            unwind.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                callee: MirCallee::Intrinsic {
+                    name: "sw_rethrow".to_owned(),
+                },
+                args: vec![MirExpr::Local(exc)],
+            })));
+            let setjmp = MirExpr::Call {
+                callee: MirCallee::Extern {
+                    name: "sw_setjmp".to_owned(),
+                    sig: FunctionSig {
+                        module: ModuleId(0),
+                        name: "sw_setjmp".to_owned(),
+                        generics: Vec::new(),
+                        bounds: HashMap::new(),
+                        params: vec![ParamSig {
+                            name: "buf".to_owned(),
+                            ty: Type::Ptr(Box::new(Type::I8)),
+                            has_default: false,
+                            rest: false,
+                        }],
+                        ret: Type::Int,
+                        extern_c: true,
+                        span: Span::empty(0),
+                    },
+                },
+                args: vec![MirExpr::Local(frame)],
+            };
+            statements = vec![
+                MirStmt::new(MirStmtKind::VarDecl {
+                    local: frame,
+                    init: Some(MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "sw_try_begin".to_owned(),
+                        },
+                        args: vec![],
+                    }),
+                }),
+                MirStmt::new(MirStmtKind::If {
+                    cond: MirExpr::Binary {
+                        op: MirBinary::Ne,
+                        left: Box::new(setjmp),
+                        right: Box::new(MirExpr::Int(0)),
+                    },
+                    then: unwind,
+                    else_: inner,
+                }),
+            ];
+        } else {
+            statements = inner;
         }
+        self.defer_scopes.pop();
+        self.unwind_frame = None;
         let locals = std::mem::take(&mut self.locals);
         MirFunction {
             name: self.name.clone(),
@@ -5855,6 +6008,49 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         result
     }
 
+    fn emit_defer_cleanup_from(&self, depth: usize, output: &mut Vec<MirStmt>) {
+        for scope in self.defer_scopes[depth..].iter().rev() {
+            self.emit_defer_entries(scope, output);
+        }
+    }
+
+    fn emit_defer_entries(&self, entries: &[DeferredExpr], output: &mut Vec<MirStmt>) {
+        for deferred in entries.iter().rev() {
+            output.push(MirStmt::new(MirStmtKind::If {
+                cond: MirExpr::Binary {
+                    op: MirBinary::Ne,
+                    left: Box::new(MirExpr::Local(deferred.flag)),
+                    right: Box::new(MirExpr::Int(0)),
+                },
+                then: vec![
+                    MirStmt::new(MirStmtKind::Assign {
+                        target: MirTarget::Local(deferred.flag),
+                        value: MirExpr::Int(0),
+                    }),
+                    MirStmt::new(MirStmtKind::Expr(deferred.expr.clone())),
+                ],
+                else_: Vec::new(),
+            }));
+        }
+    }
+
+    fn lower_defer_scope(&mut self, statements: &[Stmt]) -> Vec<MirStmt> {
+        self.lower_defer_scope_with_entries(statements).0
+    }
+
+    fn lower_defer_scope_with_entries(
+        &mut self,
+        statements: &[Stmt],
+    ) -> (Vec<MirStmt>, Vec<DeferredExpr>) {
+        self.defer_scopes.push(Vec::new());
+        let depth = self.defer_scopes.len() - 1;
+        let mut output = self.lower_stmts(statements);
+        let entries = self.defer_scopes.pop().expect("defer 作用域存在");
+        self.emit_defer_entries(&entries, &mut output);
+        let _ = depth;
+        (output, entries)
+    }
+
     fn local_type(&mut self, variable: &VariableDecl) -> Type {
         if let Some(annotation) = &variable.ty {
             let ty = self.lowerer.lower_type_for_mir(annotation);
@@ -5873,7 +6069,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             StmtKind::Empty => {}
             StmtKind::Block(block) => {
                 self.name_scopes.push(HashMap::new());
-                let inner = self.lower_stmts(&block.statements);
+                let inner = self.lower_defer_scope(&block.statements);
                 self.name_scopes.pop();
                 output.extend(inner);
             }
@@ -5980,7 +6176,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             }
             StmtKind::While { cond, body } => {
                 let cond = self.lower_expr(cond);
+                let cleanup_depth = self.defer_scopes.len();
+                self.loop_defer_depths.push(cleanup_depth);
                 let body = self.lower_stmts(&[body.as_ref().clone()]);
+                self.loop_defer_depths.pop();
                 output.push(MirStmt::new(MirStmtKind::While { cond, body }));
             }
             StmtKind::For {
@@ -6011,7 +6210,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     }
                 }
                 let cond = cond.as_ref().map(|expr| self.lower_expr(expr));
+                let cleanup_depth = self.defer_scopes.len();
+                self.loop_defer_depths.push(cleanup_depth);
                 let mut body_stmts = self.lower_stmts(&[body.as_ref().clone()]);
+                self.loop_defer_depths.pop();
                 if let Some(update) = update {
                     self.lower_expr_stmt(update, &mut body_stmts);
                 }
@@ -6061,7 +6263,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     target: MirTarget::Local(element_local),
                     value: element_value,
                 }));
+                let cleanup_depth = self.defer_scopes.len();
+                self.loop_defer_depths.push(cleanup_depth);
                 body_stmts.extend(self.lower_stmts(&[body.as_ref().clone()]));
+                self.loop_defer_depths.pop();
                 body_stmts.push(MirStmt::new(MirStmtKind::Assign {
                     target: MirTarget::Local(index_local),
                     value: MirExpr::Binary {
@@ -6124,7 +6329,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .iter()
                     .find(|arm| matches!(arm.pattern, Pattern::Wildcard(_)))
                 {
-                    chain = self.lower_stmts(&wildcard.body.statements);
+                    chain = self.lower_defer_scope(&wildcard.body.statements);
                 }
                 for arm in arms.iter().rev() {
                     let Pattern::Variant { name, bindings, .. } = &arm.pattern else {
@@ -6160,7 +6365,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             }),
                         }));
                     }
-                    body.extend(self.lower_stmts(&arm.body.statements));
+                    body.extend(self.lower_defer_scope(&arm.body.statements));
                     self.name_scopes.pop();
                     let cond = MirExpr::Binary {
                         op: MirBinary::Eq,
@@ -6182,6 +6387,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 catches,
                 finally,
             } => {
+                let (normal_body, body_defers) =
+                    self.lower_defer_scope_with_entries(&body.statements);
                 let frame_ty = Type::Ptr(Box::new(Type::I8));
                 let frame_local = self.declare_local("$frame", frame_ty.clone(), true);
                 let frame = MirExpr::Local(frame_local);
@@ -6214,6 +6421,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     },
                     args: vec![frame.clone()],
                 })));
+                self.emit_defer_entries(&body_defers, &mut then_stmts);
 
                 let matched_local = self.declare_local("$matched", Type::Int, false);
                 then_stmts.push(MirStmt::new(MirStmtKind::VarDecl {
@@ -6266,7 +6474,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             args: vec![e.clone()],
                         }),
                     })];
-                    catch_body.extend(self.lower_stmts(&catch.body.statements));
+                    catch_body.extend(self.lower_defer_scope(&catch.body.statements));
                     catch_body.push(MirStmt::new(MirStmtKind::Assign {
                         target: MirTarget::Local(matched_local),
                         value: MirExpr::Int(1),
@@ -6278,7 +6486,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     }));
                 }
                 if let Some(finally) = finally {
-                    then_stmts.extend(self.lower_stmts(&finally.statements));
+                    then_stmts.extend(self.lower_defer_scope(&finally.statements));
                 }
                 then_stmts.push(MirStmt::new(MirStmtKind::If {
                     cond: MirExpr::Binary {
@@ -6296,9 +6504,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }));
 
                 // 正常路径：body → finally → 弹出框架
-                let mut else_stmts = self.lower_stmts(&body.statements);
+                let mut else_stmts = normal_body;
                 if let Some(finally) = finally {
-                    else_stmts.extend(self.lower_stmts(&finally.statements));
+                    else_stmts.extend(self.lower_defer_scope(&finally.statements));
                 }
                 else_stmts.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
                     callee: MirCallee::Intrinsic {
@@ -6357,12 +6565,50 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 })));
             }
             StmtKind::Defer(expr) => {
-                self.error("MIR 降级暂不支持 defer（清理在后续版本实现）", expr.span);
+                let flag = self.declare_local("$defer_active", Type::Bool, true);
+                output.push(MirStmt::new(MirStmtKind::VarDecl {
+                    local: flag,
+                    init: Some(MirExpr::Bool(true)),
+                }));
+                let deferred = DeferredExpr {
+                    expr: self.lower_expr(expr),
+                    flag,
+                };
+                self.defer_scopes
+                    .last_mut()
+                    .expect("函数 defer 作用域存在")
+                    .push(deferred.clone());
+                self.all_deferred.push(deferred);
             }
-            StmtKind::Break => output.push(MirStmt::new(MirStmtKind::Break)),
-            StmtKind::Continue => output.push(MirStmt::new(MirStmtKind::Continue)),
+            StmtKind::Break => {
+                let depth = self.loop_defer_depths.last().copied().unwrap_or(0);
+                self.emit_defer_cleanup_from(depth, output);
+                output.push(MirStmt::new(MirStmtKind::Break));
+            }
+            StmtKind::Continue => {
+                let depth = self.loop_defer_depths.last().copied().unwrap_or(0);
+                self.emit_defer_cleanup_from(depth, output);
+                output.push(MirStmt::new(MirStmtKind::Continue));
+            }
             StmtKind::Return(expr) => {
-                let value = expr.as_ref().map(|expr| self.lower_expr(expr));
+                let value = expr.as_ref().map(|expr| {
+                    let ty = substitute_type(&self.expr_type(expr), &self.type_args);
+                    let local = self.declare_local("$defer_return", ty, false);
+                    output.push(MirStmt::new(MirStmtKind::VarDecl {
+                        local,
+                        init: Some(self.lower_expr(expr)),
+                    }));
+                    MirExpr::Local(local)
+                });
+                self.emit_defer_cleanup_from(0, output);
+                if let Some(frame) = self.unwind_frame {
+                    output.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "sw_try_leave".to_owned(),
+                        },
+                        args: vec![MirExpr::Local(frame)],
+                    })));
+                }
                 output.push(MirStmt::new(MirStmtKind::Return(value)));
             }
             StmtKind::Expr(expr) => {
@@ -6373,12 +6619,15 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
 
     fn lower_switch_case_body(&mut self, statements: &[Stmt]) -> Vec<MirStmt> {
         let mut output = Vec::new();
+        self.defer_scopes.push(Vec::new());
         for statement in statements {
             if matches!(statement.kind, StmtKind::Break) {
                 break;
             }
             self.lower_stmt(statement, &mut output);
         }
+        let entries = self.defer_scopes.pop().expect("switch defer 作用域存在");
+        self.emit_defer_entries(&entries, &mut output);
         output
     }
 
@@ -6705,6 +6954,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             this_class: None,
             captures: HashMap::new(),
             type_args,
+            defer_scopes: Vec::new(),
+            all_deferred: Vec::new(),
+            loop_defer_depths: Vec::new(),
+            unwind_frame: None,
         };
         let instance_function = nested.lower_function(Some(&body), false);
         self.lowerer.hidden_functions.push(instance_function);
@@ -8075,6 +8328,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     this_class: None,
                     captures: capture_map,
                     type_args: self.type_args.clone(),
+                    defer_scopes: Vec::new(),
+                    all_deferred: Vec::new(),
+                    loop_defer_depths: Vec::new(),
+                    unwind_frame: None,
                 };
                 let hidden_function = nested.lower_function(Some(&body_block), false);
                 self.lowerer.hidden_functions.push(hidden_function);

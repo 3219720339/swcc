@@ -1920,3 +1920,22 @@ Sw 编译器（swcc）开发进度
 4. 开发者体验：错误诊断美化、格式化器、LSP、调试信息
 5. 并发：多线程运行时与线程安全的异常机制
 6. 发布：0.1.0 三平台产物、安装包/更新通道
+
+2026-08-15 11:35  文档与源码一致性核对：
+   - 已按 compiler/sw_semantic、Cranelift 后端、runtime/runtime.c 与 examples 回归核对。
+   - 修正 Result/?、异常类型、GC、defer、运行时语言和分发说明中的过期描述。
+   - 已用当前源码执行 `cargo run -p swc -- check examples/probe-circular.sw`；循环 import 通过。
+   - 修正初次静态阅读遗漏：模块在递归加载前已写入 loaded，随后统一 finalize/check/lower。
+
+2026-08-15 11:35  下一步方向源码分析：
+   - `cargo test --workspace` 通过：56 个测试全部通过；当前存在 Rust 未使用项、不可达模式和
+     Cranelift 弃用 API 警告。
+   - 已确认 `defer` 完成解析和类型检查，但 MIR 降级明确报未实现；文件/socket/HTTP/进程仍是
+     需要显式关闭的非托管句柄，建议优先完成 defer 的正常返回、异常、break/continue 路径清理。
+   - 模块构建当前每次重新分析并生成对象，`.swcache/obj` 仅作本次链接工作目录；模块接口增量缓存
+     仍未实现，可作为后续较大工程项。
+
+2026-08-15 11:35  defer 全路径清理：
+   - FnLower 增加词法 defer 栈、循环清理边界和含 defer 函数的隐式异常边界。
+   - 正常作用域退出、return、break、continue、try/catch/finally 与跨函数异常传播均按 LIFO 执行。
+   - 新增 examples/probe-defer.sw 并登记 tools/run-examples.py；本机编译运行通过。

@@ -25,6 +25,7 @@ EXPECTED = {
     "probe-cn.sw": 0,
     "probe-dir.sw": 0,
     "probe-destructure.sw": 0,
+    "probe-defer.sw": 0,
     "probe-exc-2.sw": 1,
     "probe-exc-3.sw": 1,
     "probe-exc-debug.sw": 1,
