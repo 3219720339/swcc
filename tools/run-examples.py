@@ -83,7 +83,8 @@ EXPECTED = {
     "probe-flags.sw": 0,
     "probe-url.sw": 0,
     "probe-hash2.sw": 0,
-    "probe-http.sw": 0,
+    # probe-http.sw 依赖外网 httpbin.org（CI 出口可能 503），由本地
+    # probe-http-local.sw 覆盖 HTTP 功能；外网测试见 NETWORK_EXAMPLES。
     "probe-util2.sw": 0,
     "probe-cross-stdlib.sw": 0,
     "probe-batch3.sw": 0,
@@ -122,13 +123,22 @@ STDIN = {
     "probe-console.sw": "hello\n42\nbad\n7\n3.5\n",
 }
 
+# 依赖外网的探针（默认不跑；`--network` 显式启用）。
+NETWORK_EXAMPLES = {
+    "probe-http.sw": 0,
+}
+
 
 def main() -> int:
     swc = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         "target", "release", "swc.exe" if os.name == "nt" else "swc"
     )
+    include_network = "--network" in sys.argv[1:]
+    expected = dict(EXPECTED)
+    if include_network:
+        expected.update(NETWORK_EXAMPLES)
     failed = []
-    for name, want in EXPECTED.items():
+    for name, want in expected.items():
         path = os.path.join("examples", name)
         cmd = [swc, "run", path] + ARGS.get(name, [])
         try:
@@ -155,7 +165,7 @@ def main() -> int:
         for line in failed:
             print("  " + line)
         return 1
-    print(f"examples 回归通过：{len(EXPECTED)} 个文件退出码全部符合设计")
+    print(f"examples 回归通过：{len(expected)} 个文件退出码全部符合设计")
     return 0
 
 

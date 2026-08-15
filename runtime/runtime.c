@@ -196,7 +196,11 @@ static int sw_gc_dl_callback(struct sw_dl_info* info, uint64_t size, void* data)
     (void)data;
     const struct sw_phdr* phdr = (const struct sw_phdr*)info->dlpi_phdr;
     for (unsigned short index = 0; index < info->dlpi_phnum; index++) {
-        if (phdr[index].type == 1 && phdr[index].memsz > 0) {
+        // 排除可执行段（PF_X=1，.text 代码段）：指令字节会被保守式扫描误判
+        // 为指向堆块的指针，导致全部块被标记、GC 永不回收。可写与只读数据
+        // 段（.data/.bss/.rodata 含字符串池）都保留。
+        if (phdr[index].type == 1 && phdr[index].memsz > 0 &&
+            (phdr[index].flags & 1) == 0) {
             sw_gc_add_data_range(
                 info->dlpi_addr + phdr[index].vaddr,
                 info->dlpi_addr + phdr[index].vaddr + phdr[index].memsz
@@ -232,7 +236,14 @@ static void sw_gc_init_platform(void) {
                 uint64_t vmaddr = *(uint64_t*)(cmd + 24);
                 uint64_t vmsize = *(uint64_t*)(cmd + 32);
                 uint64_t filesize = *(uint64_t*)(cmd + 48);
-                if (filesize > 0) {
+                // initprot 在 +60（LC_SEGMENT_64：+8 segname[16], +24 vmaddr,
+                // +32 vmsize, +40 fileoff, +48 filesize, +56 maxprot, +60 initprot）。
+                // 排除可执行段（VM_PROT_EXECUTE=0x1，__TEXT 代码段）——指令字节
+                // 会被保守式扫描误判为指向堆块的指针，导致全部块被标记、GC
+                // 永不回收/极慢。数据段（__DATA/__DATA_CONST/__BSS 含字符串池）
+                // 都保留。
+                uint32_t initprot = *(uint32_t*)(cmd + 60);
+                if (vmsize > 0 && (initprot & 0x1) == 0) {
                     uint64_t size = vmsize ? vmsize : filesize;
                     sw_gc_add_data_range(
                         (uintptr_t)(slide + vmaddr),
