@@ -1798,10 +1798,38 @@ Sw 编译器（swcc）开发进度
                         - 验证：cargo test 56 全绿；90 examples 全过；
                           fmt 通过；runtime.c 无新外部依赖
 
+    2026-08-15 12:40  标准库批 10（进程交互 + 终端增强，合并批，19 函数全中英文）：
+                        - std/os 进程交互 +9（runtime C，Windows/POSIX 双分支）：
+                          process_open（CreateProcessA/fork + 双管道，句柄 0-63
+                          表索引）、process_write、process_read_line（行缓冲）、
+                          process_read_some（非阻塞）、process_poll（Windows
+                          WaitForSingleObject 管道句柄 signaled 探测——PeekNamedPipe
+                          对匿名管道实测失效；POSIX select 读集合）、process_wait、
+                          process_kill、process_close、process_close_input
+                          （sort 等需 EOF 才输出的工具）
+                        - std/console +3：read_key（Windows _getch 双字节扩展键
+                          合并成扩展码 1000+/F1-F12=1011-1022；POSIX ESC CSI 序列
+                          select 30ms 探测）、progress_text/console_progress
+                          （纯 Sw：清行 + 进度条 + 冲刷）
+                        - 踩坑记录：Windows 管道句柄继承设置反了（子进程需要
+                          in_read/out_write 可继承，误设父端导致 cmd stdin 无效、
+                          WriteFile 断管）；PeekNamedPipe 对匿名管道返回 0 数据
+                          （改用 WaitForSingleObject(0) signaled 探测）
+                        - codegen extern_c_symbol 追加 10 个映射；runtime.c 补
+                          memmove 声明
+                        - 新增探针 probe-batch10.sw（13 断言：cmd/sh 逐步回显
+                          （跳过横幅/提示符/空行，EOF 才停）、sort 管道
+                          close_input 排序、进度条文本钳制），登记
+                          run-examples.py；demo 新增 demo-batch10.sw（进程对话 +
+                          sort + 动态进度条）输出存 outputs/demo-batch10.txt
+                        - 验证：cargo test 56 全绿；91 examples 全过；
+                          fmt 通过；runtime.c 无新外部依赖
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、
-          或 std/console 补扩展键/方向键、或 std/string 更多实用
+          或 std/regex 增强（regex_split/escape/captures）、
+          或 std/string 更多实用（word_wrap/truncate_middle）
 
 二、已知限制
 

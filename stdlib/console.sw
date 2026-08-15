@@ -17,6 +17,9 @@
 //   - console_width/console_height 在重定向（CI 管道/文件）时返回 0。
 // ===========================================================================
 
+import { print, flush } from "std/io";
+import { format } from "std/string";
+
 /// 设置前景/背景色（0-7：黑红绿黄蓝品红青白；-1 表示该位不变；两个都为
 /// -1 时重置为默认色）。输出 ANSI SGR 序列。
 export extern c function console_color(foreground: int, background: int): void;
@@ -98,4 +101,43 @@ export function 清空当前行(): void {
 
 export function 设置窗口标题(text: string): void {
     console_title(text);
+}
+
+/// 读取完整按键（不回车、不回显）：普通字符返回 0-255；方向/功能键返回
+/// 扩展码（上1000 下1001 左1002 右1003 Home1004 End1005 PgUp1006 PgDn1007
+/// F1..F12=1011..1022）；失败返回 -1。交互终端才可读（重定向可能 -1/阻塞）。
+export extern c function read_key(): int;
+
+/// 生成进度条文本：progress_text(50, 10) == "[#####-----] 50%"。
+export function progress_text(percent: int, bar_width: int): string {
+    const p = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
+    const w = bar_width < 1 ? 1 : (bar_width > 60 ? 60 : bar_width);
+    const filled = (p * w) / 100;
+    let line = "[";
+    let i = 0;
+    while (i < w) {
+        line = line + (i < filled ? "#" : "-");
+        i++;
+    }
+    line = line + "] " + format("%d%%", p);
+    return line;
+}
+
+/// 绘制进度条到当前行（清行 + 输出 + 冲刷；循环调用实现动态进度）。
+export function console_progress(percent: int, bar_width: int): void {
+    console_clear_line();
+    print(progress_text(percent, bar_width));
+    flush();
+}
+
+export function 读扩展键(): int {
+    return read_key();
+}
+
+export function 进度条文本(percent: int, bar_width: int): string {
+    return progress_text(percent, bar_width);
+}
+
+export function 进度条(percent: int, bar_width: int): void {
+    console_progress(percent, bar_width);
 }

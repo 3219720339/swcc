@@ -189,3 +189,67 @@ export extern c function memory_usage_kb(): int;
 export function 取内存占用(): int {
     return memory_usage_kb();
 }
+
+/// 启动子进程并保持 stdin/stdout 管道，返回进程句柄（0-63）；失败返回 -1。
+/// 用于逐步交互：process_write 写输入，process_read_line 读输出。
+export extern c function process_open(cmd: string, args: string[]): int;
+
+/// 向子进程 stdin 写入；返回写入字节数，失败返回 -1。
+export extern c function process_write(proc: int, text: string): int;
+
+/// 阻塞读子进程 stdout 一行（去行尾 \n/\r）；EOF 返回空串。
+export extern c function process_read_line(proc: int): string;
+
+/// 非阻塞读子进程 stdout 可用数据（最多 max_bytes）；无数据返回空串。
+export extern c function process_read_some(proc: int, max_bytes: int): string;
+
+/// 非阻塞检查子进程 stdout 是否有数据可读：1 有 / 0 无 / -1 已 EOF 或句柄无效。
+export extern c function process_poll(proc: int): int;
+
+/// 等待子进程结束并回收句柄，返回退出码；无效句柄返回 -1。
+export extern c function process_wait(proc: int): int;
+
+/// 强制终止子进程；成功返回 0，失败返回 -1。
+export extern c function process_kill(proc: int): int;
+
+/// 关闭子进程句柄并释放槽（不等待；进程继续运行则成为孤儿）。
+export extern c function process_close(proc: int): int;
+
+/// 关闭子进程 stdin 写端（子进程读到 EOF；sort 等需 EOF 才输出的工具用）。
+export extern c function process_close_input(proc: int): int;
+
+export function 打开进程(cmd: string, args: string[]): int {
+    return process_open(cmd, args);
+}
+
+export function 写入进程(proc: int, text: string): int {
+    return process_write(proc, text);
+}
+
+export function 读取进程行(proc: int): string {
+    return process_read_line(proc);
+}
+
+export function 读取进程数据(proc: int, max_bytes: int): string {
+    return process_read_some(proc, max_bytes);
+}
+
+export function 进程是否有输出(proc: int): int {
+    return process_poll(proc);
+}
+
+export function 等待进程(proc: int): int {
+    return process_wait(proc);
+}
+
+export function 终止进程(proc: int): int {
+    return process_kill(proc);
+}
+
+export function 关闭进程(proc: int): int {
+    return process_close(proc);
+}
+
+export function 关闭进程输入(proc: int): int {
+    return process_close_input(proc);
+}

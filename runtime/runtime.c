@@ -21,6 +21,7 @@ extern void free(void* ptr);
 extern void* calloc(sw_size count, sw_size size);
 extern void* realloc(void* ptr, sw_size size);
 extern void* memcpy(void* dest, const void* src, sw_size count);
+extern void* memmove(void* dest, const void* src, sw_size count);
 extern void* memset(void* dest, int value, sw_size count);
 extern int memcmp(const void* a, const void* b, sw_size count);
 extern int snprintf(char* buffer, sw_size size, const char* format, ...);
@@ -6576,6 +6577,542 @@ int64_t sw_is_process_running(int64_t pid) {
 }
 
 #endif
+
+// ---------------------------------------------------------------------------
+// 进程交互（std/os）：启动子进程并保持 stdin/stdout 管道，逐步读写。
+// 句柄为 0-63 的表索引（与文件 fd 表同模式）；行读取带内部缓冲。
+// ---------------------------------------------------------------------------
+
+#define SW_MAX_PROCS 64
+
+typedef struct sw_proc {
+#if defined(_WIN32)
+    void* h_process;
+    void* stdin_write;
+    void* stdout_read;
+#else
+    int64_t pid;
+    int64_t stdin_fd;
+    int64_t stdout_fd;
+#endif
+    int64_t exited;
+    int64_t eof;
+    int64_t exit_code;
+    char* line_buf;
+    int64_t line_len;
+    int64_t line_cap;
+} sw_proc;
+
+static sw_proc sw_procs[SW_MAX_PROCS];
+
+static int64_t sw_proc_slot_alloc(void) {
+    for (int64_t i = 0; i < SW_MAX_PROCS; i++) {
+#if defined(_WIN32)
+        if (sw_procs[i].h_process == NULL) {
+            return i;
+        }
+#else
+        if (sw_procs[i].pid == 0) {
+            return i;
+        }
+#endif
+    }
+    return -1;
+}
+
+#if defined(_WIN32)
+
+int64_t sw_process_open(sw_string* cmd, sw_array* args) {
+    void* in_read = NULL;
+    void* in_write = NULL;
+    void* out_read = NULL;
+    void* out_write = NULL;
+    if (!CreatePipe(&in_read, &in_write, NULL, 0)) {
+        return -1;
+    }
+    SetHandleInformation(in_read, 1, 1);  // 子进程读 stdin
+    if (!CreatePipe(&out_read, &out_write, NULL, 0)) {
+        CloseHandle(in_read);
+        CloseHandle(in_write);
+        return -1;
+    }
+    SetHandleInformation(out_write, 1, 1);  // 子进程写 stdout
+    char* cmdline = sw_build_cmdline(cmd, args);
+    sw_startup_info startup;
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    startup.flags = 0x00000100u;  // STARTF_USESTDHANDLES
+    startup.h_std_input = in_read;
+    startup.h_std_output = out_write;
+    startup.h_std_error = out_write;
+    sw_proc_info info;
+    memset(&info, 0, sizeof(info));
+    int ok = CreateProcessA(NULL, cmdline, NULL, NULL, 1, 0, NULL, NULL, &startup, &info);
+    CloseHandle(in_read);
+    CloseHandle(out_write);
+    if (!ok) {
+        CloseHandle(in_write);
+        CloseHandle(out_read);
+        return -1;
+    }
+    CloseHandle(info.h_thread);
+    int64_t slot = sw_proc_slot_alloc();
+    if (slot < 0) {
+        CloseHandle(info.h_process);
+        CloseHandle(in_write);
+        CloseHandle(out_read);
+        return -1;
+    }
+    sw_proc* p = &sw_procs[slot];
+    memset(p, 0, sizeof(*p));
+    p->h_process = info.h_process;
+    p->stdin_write = in_write;
+    p->stdout_read = out_read;
+    return slot;
+}
+
+#else  // POSIX（Linux / macOS）
+
+int64_t sw_process_open(sw_string* cmd, sw_array* args) {
+    int in_pipe[2] = {-1, -1};
+    int out_pipe[2] = {-1, -1};
+    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0) {
+        if (in_pipe[0] >= 0) {
+            close(in_pipe[0]);
+            close(in_pipe[1]);
+        }
+        if (out_pipe[0] >= 0) {
+            close(out_pipe[0]);
+            close(out_pipe[1]);
+        }
+        return -1;
+    }
+    char** argv = sw_build_argv(cmd, args);
+    int pid = fork();
+    if (pid < 0) {
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        dup2(in_pipe[0], 0);
+        dup2(out_pipe[1], 1);
+        dup2(out_pipe[1], 2);
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+    int64_t slot = sw_proc_slot_alloc();
+    if (slot < 0) {
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        kill(pid, 9);
+        waitpid(pid, NULL, 0);
+        return -1;
+    }
+    sw_proc* p = &sw_procs[slot];
+    memset(p, 0, sizeof(*p));
+    p->pid = pid;
+    p->stdin_fd = in_pipe[1];
+    p->stdout_fd = out_pipe[0];
+    return slot;
+}
+
+#endif
+
+static int sw_proc_valid(int64_t proc) {
+    if (proc < 0 || proc >= SW_MAX_PROCS) {
+        return 0;
+    }
+    sw_proc* p = &sw_procs[proc];
+#if defined(_WIN32)
+    return p->h_process != NULL;
+#else
+    return p->pid != 0;
+#endif
+}
+
+int64_t sw_process_write(int64_t proc, sw_string* text) {
+    if (!sw_proc_valid(proc) || text == NULL) {
+        return -1;
+    }
+    sw_proc* p = &sw_procs[proc];
+#if defined(_WIN32)
+    if (p->stdin_write == NULL) {
+        return -1;
+    }
+    unsigned int written = 0;
+    if (!WriteFile(p->stdin_write, text->data, (unsigned int)text->len, &written, NULL)) {
+        return -1;
+    }
+    return (int64_t)written;
+#else
+    if (p->stdin_fd < 0) {
+        return -1;
+    }
+    long n = write((int)p->stdin_fd, text->data, (unsigned long)text->len);
+    return n < 0 ? -1 : (int64_t)n;
+#endif
+}
+
+// 关闭子进程 stdin 写端（子进程读到 EOF；sort 等需要）。
+int64_t sw_process_close_input(int64_t proc) {
+    if (!sw_proc_valid(proc)) {
+        return -1;
+    }
+    sw_proc* p = &sw_procs[proc];
+#if defined(_WIN32)
+    if (p->stdin_write == NULL) {
+        return -1;
+    }
+    CloseHandle(p->stdin_write);
+    p->stdin_write = NULL;
+    return 0;
+#else
+    if (p->stdin_fd < 0) {
+        return -1;
+    }
+    close((int)p->stdin_fd);
+    p->stdin_fd = -1;
+    return 0;
+#endif
+}
+
+// 从子进程 stdout 读一块追加到行缓冲；返回字节数（0 EOF，-1 错误）。
+static int64_t sw_proc_fill(sw_proc* p) {
+    char chunk[4096];
+#if defined(_WIN32)
+    unsigned int got = 0;
+    if (!ReadFile(p->stdout_read, chunk, sizeof(chunk), &got, NULL)) {
+        return -1;
+    }
+    if (got == 0) {
+        return 0;
+    }
+#else
+    long got = read((int)p->stdout_fd, chunk, sizeof(chunk));
+    if (got < 0) {
+        return -1;
+    }
+    if (got == 0) {
+        return 0;
+    }
+#endif
+    if (p->line_len + (int64_t)got > p->line_cap) {
+        int64_t new_cap = (p->line_len + (int64_t)got) * 2 + 64;
+        char* bigger = (char*)realloc(p->line_buf, (sw_size)new_cap);
+        if (bigger == NULL) {
+            return -1;
+        }
+        p->line_buf = bigger;
+        p->line_cap = new_cap;
+    }
+    memcpy(p->line_buf + p->line_len, chunk, (uint64_t)got);
+    p->line_len += (int64_t)got;
+    return got;
+}
+
+// 阻塞读一行（去 \n/\r）；EOF 返回空串。
+sw_string* sw_process_read_line(int64_t proc) {
+    if (!sw_proc_valid(proc)) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_proc* p = &sw_procs[proc];
+    while (1) {
+        for (int64_t i = 0; i < p->line_len; i++) {
+            if (p->line_buf[i] == '\n') {
+                int64_t len = i;
+                if (len > 0 && p->line_buf[len - 1] == '\r') {
+                    len--;
+                }
+                sw_string* result = sw_string_from_literal(p->line_buf, len);
+                memmove(p->line_buf, p->line_buf + i + 1, (uint64_t)(p->line_len - i - 1));
+                p->line_len -= (i + 1);
+                return result;
+            }
+        }
+        if (p->eof) {
+            if (p->line_len > 0) {
+                sw_string* result = sw_string_from_literal(p->line_buf, p->line_len);
+                p->line_len = 0;
+                return result;
+            }
+            return sw_string_from_literal("", 0);
+        }
+        int64_t got = sw_proc_fill(p);
+        if (got == 0) {
+            p->eof = 1;
+            if (p->line_len == 0) {
+                return sw_string_from_literal("", 0);
+            }
+        } else if (got < 0) {
+            return sw_string_from_literal("", 0);
+        }
+    }
+}
+
+// 非阻塞读可用数据（缓冲优先；无缓冲时读一次）。
+sw_string* sw_process_read_some(int64_t proc, int64_t max_bytes) {
+    if (!sw_proc_valid(proc)) {
+        return sw_string_from_literal("", 0);
+    }
+    sw_proc* p = &sw_procs[proc];
+    if (max_bytes <= 0) {
+        return sw_string_from_literal("", 0);
+    }
+    if (p->line_len > 0) {
+        int64_t take = p->line_len < max_bytes ? p->line_len : max_bytes;
+        sw_string* result = sw_string_from_literal(p->line_buf, take);
+        memmove(p->line_buf, p->line_buf + take, (uint64_t)(p->line_len - take));
+        p->line_len -= take;
+        return result;
+    }
+    int64_t got = sw_proc_fill(p);
+    if (got <= 0) {
+        if (got == 0) {
+            p->eof = 1;
+        }
+        return sw_string_from_literal("", 0);
+    }
+    int64_t take = got < max_bytes ? got : max_bytes;
+    sw_string* result = sw_string_from_literal(p->line_buf, take);
+    memmove(p->line_buf, p->line_buf + take, (uint64_t)(p->line_len - take));
+    p->line_len -= take;
+    return result;
+}
+
+// 非阻塞检查子进程 stdout 是否有数据可读：1 有 / 0 无 / -1 已 EOF 或无效。
+int64_t sw_process_poll(int64_t proc) {
+    if (!sw_proc_valid(proc)) {
+        return -1;
+    }
+    sw_proc* p = &sw_procs[proc];
+    if (p->eof) {
+        return -1;
+    }
+    if (p->line_len > 0) {
+        return 1;
+    }
+#if defined(_WIN32)
+    // 匿名管道句柄在数据可读/对端关闭时 signaled：WaitForSingleObject(0) 探测。
+    unsigned long result = WaitForSingleObject(p->stdout_read, 0);
+    if (result == 0x00000102u) {  // WAIT_TIMEOUT：无数据
+        return 0;
+    }
+    return 1;  // 有数据或 EOF（由后续 read 区分）
+#else
+    // select 读集合，0 超时
+    unsigned char fds[128];
+    memset(fds, 0, sizeof(fds));
+    int wordsize = 64;
+#if defined(__APPLE__)
+    wordsize = 32;
+#endif
+    int fd = (int)p->stdout_fd;
+    int word = fd / wordsize;
+    int bit = fd % wordsize;
+    if (wordsize == 64) {
+        if (word >= 16) {
+            return -1;
+        }
+        ((unsigned long long*)fds)[word] |= (1ULL << bit);
+    } else {
+        if (word >= 32) {
+            return -1;
+        }
+        ((unsigned int*)fds)[word] |= (1u << bit);
+    }
+    struct {
+        long tv_sec;
+        long tv_usec;
+    } tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    extern int select(int nfds, void* readfds, void* writefds, void* exceptfds, void* timeout);
+    int result = select(fd + 1, fds, NULL, NULL, &tv);
+    if (result < 0) {
+        return -1;
+    }
+    if (result > 0) {
+        return 1;
+    }
+    // 无数据：查进程是否已结束（读到 EOF 由下次 read 发现，这里先返回 0）
+    return 0;
+#endif
+}
+
+int64_t sw_process_wait(int64_t proc) {
+    if (!sw_proc_valid(proc)) {
+        return -1;
+    }
+    sw_proc* p = &sw_procs[proc];
+    int64_t result = 0;
+#if defined(_WIN32)
+    WaitForSingleObject(p->h_process, 0xFFFFFFFFu);
+    unsigned int code = 0;
+    GetExitCodeProcess(p->h_process, &code);
+    CloseHandle(p->h_process);
+    if (p->stdin_write != NULL) {
+        CloseHandle(p->stdin_write);
+    }
+    CloseHandle(p->stdout_read);
+    result = (int64_t)code;
+#else
+    int status = 0;
+    if (waitpid((int)p->pid, &status, 0) < 0) {
+        return -1;
+    }
+    int code = status & 0x7f;
+    result = code == 0 ? ((status >> 8) & 0xff) : (128 + code);
+    if (p->stdin_fd >= 0) {
+        close((int)p->stdin_fd);
+    }
+    close((int)p->stdout_fd);
+#endif
+    if (p->line_buf != NULL) {
+        free(p->line_buf);
+    }
+    memset(p, 0, sizeof(*p));
+    return result;
+}
+
+int64_t sw_process_kill(int64_t proc) {
+    if (!sw_proc_valid(proc)) {
+        return -1;
+    }
+    sw_proc* p = &sw_procs[proc];
+#if defined(_WIN32)
+    return TerminateProcess(p->h_process, 1) ? 0 : -1;
+#else
+    return kill((int)p->pid, 9) == 0 ? 0 : -1;
+#endif
+}
+
+// 关闭句柄并释放槽（不等待子进程；进程继续运行则成为孤儿）。
+int64_t sw_process_close(int64_t proc) {
+    if (!sw_proc_valid(proc)) {
+        return -1;
+    }
+    sw_proc* p = &sw_procs[proc];
+#if defined(_WIN32)
+    CloseHandle(p->h_process);
+    if (p->stdin_write != NULL) {
+        CloseHandle(p->stdin_write);
+    }
+    CloseHandle(p->stdout_read);
+#else
+    if (p->stdin_fd >= 0) {
+        close((int)p->stdin_fd);
+    }
+    close((int)p->stdout_fd);
+    waitpid((int)p->pid, NULL, 1);  // WNOHANG：能收就收
+#endif
+    if (p->line_buf != NULL) {
+        free(p->line_buf);
+    }
+    memset(p, 0, sizeof(*p));
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 终端读键（std/console read_key）：完整按键（方向/功能键扩展码）。
+// 扩展键码：上 1000 下 1001 左 1002 右 1003 Home 1004 End 1005
+//           PgUp 1006 PgDn 1007 F1..F12 1011..1022；普通字符返回 0-255。
+// ---------------------------------------------------------------------------
+
+int64_t sw_read_key(void) {
+#if defined(_WIN32)
+    extern int _getch(void);
+    int first = _getch();
+    if (first == 0x00 || first == 0xE0) {
+        int second = _getch();
+        switch (second) {
+            case 72: return 1000;  // Up
+            case 80: return 1001;  // Down
+            case 75: return 1002;  // Left
+            case 77: return 1003;  // Right
+            case 71: return 1004;  // Home
+            case 79: return 1005;  // End
+            case 73: return 1006;  // PgUp
+            case 81: return 1007;  // PgDn
+            case 82: return 1011;  // F1
+            case 83: return 1012;  // F2
+            case 84: return 1013;  // F3
+            case 85: return 1014;  // F4
+            case 86: return 1015;  // F5
+            case 87: return 1016;  // F6
+            case 88: return 1017;  // F7
+            case 89: return 1018;  // F8
+            case 90: return 1019;  // F9
+            case 91: return 1020;  // F10
+            case 92: return 1021;  // F11
+            case 93: return 1022;  // F12
+            default: return 2000 + second;
+        }
+    }
+    return first;
+#else
+    extern long read(int fd, void* buffer, unsigned long count);
+    unsigned char byte = 0;
+    if (read(0, &byte, 1) != 1) {
+        return -1;
+    }
+    if (byte != 0x1B) {
+        return (int64_t)byte;
+    }
+    // ESC 开头：探测 CSI 序列（select 短超时等第二字节）
+    unsigned char fds[128];
+    memset(fds, 0, sizeof(fds));
+    int wordsize = 64;
+#if defined(__APPLE__)
+    wordsize = 32;
+#endif
+    int word = 0 / wordsize;
+    int bit = 0 % wordsize;
+    if (wordsize == 64) {
+        ((unsigned long long*)fds)[word] |= (1ULL << bit);
+    } else {
+        ((unsigned int*)fds)[word] |= (1u << bit);
+    }
+    struct {
+        long tv_sec;
+        long tv_usec;
+    } tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 30000;  // 30ms
+    extern int select(int nfds, void* readfds, void* writefds, void* exceptfds, void* timeout);
+    if (select(1, fds, NULL, NULL, &tv) <= 0) {
+        return 0x1B;  // 裸 ESC
+    }
+    unsigned char next = 0;
+    if (read(0, &next, 1) != 1) {
+        return 0x1B;
+    }
+    if (next != '[') {
+        return 0x1B;  // 简单忽略非 CSI
+    }
+    unsigned char final_char = 0;
+    if (read(0, &final_char, 1) != 1) {
+        return 0x1B;
+    }
+    switch (final_char) {
+        case 'A': return 1000;  // Up
+        case 'B': return 1001;  // Down
+        case 'C': return 1003;  // Right
+        case 'D': return 1002;  // Left
+        case 'H': return 1004;  // Home
+        case 'F': return 1005;  // End
+        default: return 0x1B;
+    }
+#endif
+}
 
 // ---------------------------------------------------------------------------
 // 网络：TCP 阻塞式（Windows WinSock2 / POSIX socket）
