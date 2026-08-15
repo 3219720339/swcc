@@ -3,12 +3,26 @@
 //
 // 用法：
 //   import { abs, sqrt, floor, min, max } from "std/math";
+//   import { mean_float, median_int, variance_float, stdev_float } from "std/math";
 //   const x = abs(-5);          // 5
 //   const y = sqrt(16.0);       // 4.0
 //   const z = floor(2.7);       // 2.0
 //
 // 注意：取整/开方/绝对值等浮点函数均返回 float（f64）。
+// 数组统计：mean/median/variance/stdev 返回 float；空数组按
+// 0 / 0.0 处理（不抛异常）；min/max/sum 转发 std/array 的实现。
 // ===========================================================================
+
+import {
+    sort_int,
+    sort_float,
+    sum_int as array_sum_int,
+    sum_float as array_sum_float,
+    min_int as array_min_int,
+    max_int as array_max_int,
+    min_float as array_min_float,
+    max_float as array_max_float,
+} from "std/array";
 
 /// 整数绝对值：abs(-5) == 5。
 export extern c function abs(value: int): int;
@@ -254,4 +268,203 @@ export function 按位数舍入(value: float, digits: int): float {
 
 export function 线性插值(a: float, b: float, t: float): float {
     return lerp(a, b, t);
+}
+
+// ---------------------------------------------------------------------------
+// 数组统计（纯 Sw）：均值 / 中位数 / 方差 / 标准差；min/max/sum 转发 std/array。
+// 约定：所有统计函数对空数组返回 0.0；方差与标准差为总体（除以 n）。
+// ---------------------------------------------------------------------------
+
+/// int[] 平均值；空数组返回 0.0。示例：mean_int([1,2,3,4]) == 2.5。
+export function mean_int(items: int[]): float {
+    const n = items.length;
+    if (n == 0) {
+        return 0.0;
+    }
+    let total = 0.0;
+    let i = 0;
+    while (i < n) {
+        total = total + items[i] as float;
+        i++;
+    }
+    return total / n as float;
+}
+
+/// float[] 平均值；空数组返回 0.0。示例：mean_float([1.0,2.0,3.0]) == 2.0。
+export function mean_float(items: float[]): float {
+    const n = items.length;
+    if (n == 0) {
+        return 0.0;
+    }
+    let total = 0.0;
+    let i = 0;
+    while (i < n) {
+        total = total + items[i];
+        i++;
+    }
+    return total / n as float;
+}
+
+/// int[] 中位数（排序后取中间；偶数个取中间两数平均）；空数组返回 0.0。
+export function median_int(items: int[]): float {
+    const n = items.length;
+    if (n == 0) {
+        return 0.0;
+    }
+    const sorted = items[0 : n];
+    sort_int(sorted);
+    if (n % 2 == 1) {
+        return sorted[n / 2] as float;
+    }
+    const hi = n / 2;
+    return (sorted[hi - 1] as float + sorted[hi] as float) / 2.0;
+}
+
+/// float[] 中位数（排序后取中间；偶数个取中间两数平均）；空数组返回 0.0。
+export function median_float(items: float[]): float {
+    const n = items.length;
+    if (n == 0) {
+        return 0.0;
+    }
+    const sorted = items[0 : n];
+    sort_float(sorted);
+    if (n % 2 == 1) {
+        return sorted[n / 2];
+    }
+    const hi = n / 2;
+    return (sorted[hi - 1] + sorted[hi]) / 2.0;
+}
+
+/// int[] 总体方差（除以 n）；空数组返回 0.0。示例：variance_int([2,4,4,4,5,5,7,9]) == 4.0。
+export function variance_int(items: int[]): float {
+    const n = items.length;
+    if (n == 0) {
+        return 0.0;
+    }
+    const m = mean_int(items);
+    let sum_sq = 0.0;
+    let i = 0;
+    while (i < n) {
+        const diff = items[i] as float - m;
+        sum_sq = sum_sq + diff * diff;
+        i++;
+    }
+    return sum_sq / n as float;
+}
+
+/// float[] 总体方差（除以 n）；空数组返回 0.0。
+export function variance_float(items: float[]): float {
+    const n = items.length;
+    if (n == 0) {
+        return 0.0;
+    }
+    const m = mean_float(items);
+    let sum_sq = 0.0;
+    let i = 0;
+    while (i < n) {
+        const diff = items[i] - m;
+        sum_sq = sum_sq + diff * diff;
+        i++;
+    }
+    return sum_sq / n as float;
+}
+
+/// int[] 总体标准差（方差的平方根）；空数组返回 0.0。
+export function stdev_int(items: int[]): float {
+    return sqrt(variance_int(items));
+}
+
+/// float[] 总体标准差（方差的平方根）；空数组返回 0.0。
+export function stdev_float(items: float[]): float {
+    return sqrt(variance_float(items));
+}
+
+/// int[] 元素之和；空数组返回 0（转发 std/array 实现）。
+export function sum_int(items: int[]): int {
+    return array_sum_int(items);
+}
+
+/// float[] 元素之和；空数组返回 0.0（转发 std/array 实现）。
+export function sum_float(items: float[]): float {
+    return array_sum_float(items);
+}
+
+/// int[] 最小值；空数组返回 0（转发 std/array 实现）。
+export function min_int(items: int[]): int {
+    return array_min_int(items);
+}
+
+/// int[] 最大值；空数组返回 0（转发 std/array 实现）。
+export function max_int(items: int[]): int {
+    return array_max_int(items);
+}
+
+/// float[] 最小值；空数组返回 0.0（转发 std/array 实现）。
+export function min_float(items: float[]): float {
+    return array_min_float(items);
+}
+
+/// float[] 最大值；空数组返回 0.0（转发 std/array 实现）。
+export function max_float(items: float[]): float {
+    return array_max_float(items);
+}
+
+// ---------------------------------------------------------------------------
+// 中文函数名（数组统计，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function 取平均值整数(items: int[]): float {
+    return mean_int(items);
+}
+
+export function 取平均值小数(items: float[]): float {
+    return mean_float(items);
+}
+
+export function 取中位数整数(items: int[]): float {
+    return median_int(items);
+}
+
+export function 取中位数小数(items: float[]): float {
+    return median_float(items);
+}
+
+export function 取方差整数(items: int[]): float {
+    return variance_int(items);
+}
+
+export function 取方差小数(items: float[]): float {
+    return variance_float(items);
+}
+
+export function 取标准差整数(items: int[]): float {
+    return stdev_int(items);
+}
+
+export function 取标准差小数(items: float[]): float {
+    return stdev_float(items);
+}
+
+export function 取数组和整数(items: int[]): int {
+    return sum_int(items);
+}
+
+export function 取数组和小数(items: float[]): float {
+    return sum_float(items);
+}
+
+export function 取数组最小值整数(items: int[]): int {
+    return min_int(items);
+}
+
+export function 取数组最大值整数(items: int[]): int {
+    return max_int(items);
+}
+
+export function 取数组最小值小数(items: float[]): float {
+    return min_float(items);
+}
+
+export function 取数组最大值小数(items: float[]): float {
+    return max_float(items);
 }

@@ -10,6 +10,16 @@
 //
 // 返回值为 map：status(int) / body(string) / headers(string)。
 // 也提供便捷包装 http_status(resp) / http_body(resp)。
+//
+// 能力：
+//   - 自动跟随 HTTP 重定向（301/302/303/307/308，最多 5 跳；Location 支持
+//     绝对 URL 与相对路径；仅 http://，https 不跟随）
+//   - 响应体支持 Content-Length 与 Transfer-Encoding: chunked 两种分帧
+//     （一次性请求与会话均支持）
+//   - 超时：http_get_timeout/http_post_timeout（一次性）、
+//     http_open_timeout（会话），timeout_ms <= 0 不限时
+//   - keep-alive 会话：http_open/http_request_on/http_close 复用连接
+//
 // 说明：v0.1 仅支持 http://（明文），https/TLS 留待后续。
 // ===========================================================================
 
@@ -23,6 +33,13 @@ export extern c function http_get(url: string): ptr<void>;
 /// 发起 POST 请求（Content-Type: application/x-www-form-urlencoded），
 /// 返回 map：status / body / headers。
 export extern c function http_post(url: string, body: string): ptr<void>;
+
+/// 带超时的 GET（timeout_ms 毫秒，<=0 不限时）；返回 map：status/body/headers。
+/// 连接、收发均受超时约束；超时返回 status 0、body 空串。
+export extern c function http_get_timeout(url: string, timeout_ms: int): ptr<void>;
+
+/// 带超时的 POST（timeout_ms 毫秒，<=0 不限时）；返回 map：status/body/headers。
+export extern c function http_post_timeout(url: string, body: string, timeout_ms: int): ptr<void>;
 
 /// 取响应状态码（便捷包装）。
 export function http_status(resp: ptr<void>): int {
@@ -51,6 +68,18 @@ export function 网页POST(url: string, body: string): ptr<void> {
     return http_post(url, body);
 }
 
+export function 带超时取网页(url: string, timeout_ms: int): ptr<void> {
+    return http_get_timeout(url, timeout_ms);
+}
+
+export function 带超时网页POST(url: string, body: string, timeout_ms: int): ptr<void> {
+    return http_post_timeout(url, body, timeout_ms);
+}
+
+export function 带超时打开HTTP会话(host: string, port: int, timeout_ms: int): int {
+    return http_open_timeout(host, port, timeout_ms);
+}
+
 export function 取状态码(resp: ptr<void>): int {
     return http_status(resp);
 }
@@ -72,9 +101,12 @@ export function 取网页JSON(url: string): ptr<void> {
 
 /// 建立 HTTP keep-alive 会话（同一连接复用多次请求）；失败返回 -1。
 /// 与 http_request_on/http_close 配合：会话内每次请求复用连接，
-/// 响应按 Content-Length 分帧；服务器关闭连接时请求返回 status 0，
+/// 响应按 Content-Length / chunked 分帧；服务器关闭连接时请求返回 status 0，
 /// 需重新 http_open。
 export extern c function http_open(host: string, port: int): int;
+
+/// 带连接超时的会话打开（timeout_ms 毫秒，<=0 不限时）；收发亦受超时约束。
+export extern c function http_open_timeout(host: string, port: int, timeout_ms: int): int;
 
 /// 在会话上发请求（method/path/headers(map，可 null)/body），返回
 /// map：status/body/headers。连接保持复用。

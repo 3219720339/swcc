@@ -1987,6 +1987,143 @@ int64_t utf8_is_printable(sw_string* text) {
     return 1;
 }
 
+// 码点是否为 CJK 字符（中日韩统一表意文字/扩展 A/B/C/D/E、兼容表意、
+// 假名、谚文）。
+static int sw_codepoint_is_cjk(int64_t cp) {
+    return (cp >= 0x4E00 && cp <= 0x9FFF) ||   // 统一表意文字
+           (cp >= 0x3400 && cp <= 0x4DBF) ||   // 扩展 A
+           (cp >= 0x20000 && cp <= 0x2A6DF) || // 扩展 B
+           (cp >= 0x2A700 && cp <= 0x2B73F) || // 扩展 C
+           (cp >= 0x2B740 && cp <= 0x2B81F) || // 扩展 D
+           (cp >= 0x2B820 && cp <= 0x2CEAF) || // 扩展 E
+           (cp >= 0xF900 && cp <= 0xFAFF) ||   // 兼容表意
+           (cp >= 0x2F800 && cp <= 0x2FA1F) || // 兼容表意补充
+           (cp >= 0x3040 && cp <= 0x30FF) ||   // 假名（平/片）
+           (cp >= 0x31F0 && cp <= 0x31FF) ||   // 片假名扩展
+           (cp >= 0xAC00 && cp <= 0xD7AF) ||   // 谚文音节
+           (cp >= 0x1100 && cp <= 0x11FF);     // 谚文字母
+}
+
+// 码点是否为字母（Unicode 字母类：拉丁/希腊/西里尔/扩展拉丁，
+// 以及 CJK 表意文字——Unicode 归类为 Letter Other (Lo)，面向中文用户
+// 视为字母）。
+static int sw_codepoint_is_letter(int64_t cp) {
+    if (cp >= 'a' && cp <= 'z') {
+        return 1;
+    }
+    if (cp >= 'A' && cp <= 'Z') {
+        return 1;
+    }
+    if (sw_codepoint_is_cjk(cp)) {
+        return 1;
+    }
+    return (cp >= 0x00C0 && cp <= 0x02AF) ||   // 拉丁-1 补充 + 拉丁扩展 A/B
+           (cp >= 0x0370 && cp <= 0x03FF) ||   // 希腊
+           (cp >= 0x0400 && cp <= 0x052F) ||   // 西里尔 + 补充
+           (cp >= 0x1E00 && cp <= 0x1EFF) ||   // 拉丁扩展附加
+           (cp >= 0x2C60 && cp <= 0x2C7F) ||   // 拉丁扩展 C
+           (cp >= 0xA720 && cp <= 0xA7FF) ||   // 拉丁扩展 D
+           (cp >= 0x2DE0 && cp <= 0x2DFF) ||   // 西里尔扩展 A
+           (cp >= 0xA640 && cp <= 0xA69F) ||   // 西里尔扩展 B
+           (cp >= 0x0100 && cp <= 0x017F);     // 拉丁扩展-A（含 ü/é 等）
+}
+
+// 码点是否为数字（ASCII + 全角 + 阿拉伯-印度数字等）。
+static int sw_codepoint_is_digit(int64_t cp) {
+    return (cp >= '0' && cp <= '9') ||
+           (cp >= 0xFF10 && cp <= 0xFF19) ||   // 全角数字
+           (cp >= 0x0660 && cp <= 0x0669) ||   // 阿拉伯-印度数字
+           (cp >= 0x06F0 && cp <= 0x06F9) ||   // 扩展阿拉伯-印度数字
+           (cp >= 0x0966 && cp <= 0x096F) ||   // 天城文数字
+           (cp >= 0x0E50 && cp <= 0x0E59) ||   // 泰文数字
+           (cp >= 0x0ED0 && cp <= 0x0ED9) ||   // 老挝数字
+           (cp >= 0x3007 && cp <= 0x3007) ||   // 〇
+           (cp >= 0x00B2 && cp <= 0x00B3) ||   // ² ³
+           (cp >= 0x00BC && cp <= 0x00BE);     // ¼ ½ ¾
+}
+
+// 是否全部字符为 CJK（空串/含非 CJK 返回 false）。
+int64_t sw_is_cjk(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return 0;
+    }
+    int64_t index = 0;
+    while (index < text->len) {
+        int64_t char_len = sw_utf8_char_length(text->data, index, text->len);
+        int64_t cp = sw_utf8_decode(text->data, index, char_len);
+        if (cp < 0 || !sw_codepoint_is_cjk(cp)) {
+            return 0;
+        }
+        index += char_len;
+    }
+    return 1;
+}
+
+// 是否全部字符为字母（空串/含非字母返回 false）。
+int64_t sw_is_letter(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return 0;
+    }
+    int64_t index = 0;
+    while (index < text->len) {
+        int64_t char_len = sw_utf8_char_length(text->data, index, text->len);
+        int64_t cp = sw_utf8_decode(text->data, index, char_len);
+        if (cp < 0 || !sw_codepoint_is_letter(cp)) {
+            return 0;
+        }
+        index += char_len;
+    }
+    return 1;
+}
+
+// 是否全部字符为数字（空串/含非数字返回 false）。
+int64_t sw_is_digit(sw_string* text) {
+    if (text == NULL || text->len == 0) {
+        return 0;
+    }
+    int64_t index = 0;
+    while (index < text->len) {
+        int64_t char_len = sw_utf8_char_length(text->data, index, text->len);
+        int64_t cp = sw_utf8_decode(text->data, index, char_len);
+        if (cp < 0 || !sw_codepoint_is_digit(cp)) {
+            return 0;
+        }
+        index += char_len;
+    }
+    return 1;
+}
+
+// 字符显示宽度：CJK/全角宽字符记 2，其余记 1（终端对齐用）。
+static int sw_codepoint_width(int64_t cp) {
+    if (sw_codepoint_is_cjk(cp)) {
+        return 2;
+    }
+    return (cp >= 0xFF01 && cp <= 0xFF60) ||   // 全角标点/符号
+                   (cp >= 0x3000 && cp <= 0x303F) ||   // CJK 标点
+                   (cp >= 0x2018 && cp <= 0x201F) ||   // 引号
+                   (cp >= 0x3001 && cp <= 0x3002)
+               ? 2
+               : 1;
+}
+
+// 字符串总显示宽度（每字符 CJK/全角=2，其余=1）。
+int64_t sw_char_width(sw_string* text) {
+    if (text == NULL) {
+        return 0;
+    }
+    int64_t total = 0;
+    int64_t index = 0;
+    while (index < text->len) {
+        int64_t char_len = sw_utf8_char_length(text->data, index, text->len);
+        int64_t cp = sw_utf8_decode(text->data, index, char_len);
+        if (cp >= 0) {
+            total += sw_codepoint_width(cp);
+        }
+        index += char_len;
+    }
+    return total;
+}
+
 // ---------------------------------------------------------------------------
 // time：毫秒时间戳与睡眠。
 // ---------------------------------------------------------------------------
@@ -3558,6 +3695,150 @@ sw_string* sw_base64_decode(sw_string* text) {
         }
         if (c < 0) {
             break;
+        }
+    }
+    return sw_string_from_literal(buffer, out);
+}
+
+// ---- base32：RFC 4648 字母表 A-Z2-7，= 填充 ----
+
+static const char sw_base32_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+sw_string* sw_base32_encode(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t out_len = ((text->len + 4) / 5) * 8;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)out_len + 1);
+    int64_t out = 0;
+    int64_t i = 0;
+    while (i + 4 < text->len) {
+        uint64_t value = ((uint64_t)(unsigned char)text->data[i] << 32) |
+                         ((uint64_t)(unsigned char)text->data[i + 1] << 24) |
+                         ((uint64_t)(unsigned char)text->data[i + 2] << 16) |
+                         ((uint64_t)(unsigned char)text->data[i + 3] << 8) |
+                         (uint64_t)(unsigned char)text->data[i + 4];
+        buffer[out++] = sw_base32_chars[(value >> 35) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 30) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 25) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 20) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 15) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 10) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 5) & 0x1F];
+        buffer[out++] = sw_base32_chars[value & 0x1F];
+        i += 5;
+    }
+    int64_t remaining = text->len - i;
+    if (remaining == 1) {
+        uint64_t value = (uint64_t)(unsigned char)text->data[i] << 32;
+        buffer[out++] = sw_base32_chars[(value >> 35) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 30) & 0x1F];
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+    } else if (remaining == 2) {
+        uint64_t value = ((uint64_t)(unsigned char)text->data[i] << 32) |
+                         ((uint64_t)(unsigned char)text->data[i + 1] << 24);
+        buffer[out++] = sw_base32_chars[(value >> 35) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 30) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 25) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 20) & 0x1F];
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+    } else if (remaining == 3) {
+        uint64_t value = ((uint64_t)(unsigned char)text->data[i] << 32) |
+                         ((uint64_t)(unsigned char)text->data[i + 1] << 24) |
+                         ((uint64_t)(unsigned char)text->data[i + 2] << 16);
+        buffer[out++] = sw_base32_chars[(value >> 35) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 30) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 25) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 20) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 15) & 0x1F];
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+        buffer[out++] = '=';
+    } else if (remaining == 4) {
+        uint64_t value = ((uint64_t)(unsigned char)text->data[i] << 32) |
+                         ((uint64_t)(unsigned char)text->data[i + 1] << 24) |
+                         ((uint64_t)(unsigned char)text->data[i + 2] << 16) |
+                         ((uint64_t)(unsigned char)text->data[i + 3] << 8);
+        buffer[out++] = sw_base32_chars[(value >> 35) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 30) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 25) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 20) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 15) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 10) & 0x1F];
+        buffer[out++] = sw_base32_chars[(value >> 5) & 0x1F];
+        buffer[out++] = '=';
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+static int sw_base32_value(char c) {
+    if (c >= 'A' && c <= 'Z') {
+        return c - 'A';
+    }
+    if (c >= '2' && c <= '7') {
+        return c - '2' + 26;
+    }
+    return -1;
+}
+
+sw_string* sw_base32_decode(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    int64_t out = 0;
+    int64_t i = 0;
+    while (i < text->len) {
+        int v[8];
+        int count = 0;
+        while (i < text->len && count < 8) {
+            char c = text->data[i++];
+            if (c == '=') {
+                continue;
+            }
+            int val = sw_base32_value(c);
+            if (val < 0) {
+                count = -1;
+                break;
+            }
+            v[count++] = val;
+        }
+        if (count < 0) {
+            break;
+        }
+        if (count == 0) {
+            continue;
+        }
+        // 每 8 个 5-bit 值还原 5 字节；不足时按位拼接可用部分。
+        uint64_t value = 0;
+        for (int k = 0; k < count; k++) {
+            value = (value << 5) | (uint64_t)v[k];
+        }
+        // 对齐：凑满 40 位后输出 5 字节。
+        if (count == 8) {
+            buffer[out++] = (char)((value >> 32) & 0xFF);
+            buffer[out++] = (char)((value >> 24) & 0xFF);
+            buffer[out++] = (char)((value >> 16) & 0xFF);
+            buffer[out++] = (char)((value >> 8) & 0xFF);
+            buffer[out++] = (char)(value & 0xFF);
+        } else {
+            // 尾部：count 个 5-bit 值共 count*5 位，按字节数截取。
+            int bits = count * 5;
+            int bytes = bits / 8;
+            value <<= (40 - bits);
+            for (int k = 0; k < bytes; k++) {
+                int shift = 32 - k * 8;
+                buffer[out++] = (char)((value >> shift) & 0xFF);
+            }
         }
     }
     return sw_string_from_literal(buffer, out);
@@ -5441,6 +5722,112 @@ sw_string* sw_html_escape(sw_string* text) {
             default:
                 buffer[out++] = c;
         }
+    }
+    buffer[out] = 0;
+    return sw_string_from_literal(buffer, out);
+}
+
+// HTML 反转义：&amp; &lt; &gt; &quot; &#39; 以及数字实体 &#NN; / &#xHH;。
+sw_string* sw_html_unescape(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+    int64_t out = 0;
+    int64_t i = 0;
+    while (i < text->len) {
+        if (text->data[i] == '&') {
+            // 找结尾 ';'
+            int64_t end = i + 1;
+            while (end < text->len && text->data[end] != ';' && end - i <= 32) {
+                end++;
+            }
+            if (end < text->len && text->data[end] == ';') {
+                int64_t ent_len = end - i - 1;
+                if (ent_len == 3 && memcmp(text->data + i + 1, "amp", 3) == 0) {
+                    buffer[out++] = '&';
+                    i = end + 1;
+                    continue;
+                }
+                if (ent_len == 2 && memcmp(text->data + i + 1, "lt", 2) == 0) {
+                    buffer[out++] = '<';
+                    i = end + 1;
+                    continue;
+                }
+                if (ent_len == 2 && memcmp(text->data + i + 1, "gt", 2) == 0) {
+                    buffer[out++] = '>';
+                    i = end + 1;
+                    continue;
+                }
+                if (ent_len == 4 && memcmp(text->data + i + 1, "quot", 4) == 0) {
+                    buffer[out++] = '"';
+                    i = end + 1;
+                    continue;
+                }
+                if (ent_len == 4 && memcmp(text->data + i + 1, "#39;", 4) != 0 &&
+                    memcmp(text->data + i + 1, "apos", 4) == 0) {
+                    buffer[out++] = '\'';
+                    i = end + 1;
+                    continue;
+                }
+                if (ent_len == 4 && memcmp(text->data + i + 1, "#39", 3) == 0) {
+                    buffer[out++] = '\'';
+                    i = end + 1;
+                    continue;
+                }
+                // 数字实体 &#123; 或 &#x1F;
+                if (ent_len >= 2 && text->data[i + 1] == '#') {
+                    int64_t code = 0;
+                    int64_t k = i + 2;
+                    int hex_mode = 0;
+                    if (k < end && (text->data[k] == 'x' || text->data[k] == 'X')) {
+                        hex_mode = 1;
+                        k++;
+                    }
+                    int64_t digits = 0;
+                    int valid = 1;
+                    while (k < end) {
+                        char c = text->data[k];
+                        int digit = -1;
+                        if (c >= '0' && c <= '9') {
+                            digit = c - '0';
+                        } else if (hex_mode && c >= 'a' && c <= 'f') {
+                            digit = c - 'a' + 10;
+                        } else if (hex_mode && c >= 'A' && c <= 'F') {
+                            digit = c - 'A' + 10;
+                        } else {
+                            valid = 0;
+                            break;
+                        }
+                        code = code * (hex_mode ? 16 : 10) + digit;
+                        digits++;
+                        k++;
+                    }
+                    if (valid && digits > 0 && code >= 0 && code <= 0x10FFFF) {
+                        // 码点转 UTF-8。
+                        if (code < 0x80) {
+                            buffer[out++] = (char)code;
+                        } else if (code < 0x800) {
+                            buffer[out++] = (char)(0xC0 | (code >> 6));
+                            buffer[out++] = (char)(0x80 | (code & 0x3F));
+                        } else if (code < 0x10000) {
+                            buffer[out++] = (char)(0xE0 | (code >> 12));
+                            buffer[out++] = (char)(0x80 | ((code >> 6) & 0x3F));
+                            buffer[out++] = (char)(0x80 | (code & 0x3F));
+                        } else {
+                            buffer[out++] = (char)(0xF0 | (code >> 18));
+                            buffer[out++] = (char)(0x80 | ((code >> 12) & 0x3F));
+                            buffer[out++] = (char)(0x80 | ((code >> 6) & 0x3F));
+                            buffer[out++] = (char)(0x80 | (code & 0x3F));
+                        }
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+            // 未识别的实体按字面复制 '&'。
+        }
+        buffer[out++] = text->data[i++];
     }
     buffer[out] = 0;
     return sw_string_from_literal(buffer, out);
@@ -10469,7 +10856,8 @@ void* url_parse(sw_string* url) {
     return map;
 }
 
-// 解析查询字符串 "a=1&b=2" 为 map（string 值，自动 URL 解码）。
+// 解析查询字符串 "a=1&b=2" 为 map（string 值，键值自动 URL 解码；
+// '+' 视为空格，符合 application/x-www-form-urlencoded）。
 void* url_query(sw_string* query) {
     void* map = sw_map_new();
     if (query == NULL) {
@@ -10492,46 +10880,81 @@ void* url_query(sw_string* query) {
             sw_string* value = eq < seg_end && eq + 1 < seg_end
                 ? sw_string_from_literal(query->data + eq + 1, seg_end - eq - 1)
                 : sw_string_from_literal("", 0);
-            sw_map_set(map, key, value);
+            // 先 '+' -> 空格，再整体百分号解码
+            sw_string* key_spaced = sw_string_from_literal(key->data, key->len);
+            sw_string* value_spaced = sw_string_from_literal(value->data, value->len);
+            for (int64_t k = 0; k < key_spaced->len; k++) {
+                if (key_spaced->data[k] == '+') {
+                    key_spaced->data[k] = ' ';
+                }
+            }
+            for (int64_t k = 0; k < value_spaced->len; k++) {
+                if (value_spaced->data[k] == '+') {
+                    value_spaced->data[k] = ' ';
+                }
+            }
+            sw_map_set(map, sw_url_decode(key_spaced), sw_url_decode(value_spaced));
         }
         i = seg_end + 1;
     }
     return map;
 }
 
-// 把 map 序列化为查询字符串 "a=1&b=2"（URL 编码）。
+// 把 map 序列化为查询字符串 "a=1&b=2"（URL 编码键与值，动态扩容不截断）。
 sw_string* url_build_query(void* map) {
     sw_array* keys = sw_map_keys(map);
     sw_array* values = sw_map_values(map);
     int64_t* kdata = (int64_t*)keys->data;
     int64_t* vdata = (int64_t*)values->data;
-    int64_t cap = 64;
+    int64_t cap = 256;
     char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
     int64_t used = 0;
     for (int64_t i = 0; i < keys->len; i++) {
         sw_string* key = (sw_string*)kdata[i];
         sw_string* value = (sw_string*)vdata[i];
-        if (i > 0 && used + 1 < cap) {
+        if (i > 0) {
+            if (used + 1 >= cap) {
+                cap *= 2;
+                buffer = (char*)sw_gc_alloc((uint64_t)cap);
+            }
             buffer[used++] = '&';
         }
-        for (int64_t k = 0; k < key->len && used + 16 < cap; k++) {
+        for (int64_t k = 0; k < key->len; k++) {
             unsigned char c = (unsigned char)key->data[k];
             if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                 (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+                if (used + 1 >= cap) {
+                    cap *= 2;
+                    buffer = (char*)sw_gc_alloc((uint64_t)cap);
+                }
                 buffer[used++] = (char)c;
             } else {
+                if (used + 3 >= cap) {
+                    cap *= 2;
+                    buffer = (char*)sw_gc_alloc((uint64_t)cap);
+                }
                 used += snprintf(buffer + used, (sw_size)(cap - used), "%%%02X", c);
             }
         }
-        if (used + 1 < cap) {
-            buffer[used++] = '=';
+        if (used + 1 >= cap) {
+            cap *= 2;
+            buffer = (char*)sw_gc_alloc((uint64_t)cap);
         }
-        for (int64_t k = 0; k < value->len && used + 16 < cap; k++) {
+        buffer[used++] = '=';
+        for (int64_t k = 0; k < value->len; k++) {
             unsigned char c = (unsigned char)value->data[k];
             if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                 (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+                if (used + 1 >= cap) {
+                    cap *= 2;
+                    buffer = (char*)sw_gc_alloc((uint64_t)cap);
+                }
                 buffer[used++] = (char)c;
             } else {
+                if (used + 3 >= cap) {
+                    cap *= 2;
+                    buffer = (char*)sw_gc_alloc((uint64_t)cap);
+                }
                 used += snprintf(buffer + used, (sw_size)(cap - used), "%%%02X", c);
             }
         }
@@ -10589,117 +11012,410 @@ static sw_string* sw_http_read_all(int64_t fd) {
     return sw_string_from_literal(buffer, used);
 }
 
-// 发 HTTP 请求（method/url/body），返回 map：status/body/headers。
-void* http_request(sw_string* method, sw_string* url, sw_string* body) {
-    void* result = sw_map_new();
-    sw_map_set_int(result, sw_string_from_literal("status", 6), 0);
-    sw_map_set(result, sw_string_from_literal("body", 4), sw_string_from_literal("", 0));
-    sw_map_set(result, sw_string_from_literal("headers", 7), sw_string_from_literal("", 0));
-    if (url == NULL) {
-        return result;
+// 读响应头：从响应文本中解析状态码、Content-Length、Transfer-Encoding、
+// Location、Connection 等关键头，返回 header_end（\r\n\r\n 后 body 起点，
+// 找不到返回 -1）。
+typedef struct {
+    int64_t status;
+    int64_t content_length;
+    int64_t chunked;       // Transfer-Encoding: chunked
+    int64_t keep_close;    // Connection: close
+    int64_t has_location;
+    int64_t location_start;
+    int64_t location_len;
+} sw_http_resp_meta;
+
+static sw_string* sw_http_trim(sw_string* text) {
+    int64_t s = 0;
+    int64_t e = text->len;
+    while (s < e && (text->data[s] == ' ' || text->data[s] == '\t' || text->data[s] == '\r' || text->data[s] == '\n')) {
+        s++;
     }
-    void* parts = url_parse(url);
-    sw_string* host = sw_map_get(parts, sw_string_from_literal("host", 4));
-    int64_t port = sw_map_get_int(parts, sw_string_from_literal("port", 4), 80);
-    sw_string* path = sw_map_get(parts, sw_string_from_literal("path", 4));
-    sw_string* query = sw_map_get(parts, sw_string_from_literal("query", 5));
-    if (host == NULL || host->len == 0) {
-        return result;
+    while (e > s && (text->data[e - 1] == ' ' || text->data[e - 1] == '\t' || text->data[e - 1] == '\r' || text->data[e - 1] == '\n')) {
+        e--;
     }
-    int64_t fd = sw_net_connect(host, port);
-    if (fd < 0) {
-        return result;
-    }
-    // 请求行与请求头
-    char* request = (char*)sw_gc_alloc(4096);
-    int64_t used = 0;
-    for (int64_t i = 0; i < method->len && used < 1024; i++) {
-        request[used++] = method->data[i];
-    }
-    request[used++] = ' ';
-    for (int64_t i = 0; i < path->len && used < 2048; i++) {
-        request[used++] = path->data[i];
-    }
-    if (query->len > 0) {
-        request[used++] = '?';
-        for (int64_t i = 0; i < query->len && used < 2048; i++) {
-            request[used++] = query->data[i];
+    return sw_string_from_literal(text->data + s, e - s);
+}
+
+static int64_t sw_http_header_value(sw_string* text, int64_t start, int64_t end, const char* name, int64_t name_len, int64_t* out_start, int64_t* out_len) {
+    // 在 [start,end) 的头部区逐行找 "Name:"（大小写不敏感），返回值的起止。
+    int64_t i = start;
+    while (i < end) {
+        int64_t line_end = i;
+        while (line_end < end && text->data[line_end] != '\n') {
+            line_end++;
         }
-    }
-    request[used++] = ' ';
-    request[used++] = 'H';
-    request[used++] = 'T';
-    request[used++] = 'T';
-    request[used++] = 'P';
-    request[used++] = '/';
-    request[used++] = '1';
-    request[used++] = '.';
-    request[used++] = '1';
-    request[used++] = '\r';
-    request[used++] = '\n';
-    const char* host_hdr = "Host: ";
-    const char* conn_hdr = "Connection: close\r\n";
-    const char* len_hdr = "Content-Length: ";
-    for (int64_t i = 0; host_hdr[i]; i++) {
-        request[used++] = host_hdr[i];
-    }
-    for (int64_t i = 0; i < host->len && used < 3072; i++) {
-        request[used++] = host->data[i];
-    }
-    request[used++] = '\r';
-    request[used++] = '\n';
-    for (int64_t i = 0; conn_hdr[i]; i++) {
-        request[used++] = conn_hdr[i];
-    }
-    int64_t body_len = body != NULL ? body->len : 0;
-    if (body_len > 0) {
-        for (int64_t i = 0; len_hdr[i]; i++) {
-            request[used++] = len_hdr[i];
+        int64_t line_len = line_end - i;
+        if (line_len > 0 && text->data[line_end - 1] == '\r') {
+            line_len--;
         }
-        used += snprintf(request + used, (sw_size)(4096 - used), "%lld\r\n", (long long)body_len);
-        const char* ctype = "Content-Type: application/x-www-form-urlencoded\r\n";
-        for (int64_t i = 0; ctype[i] && used < 4090; i++) {
-            request[used++] = ctype[i];
+        if (line_len > name_len + 1 &&
+            (text->data[i + name_len] == ':') &&
+            text->data[i + name_len + 1] == ' ') {
+            int64_t match = 1;
+            for (int64_t k = 0; k < name_len; k++) {
+                char a = text->data[i + k];
+                char b = name[k];
+                if (a >= 'A' && a <= 'Z') {
+                    a = (char)(a - 'A' + 'a');
+                }
+                if (b >= 'A' && b <= 'Z') {
+                    b = (char)(b - 'A' + 'a');
+                }
+                if (a != b) {
+                    match = 0;
+                    break;
+                }
+            }
+            if (match) {
+                int64_t vs = i + name_len + 1;
+                while (vs < i + line_len && (text->data[vs] == ' ' || text->data[vs] == '\t')) {
+                    vs++;
+                }
+                *out_start = vs;
+                *out_len = i + line_len - vs;
+                return 1;
+            }
         }
+        i = line_end + 1;
     }
-    request[used++] = '\r';
-    request[used++] = '\n';
-    sw_string* head = sw_string_from_literal(request, used);
-    sw_net_send(fd, head);
-    if (body_len > 0) {
-        sw_net_send(fd, body);
-    }
-    sw_string* response = sw_http_read_all(fd);
-    sw_net_close(fd);
-    // 解析：状态行 \r\n 头 \r\n\r\n 体
-    int64_t status = sw_http_parse_status(response);
-    sw_map_set_int(result, sw_string_from_literal("status", 6), status);
-    int64_t header_end = 0;
-    for (int64_t i = 0; i + 3 < response->len; i++) {
-        if (response->data[i] == '\r' && response->data[i + 1] == '\n' &&
-            response->data[i + 2] == '\r' && response->data[i + 3] == '\n') {
+    return 0;
+}
+
+static int64_t sw_http_parse_meta(sw_string* text, sw_http_resp_meta* meta) {
+    memset(meta, 0, sizeof(*meta));
+    meta->content_length = -1;
+    int64_t header_end = -1;
+    for (int64_t i = 0; i + 3 < text->len; i++) {
+        if (text->data[i] == '\r' && text->data[i + 1] == '\n' &&
+            text->data[i + 2] == '\r' && text->data[i + 3] == '\n') {
             header_end = i;
             break;
         }
     }
-    if (header_end > 0) {
-        sw_string* headers = sw_string_from_literal(response->data, header_end);
-        sw_map_set(result, sw_string_from_literal("headers", 7), headers);
+    if (header_end < 0) {
+        return -1;
     }
-    int64_t body_start = header_end > 0 ? header_end + 4 : 0;
-    if (body_start < response->len) {
-        sw_string* body_text = sw_string_from_literal(response->data + body_start, response->len - body_start);
-        sw_map_set(result, sw_string_from_literal("body", 4), body_text);
+    meta->status = sw_http_parse_status(text);
+    int64_t vs = 0;
+    int64_t vl = 0;
+    if (sw_http_header_value(text, 0, header_end, "content-length", 14, &vs, &vl)) {
+        sw_string* v = sw_http_trim(sw_string_from_literal(text->data + vs, vl));
+        int64_t n = 0;
+        for (int64_t k = 0; k < v->len; k++) {
+            if (v->data[k] < '0' || v->data[k] > '9') {
+                break;
+            }
+            n = n * 10 + (v->data[k] - '0');
+        }
+        meta->content_length = n;
+    }
+    if (sw_http_header_value(text, 0, header_end, "transfer-encoding", 17, &vs, &vl)) {
+        sw_string* v = sw_http_trim(sw_string_from_literal(text->data + vs, vl));
+        if (v->len >= 7 && v->data[0] == 'c' && v->data[1] == 'h' && v->data[2] == 'u' &&
+            v->data[3] == 'n' && v->data[4] == 'k' && v->data[5] == 'e' && v->data[6] == 'd') {
+            meta->chunked = 1;
+        }
+    }
+    if (sw_http_header_value(text, 0, header_end, "connection", 10, &vs, &vl)) {
+        sw_string* v = sw_http_trim(sw_string_from_literal(text->data + vs, vl));
+        if ((v->len >= 5 && v->data[0] == 'c' && v->data[1] == 'l' && v->data[2] == 'o' &&
+             v->data[3] == 's' && v->data[4] == 'e')) {
+            meta->keep_close = 1;
+        }
+    }
+    if (sw_http_header_value(text, 0, header_end, "location", 8, &vs, &vl)) {
+        meta->has_location = 1;
+        meta->location_start = vs;
+        meta->location_len = vl;
+    }
+    return header_end;
+}
+
+// 内存解码 chunked 编码的响应体（data 指向 chunked body 起点，len 为可用长度）。
+// 返回解码后的完整 body；解析失败返回已解码部分。
+static sw_string* sw_http_decode_chunked(const char* data, int64_t len) {
+    int64_t cap = 256;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    int64_t i = 0;
+    while (i < len) {
+        // 读 chunk-size 行（到 \r\n）
+        int64_t line_end = i;
+        while (line_end < len && !(data[line_end] == '\r' && line_end + 1 < len && data[line_end + 1] == '\n')) {
+            line_end++;
+        }
+        if (line_end >= len) {
+            break;
+        }
+        int64_t size = 0;
+        int64_t k = i;
+        while (k < line_end && data[k] != ';') {
+            char c = data[k];
+            int64_t v = -1;
+            if (c >= '0' && c <= '9') {
+                v = c - '0';
+            } else if (c >= 'a' && c <= 'f') {
+                v = c - 'a' + 10;
+            } else if (c >= 'A' && c <= 'F') {
+                v = c - 'A' + 10;
+            } else {
+                break;
+            }
+            size = size * 16 + v;
+            k++;
+        }
+        i = line_end + 2;  // 跳过 \r\n
+        if (size == 0) {
+            break;
+        }
+        if (i + size > len) {
+            size = len - i;
+        }
+        if (used + size + 1 > cap) {
+            cap = (used + size) * 2 + 64;
+            char* bigger = (char*)sw_gc_alloc((uint64_t)cap);
+            memcpy(bigger, buffer, (uint64_t)used);
+            buffer = bigger;
+        }
+        memcpy(buffer + used, data + i, (uint64_t)size);
+        used += size;
+        i += size;
+        // 跳过 chunk 数据后的 \r\n
+        if (i + 1 < len && data[i] == '\r' && data[i + 1] == '\n') {
+            i += 2;
+        }
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
+}
+
+// 把相对/绝对 Location 解析为绝对 URL。base 形如 "http://host[:port]/path..."。
+// 仅支持 http://；https 返回 NULL（不声称 TLS 支持）。
+static sw_string* sw_http_resolve_location(sw_string* base, sw_string* location) {
+    if (base == NULL || location == NULL) {
+        return NULL;
+    }
+    // 绝对 URL：http:// 直接返回；https:// 不支持
+    if (location->len >= 7 && location->data[0] == 'h' && location->data[1] == 't' &&
+        location->data[2] == 't' && location->data[3] == 'p' && location->data[4] == ':' &&
+        location->data[5] == '/' && location->data[6] == '/') {
+        return sw_string_from_literal(location->data, location->len);
+    }
+    if (location->len >= 8 && location->data[0] == 'h' && location->data[1] == 't' &&
+        location->data[2] == 't' && location->data[3] == 'p' && location->data[4] == 's') {
+        return NULL;
+    }
+    void* parts = url_parse(base);
+    sw_string* scheme = sw_map_get(parts, sw_string_from_literal("scheme", 6));
+    sw_string* host = sw_map_get(parts, sw_string_from_literal("host", 4));
+    int64_t port = sw_map_get_int(parts, sw_string_from_literal("port", 4), 80);
+    sw_string* path = sw_map_get(parts, sw_string_from_literal("path", 4));
+    if (host == NULL || host->len == 0) {
+        return NULL;
+    }
+    int64_t cap = 16 + host->len + (path != NULL ? path->len : 0) + location->len + 16;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    const char* pre = "http://";
+    for (int64_t i = 0; pre[i]; i++) {
+        buffer[used++] = pre[i];
+    }
+    for (int64_t i = 0; i < host->len; i++) {
+        buffer[used++] = host->data[i];
+    }
+    if (!(port == 80 || (scheme != NULL && scheme->len == 5 && port == 443))) {
+        used += snprintf(buffer + used, (sw_size)(cap - used), ":%lld", (long long)port);
+    }
+    if (location->len > 0 && location->data[0] == '/') {
+        for (int64_t i = 0; i < location->len; i++) {
+            buffer[used++] = location->data[i];
+        }
+    } else {
+        // 相对路径：取 base path 的目录部分拼接
+        int64_t slash = -1;
+        if (path != NULL) {
+            for (int64_t i = 0; i < path->len; i++) {
+                if (path->data[i] == '/') {
+                    slash = i;
+                }
+            }
+        }
+        if (slash >= 0) {
+            for (int64_t i = 0; i <= slash; i++) {
+                buffer[used++] = path->data[i];
+            }
+        } else {
+            buffer[used++] = '/';
+        }
+        for (int64_t i = 0; i < location->len; i++) {
+            buffer[used++] = location->data[i];
+        }
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
+}
+
+// 一次性 HTTP 请求核心：method/url/body → map：status/body/headers。
+// timeout_ms <= 0 不设超时；>0 时连接与收发均设超时（毫秒）。
+// 跟随重定向（最多 5 次，仅 http://；Location 相对/绝对均支持）。
+void* sw_http_request_full(sw_string* method, sw_string* url, sw_string* body, int64_t timeout_ms) {
+    void* result = sw_map_new();
+    sw_map_set_int(result, sw_string_from_literal("status", 6), 0);
+    sw_map_set(result, sw_string_from_literal("body", 4), sw_string_from_literal("", 0));
+    sw_map_set(result, sw_string_from_literal("headers", 7), sw_string_from_literal("", 0));
+    sw_map_set(result, sw_string_from_literal("url", 3), url != NULL ? url : sw_string_from_literal("", 0));
+    if (url == NULL) {
+        return result;
+    }
+    sw_string* current_url = url;
+    for (int64_t redirect = 0; redirect <= 5; redirect++) {
+        void* parts = url_parse(current_url);
+        sw_string* scheme = sw_map_get(parts, sw_string_from_literal("scheme", 6));
+        sw_string* host = sw_map_get(parts, sw_string_from_literal("host", 4));
+        int64_t port = sw_map_get_int(parts, sw_string_from_literal("port", 4), 80);
+        sw_string* path = sw_map_get(parts, sw_string_from_literal("path", 4));
+        sw_string* query = sw_map_get(parts, sw_string_from_literal("query", 5));
+        if (host == NULL || host->len == 0) {
+            return result;
+        }
+        // 仅支持 http://
+        if (scheme != NULL && scheme->len == 5 && scheme->data[0] == 'h' &&
+            scheme->data[1] == 't' && scheme->data[2] == 't' && scheme->data[3] == 'p' &&
+            scheme->data[4] == 's') {
+            return result;
+        }
+        int64_t fd = timeout_ms > 0
+            ? sw_net_connect_timeout(host, port, timeout_ms)
+            : sw_net_connect(host, port);
+        if (fd < 0) {
+            return result;
+        }
+        if (timeout_ms > 0) {
+            sw_net_set_recv_timeout(fd, timeout_ms);
+            sw_net_set_send_timeout(fd, timeout_ms);
+        }
+        // 请求行与请求头
+        char* request = (char*)sw_gc_alloc(4096);
+        int64_t used = 0;
+        for (int64_t i = 0; i < method->len && used < 1024; i++) {
+            request[used++] = method->data[i];
+        }
+        request[used++] = ' ';
+        for (int64_t i = 0; i < path->len && used < 2048; i++) {
+            request[used++] = path->data[i];
+        }
+        if (query->len > 0) {
+            request[used++] = '?';
+            for (int64_t i = 0; i < query->len && used < 2048; i++) {
+                request[used++] = query->data[i];
+            }
+        }
+        request[used++] = ' ';
+        request[used++] = 'H';
+        request[used++] = 'T';
+        request[used++] = 'T';
+        request[used++] = 'P';
+        request[used++] = '/';
+        request[used++] = '1';
+        request[used++] = '.';
+        request[used++] = '1';
+        request[used++] = '\r';
+        request[used++] = '\n';
+        const char* host_hdr = "Host: ";
+        const char* conn_hdr = "Connection: close\r\n";
+        const char* len_hdr = "Content-Length: ";
+        for (int64_t i = 0; host_hdr[i]; i++) {
+            request[used++] = host_hdr[i];
+        }
+        for (int64_t i = 0; i < host->len && used < 3072; i++) {
+            request[used++] = host->data[i];
+        }
+        request[used++] = '\r';
+        request[used++] = '\n';
+        for (int64_t i = 0; conn_hdr[i]; i++) {
+            request[used++] = conn_hdr[i];
+        }
+        int64_t body_len = body != NULL ? body->len : 0;
+        if (body_len > 0) {
+            for (int64_t i = 0; len_hdr[i]; i++) {
+                request[used++] = len_hdr[i];
+            }
+            used += snprintf(request + used, (sw_size)(4096 - used), "%lld\r\n", (long long)body_len);
+            const char* ctype = "Content-Type: application/x-www-form-urlencoded\r\n";
+            for (int64_t i = 0; ctype[i] && used < 4090; i++) {
+                request[used++] = ctype[i];
+            }
+        }
+        request[used++] = '\r';
+        request[used++] = '\n';
+        sw_string* head = sw_string_from_literal(request, used);
+        if (sw_net_send_all(fd, head) != head->len) {
+            sw_net_close(fd);
+            return result;
+        }
+        if (body_len > 0 && sw_net_send_all(fd, body) != body_len) {
+            sw_net_close(fd);
+            return result;
+        }
+        sw_string* response = sw_http_read_all(fd);
+        sw_net_close(fd);
+        sw_http_resp_meta meta;
+        int64_t header_end = sw_http_parse_meta(response, &meta);
+        sw_map_set_int(result, sw_string_from_literal("status", 6), meta.status);
+        if (header_end >= 0) {
+            sw_string* headers = sw_string_from_literal(response->data, header_end);
+            sw_map_set(result, sw_string_from_literal("headers", 7), headers);
+            // 重定向
+            if (meta.has_location && (meta.status == 301 || meta.status == 302 ||
+                                      meta.status == 303 || meta.status == 307 || meta.status == 308)) {
+                sw_string* loc = sw_string_from_literal(
+                    response->data + meta.location_start, meta.location_len);
+                sw_string* next = sw_http_resolve_location(current_url, sw_http_trim(loc));
+                if (next != NULL) {
+                    current_url = next;
+                    continue;
+                }
+            }
+            int64_t body_start = header_end + 4;
+            int64_t body_avail = response->len - body_start;
+            if (body_avail > 0) {
+                sw_string* body_text = NULL;
+                if (meta.chunked) {
+                    body_text = sw_http_decode_chunked(response->data + body_start, body_avail);
+                } else if (meta.content_length >= 0) {
+                    int64_t take = meta.content_length < body_avail ? meta.content_length : body_avail;
+                    body_text = sw_string_from_literal(response->data + body_start, take);
+                } else {
+                    body_text = sw_string_from_literal(response->data + body_start, body_avail);
+                }
+                sw_map_set(result, sw_string_from_literal("body", 4), body_text);
+            }
+        }
+        return result;
     }
     return result;
 }
 
+void* http_request(sw_string* method, sw_string* url, sw_string* body) {
+    return sw_http_request_full(method, url, body, 0);
+}
+
 void* http_get(sw_string* url) {
-    return http_request(sw_string_from_literal("GET", 3), url, NULL);
+    return sw_http_request_full(sw_string_from_literal("GET", 3), url, NULL, 0);
 }
 
 void* http_post(sw_string* url, sw_string* body) {
-    return http_request(sw_string_from_literal("POST", 4), url, body);
+    return sw_http_request_full(sw_string_from_literal("POST", 4), url, body, 0);
+}
+
+// 带超时的一次性请求（timeout_ms 毫秒，<=0 不限时）。
+void* http_get_timeout(sw_string* url, int64_t timeout_ms) {
+    return sw_http_request_full(sw_string_from_literal("GET", 3), url, NULL, timeout_ms);
+}
+
+void* http_post_timeout(sw_string* url, sw_string* body, int64_t timeout_ms) {
+    return sw_http_request_full(sw_string_from_literal("POST", 4), url, body, timeout_ms);
 }
 
 // ---------------------------------------------------------------------------
@@ -10736,6 +11452,33 @@ int64_t sw_http_open(sw_string* host, int64_t port) {
     int64_t fd = sw_net_connect(host, port);
     if (fd < 0) {
         return -1;
+    }
+    int64_t slot = sw_http_slot_alloc();
+    if (slot < 0) {
+        sw_net_close(fd);
+        return -1;
+    }
+    sw_http_conn* c = &sw_http_conns[slot];
+    memset(c, 0, sizeof(*c));
+    c->fd = fd;
+    c->host = host;
+    return slot;
+}
+
+// 带连接超时的会话打开（timeout_ms 毫秒，<=0 不限时）。
+int64_t sw_http_open_timeout(sw_string* host, int64_t port, int64_t timeout_ms) {
+    if (host == NULL || port < 1 || port > 65535) {
+        return -1;
+    }
+    int64_t fd = timeout_ms > 0
+        ? sw_net_connect_timeout(host, port, timeout_ms)
+        : sw_net_connect(host, port);
+    if (fd < 0) {
+        return -1;
+    }
+    if (timeout_ms > 0) {
+        sw_net_set_recv_timeout(fd, timeout_ms);
+        sw_net_set_send_timeout(fd, timeout_ms);
     }
     int64_t slot = sw_http_slot_alloc();
     if (slot < 0) {
@@ -10791,6 +11534,9 @@ static sw_string* sw_http_read_line(int64_t slot) {
 // 精确读 n 字节（先消费行缓冲剩余，再收网络）。
 static sw_string* sw_http_read_body(int64_t slot, int64_t n) {
     sw_http_conn* c = &sw_http_conns[slot];
+    if (n <= 0) {
+        return sw_string_from_literal("", 0);
+    }
     char* buffer = (char*)sw_gc_alloc((uint64_t)n + 1);
     int64_t got = 0;
     if (c->line_len > 0) {
@@ -10810,6 +11556,65 @@ static sw_string* sw_http_read_body(int64_t slot, int64_t n) {
     }
     buffer[got] = 0;
     return sw_string_from_literal(buffer, got);
+}
+
+// 会话读取 chunked 编码响应体（逐块读，连接保持），返回解码后的 body。
+static sw_string* sw_http_read_chunked_body(int64_t slot) {
+    int64_t cap = 4096;
+    char* buffer = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    while (1) {
+        sw_string* size_line = sw_http_read_line(slot);
+        if (size_line == NULL || size_line->len == 0) {
+            break;
+        }
+        // 解析十六进制块大小（可带 ; 扩展参数）
+        int64_t size = 0;
+        int64_t i = 0;
+        while (i < size_line->len && size_line->data[i] != ';') {
+            char ch = size_line->data[i];
+            int64_t v = -1;
+            if (ch >= '0' && ch <= '9') {
+                v = ch - '0';
+            } else if (ch >= 'a' && ch <= 'f') {
+                v = ch - 'a' + 10;
+            } else if (ch >= 'A' && ch <= 'F') {
+                v = ch - 'A' + 10;
+            } else {
+                break;
+            }
+            size = size * 16 + v;
+            i++;
+        }
+        if (size == 0) {
+            // 末尾块：读取 trailer 直到空行
+            while (1) {
+                sw_string* trailer = sw_http_read_line(slot);
+                if (trailer == NULL || trailer->len == 0) {
+                    break;
+                }
+            }
+            break;
+        }
+        // 单块过大（十六进制溢出为负或超 64MB）视为异常，终止解析
+        if (size < 0 || size > 67108864) {
+            break;
+        }
+        sw_string* data = sw_http_read_body(slot, size);
+        if (used + data->len + 1 > cap) {
+            cap = (used + data->len) * 2 + 64;
+            char* bigger = (char*)sw_gc_alloc((uint64_t)cap);
+            memcpy(bigger, buffer, (uint64_t)used);
+            buffer = bigger;
+        }
+        memcpy(buffer + used, data->data, (uint64_t)data->len);
+        used += data->len;
+        // 跳过块数据后的 CRLF
+        sw_string* crlf = sw_http_read_line(slot);
+        (void)crlf;
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
 }
 
 // 关闭会话（释放槽）。
@@ -10842,149 +11647,265 @@ void* sw_http_request_on(
     if (method == NULL || path == NULL || c->host == NULL) {
         return result;
     }
-    // 构造请求头
-    int64_t cap = method->len + path->len + c->host->len + 256;
-    char* request = (char*)sw_gc_alloc((uint64_t)cap);
-    int64_t used = 0;
-    for (int64_t i = 0; i < method->len && used + 1 < cap; i++) {
-        request[used++] = method->data[i];
-    }
-    request[used++] = ' ';
-    for (int64_t i = 0; i < path->len && used + 1 < cap; i++) {
-        request[used++] = path->data[i];
-    }
-    const char* proto = " HTTP/1.1\r\nHost: ";
-    for (int64_t i = 0; proto[i] && used + 1 < cap; i++) {
-        request[used++] = proto[i];
-    }
-    for (int64_t i = 0; i < c->host->len && used + 1 < cap; i++) {
-        request[used++] = c->host->data[i];
-    }
-    const char* conn_hdr = "\r\nConnection: keep-alive\r\n";
-    for (int64_t i = 0; conn_hdr[i] && used + 1 < cap; i++) {
-        request[used++] = conn_hdr[i];
-    }
-    // 自定义请求头（map：Key → 值字符串）
-    if (headers_map != NULL) {
-        sw_array* keys = sw_map_keys(headers_map);
-        sw_array* values = sw_map_values(headers_map);
-        for (int64_t i = 0; i < keys->len && used + 2 < cap; i++) {
-            sw_string* key = (sw_string*)((int64_t*)keys->data)[i];
-            sw_string* value = (sw_string*)((int64_t*)values->data)[i];
-            for (int64_t k = 0; k < key->len && used + 1 < cap; k++) {
-                request[used++] = key->data[k];
+    sw_string* current_path = path;
+    // 同 host 重定向跟随（最多 5 次；仅 http://，跨 host 不跟随）
+    for (int64_t redirect = 0; redirect <= 5; redirect++) {
+        // 构造请求头
+        int64_t cap = method->len + current_path->len + c->host->len + 256;
+        char* request = (char*)sw_gc_alloc((uint64_t)cap);
+        int64_t used = 0;
+        for (int64_t i = 0; i < method->len && used + 1 < cap; i++) {
+            request[used++] = method->data[i];
+        }
+        request[used++] = ' ';
+        for (int64_t i = 0; i < current_path->len && used + 1 < cap; i++) {
+            request[used++] = current_path->data[i];
+        }
+        const char* proto = " HTTP/1.1\r\nHost: ";
+        for (int64_t i = 0; proto[i] && used + 1 < cap; i++) {
+            request[used++] = proto[i];
+        }
+        for (int64_t i = 0; i < c->host->len && used + 1 < cap; i++) {
+            request[used++] = c->host->data[i];
+        }
+        const char* conn_hdr = "\r\nConnection: keep-alive\r\n";
+        for (int64_t i = 0; conn_hdr[i] && used + 1 < cap; i++) {
+            request[used++] = conn_hdr[i];
+        }
+        // 自定义请求头（map：Key → 值字符串）
+        if (headers_map != NULL) {
+            sw_array* keys = sw_map_keys(headers_map);
+            sw_array* values = sw_map_values(headers_map);
+            for (int64_t i = 0; i < keys->len && used + 2 < cap; i++) {
+                sw_string* key = (sw_string*)((int64_t*)keys->data)[i];
+                sw_string* value = (sw_string*)((int64_t*)values->data)[i];
+                for (int64_t k = 0; k < key->len && used + 1 < cap; k++) {
+                    request[used++] = key->data[k];
+                }
+                request[used++] = ':';
+                request[used++] = ' ';
+                for (int64_t k = 0; k < value->len && used + 1 < cap; k++) {
+                    request[used++] = value->data[k];
+                }
+                request[used++] = '\r';
+                request[used++] = '\n';
             }
-            request[used++] = ':';
-            request[used++] = ' ';
-            for (int64_t k = 0; k < value->len && used + 1 < cap; k++) {
-                request[used++] = value->data[k];
+        }
+        int64_t body_len = body != NULL ? body->len : 0;
+        if (body_len > 0) {
+            const char* len_hdr = "Content-Length: ";
+            for (int64_t i = 0; len_hdr[i] && used + 16 < cap; i++) {
+                request[used++] = len_hdr[i];
             }
-            request[used++] = '\r';
-            request[used++] = '\n';
+            used += snprintf(request + used, (sw_size)(cap - used), "%lld\r\n", (long long)body_len);
+            const char* ctype = "Content-Type: application/x-www-form-urlencoded\r\n";
+            for (int64_t i = 0; ctype[i] && used + 1 < cap; i++) {
+                request[used++] = ctype[i];
+            }
         }
-    }
-    int64_t body_len = body != NULL ? body->len : 0;
-    if (body_len > 0) {
-        const char* len_hdr = "Content-Length: ";
-        for (int64_t i = 0; len_hdr[i] && used + 16 < cap; i++) {
-            request[used++] = len_hdr[i];
+        request[used++] = '\r';
+        request[used++] = '\n';
+        sw_string* head = sw_string_from_literal(request, used);
+        if (sw_net_send_all(c->fd, head) != head->len) {
+            sw_http_close(slot);
+            return result;
         }
-        used += snprintf(request + used, (sw_size)(cap - used), "%lld\r\n", (long long)body_len);
-        const char* ctype = "Content-Type: application/x-www-form-urlencoded\r\n";
-        for (int64_t i = 0; ctype[i] && used + 1 < cap; i++) {
-            request[used++] = ctype[i];
+        if (body_len > 0 && sw_net_send_all(c->fd, body) != body_len) {
+            sw_http_close(slot);
+            return result;
         }
-    }
-    request[used++] = '\r';
-    request[used++] = '\n';
-    sw_string* head = sw_string_from_literal(request, used);
-    if (sw_net_send_all(c->fd, head) != head->len) {
-        sw_http_close(slot);
+        // 读状态行与响应头
+        sw_string* status_line = sw_http_read_line(slot);
+        int64_t status = sw_http_parse_status(status_line);
+        sw_map_set_int(result, sw_string_from_literal("status", 6), status);
+        int64_t content_length = -1;
+        int64_t chunked = 0;
+        int keep = 1;
+        int64_t location_start = -1;
+        int64_t location_len = 0;
+        int64_t header_cap = 256;
+        char* header_buf = (char*)sw_gc_alloc((uint64_t)header_cap);
+        int64_t header_used = 0;
+        while (1) {
+            sw_string* line = sw_http_read_line(slot);
+            if (line->len == 0) {
+                break;
+            }
+            if (header_used + line->len + 3 > header_cap) {
+                header_cap = (header_used + line->len) * 2 + 64;
+                char* bigger = (char*)sw_gc_alloc((uint64_t)header_cap);
+                memcpy(bigger, header_buf, (uint64_t)header_used);
+                header_buf = bigger;
+            }
+            memcpy(header_buf + header_used, line->data, (uint64_t)line->len);
+            header_used += line->len;
+            header_buf[header_used++] = '\r';
+            header_buf[header_used++] = '\n';
+            // Content-Length（找 ':' 再跳过空格取数字，不依赖固定偏移）
+            if (line->len >= 14 && line->data[0] == 'C' && line->data[1] == 'o' &&
+                line->data[2] == 'n' && line->data[3] == 't' && line->data[4] == 'e' &&
+                line->data[5] == 'n' && line->data[6] == 't' && line->data[7] == '-' &&
+                line->data[8] == 'L' && line->data[9] == 'e' && line->data[10] == 'n') {
+                int64_t colon = -1;
+                for (int64_t k = 0; k < line->len; k++) {
+                    if (line->data[k] == ':') {
+                        colon = k;
+                        break;
+                    }
+                }
+                int64_t v = 0;
+                if (colon >= 0) {
+                    int64_t i = colon + 1;
+                    while (i < line->len && (line->data[i] == ' ' || line->data[i] == '\t')) {
+                        i++;
+                    }
+                    while (i < line->len && line->data[i] >= '0' && line->data[i] <= '9') {
+                        v = v * 10 + (line->data[i] - '0');
+                        i++;
+                    }
+                }
+                content_length = v;
+            }
+            // Transfer-Encoding: chunked
+            if (line->len >= 17 && line->data[0] == 'T' && line->data[1] == 'r' &&
+                line->data[2] == 'a' && line->data[3] == 'n' && line->data[4] == 's' &&
+                line->data[5] == 'f' && line->data[6] == 'e' && line->data[7] == 'r' &&
+                line->data[8] == '-' && line->data[9] == 'E' && line->data[10] == 'n' &&
+                line->data[11] == 'c' && line->data[12] == 'o' && line->data[13] == 'd' &&
+                line->data[14] == 'i' && line->data[15] == 'n' && line->data[16] == 'g') {
+                int64_t colon = -1;
+                for (int64_t k = 0; k < line->len; k++) {
+                    if (line->data[k] == ':') {
+                        colon = k;
+                        break;
+                    }
+                }
+                if (colon >= 0) {
+                    for (int64_t k = colon + 1; k < line->len; k++) {
+                        char ch = line->data[k];
+                        if (ch == 'c' || ch == 'C') {
+                            if (k + 6 < line->len && line->data[k + 1] == 'h' && line->data[k + 2] == 'u' &&
+                                line->data[k + 3] == 'n' && line->data[k + 4] == 'k' &&
+                                line->data[k + 5] == 'e' && line->data[k + 6] == 'd') {
+                                chunked = 1;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            // Location（重定向）
+            if (line->len >= 8 && (line->data[0] == 'L' || line->data[0] == 'l') &&
+                line->data[1] == 'o' && line->data[2] == 'c' && line->data[3] == 'a' &&
+                line->data[4] == 't' && line->data[5] == 'i' && line->data[6] == 'o' &&
+                line->data[7] == 'n') {
+                int64_t colon = -1;
+                for (int64_t k = 0; k < line->len; k++) {
+                    if (line->data[k] == ':') {
+                        colon = k;
+                        break;
+                    }
+                }
+                if (colon >= 0) {
+                    int64_t s = colon + 1;
+                    while (s < line->len && (line->data[s] == ' ' || line->data[s] == '\t')) {
+                        s++;
+                    }
+                    location_start = s;
+                    location_len = line->len - s;
+                }
+            }
+            // Connection: close
+            if (line->len >= 9 && (line->data[0] == 'C' || line->data[0] == 'c') &&
+                line->data[1] == 'o' && line->data[2] == 'n' && line->data[3] == 'n') {
+                sw_string* lower = line;
+                for (int64_t i = 8; i + 4 < line->len; i++) {
+                    if ((line->data[i] == 'c' || line->data[i] == 'C') &&
+                        (line->data[i + 1] == 'l' || line->data[i + 1] == 'L') &&
+                        (line->data[i + 2] == 'o' || line->data[i + 2] == 'O') &&
+                        (line->data[i + 3] == 's' || line->data[i + 3] == 'S') &&
+                        (line->data[i + 4] == 'e' || line->data[i + 4] == 'E')) {
+                        keep = 0;
+                        break;
+                    }
+                    (void)lower;
+                }
+            }
+        }
+        header_buf[header_used] = 0;
+        sw_map_set(result, sw_string_from_literal("headers", 7), sw_string_from_literal(header_buf, header_used));
+        // 重定向判断：3xx + Location，且连接仍保持时尝试同 host 跟随
+        if (keep && location_start >= 0 &&
+            (status == 301 || status == 302 || status == 303 || status == 307 || status == 308)) {
+            sw_string* loc = sw_string_from_literal(
+                header_buf + location_start, location_len);
+            // 先消费当前响应体（丢弃），保持连接分帧一致
+            if (chunked) {
+                sw_string* discard = sw_http_read_chunked_body(slot);
+                (void)discard;
+            } else if (content_length >= 0) {
+                sw_string* discard = sw_http_read_body(slot, content_length);
+                (void)discard;
+            }
+            // 构造 base URL 解析 Location（同 host 才跟随）
+            int64_t base_cap = c->host->len + current_path->len + 32;
+            char* base_buf = (char*)sw_gc_alloc((uint64_t)base_cap);
+            int64_t base_used = 0;
+            const char* bp = "http://";
+            for (int64_t i = 0; bp[i]; i++) {
+                base_buf[base_used++] = bp[i];
+            }
+            for (int64_t i = 0; i < c->host->len; i++) {
+                base_buf[base_used++] = c->host->data[i];
+            }
+            for (int64_t i = 0; i < current_path->len && base_used + 1 < base_cap; i++) {
+                base_buf[base_used++] = current_path->data[i];
+            }
+            base_buf[base_used] = 0;
+            sw_string* base_url = sw_string_from_literal(base_buf, base_used);
+            sw_string* next = sw_http_resolve_location(base_url, sw_http_trim(loc));
+            if (next != NULL) {
+                void* next_parts = url_parse(next);
+                sw_string* next_host = sw_map_get(next_parts, sw_string_from_literal("host", 4));
+                int64_t next_port = sw_map_get_int(next_parts, sw_string_from_literal("port", 4), 80);
+                if (next_host != NULL && string_eq(next_host, c->host) && next_port == 80) {
+                    sw_string* next_path = sw_map_get(next_parts, sw_string_from_literal("path", 4));
+                    sw_string* next_query = sw_map_get(next_parts, sw_string_from_literal("query", 5));
+                    int64_t pcap = next_path->len + next_query->len + 2;
+                    char* pbuf = (char*)sw_gc_alloc((uint64_t)pcap);
+                    int64_t pu = 0;
+                    for (int64_t i = 0; i < next_path->len; i++) {
+                        pbuf[pu++] = next_path->data[i];
+                    }
+                    if (next_query->len > 0) {
+                        pbuf[pu++] = '?';
+                        for (int64_t i = 0; i < next_query->len; i++) {
+                            pbuf[pu++] = next_query->data[i];
+                        }
+                    }
+                    pbuf[pu] = 0;
+                    current_path = sw_string_from_literal(pbuf, pu);
+                    continue;
+                }
+            }
+        }
+        // 响应体：chunked → 逐块读（连接保持）；Content-Length → 精确读；
+        // 否则读到关闭（连接失效）。
+        if (chunked) {
+            sw_string* body_text = sw_http_read_chunked_body(slot);
+            sw_map_set(result, sw_string_from_literal("body", 4), body_text);
+        } else if (content_length >= 0) {
+            sw_string* body_text = sw_http_read_body(slot, content_length);
+            sw_map_set(result, sw_string_from_literal("body", 4), body_text);
+        } else {
+            sw_string* body_text = sw_http_read_all(c->fd);
+            sw_map_set(result, sw_string_from_literal("body", 4), body_text);
+            keep = 0;
+        }
+        if (!keep) {
+            sw_http_close(slot);
+        }
         return result;
-    }
-    if (body_len > 0 && sw_net_send_all(c->fd, body) != body_len) {
-        sw_http_close(slot);
-        return result;
-    }
-    // 读状态行与响应头
-    sw_string* status_line = sw_http_read_line(slot);
-    int64_t status = sw_http_parse_status(status_line);
-    sw_map_set_int(result, sw_string_from_literal("status", 6), status);
-    int64_t content_length = -1;
-    int keep = 1;
-    int64_t header_cap = 256;
-    char* header_buf = (char*)sw_gc_alloc((uint64_t)header_cap);
-    int64_t header_used = 0;
-    while (1) {
-        sw_string* line = sw_http_read_line(slot);
-        if (line->len == 0) {
-            break;
-        }
-        if (header_used + line->len + 3 > header_cap) {
-            header_cap = (header_used + line->len) * 2 + 64;
-            char* bigger = (char*)sw_gc_alloc((uint64_t)header_cap);
-            memcpy(bigger, header_buf, (uint64_t)header_used);
-            header_buf = bigger;
-        }
-        memcpy(header_buf + header_used, line->data, (uint64_t)line->len);
-        header_used += line->len;
-        header_buf[header_used++] = '\r';
-        header_buf[header_used++] = '\n';
-        // Content-Length（找 ':' 再跳过空格取数字，不依赖固定偏移）
-        if (line->len >= 14 && line->data[0] == 'C' && line->data[1] == 'o' &&
-            line->data[2] == 'n' && line->data[3] == 't' && line->data[4] == 'e' &&
-            line->data[5] == 'n' && line->data[6] == 't' && line->data[7] == '-' &&
-            line->data[8] == 'L' && line->data[9] == 'e' && line->data[10] == 'n') {
-            int64_t colon = -1;
-            for (int64_t k = 0; k < line->len; k++) {
-                if (line->data[k] == ':') {
-                    colon = k;
-                    break;
-                }
-            }
-            int64_t v = 0;
-            if (colon >= 0) {
-                int64_t i = colon + 1;
-                while (i < line->len && (line->data[i] == ' ' || line->data[i] == '\t')) {
-                    i++;
-                }
-                while (i < line->len && line->data[i] >= '0' && line->data[i] <= '9') {
-                    v = v * 10 + (line->data[i] - '0');
-                    i++;
-                }
-            }
-            content_length = v;
-        }
-        // Connection: close
-        if (line->len >= 9 && (line->data[0] == 'C' || line->data[0] == 'c') &&
-            line->data[1] == 'o' && line->data[2] == 'n' && line->data[3] == 'n') {
-            sw_string* lower = line;
-            for (int64_t i = 8; i + 4 < line->len; i++) {
-                if ((line->data[i] == 'c' || line->data[i] == 'C') &&
-                    (line->data[i + 1] == 'l' || line->data[i + 1] == 'L') &&
-                    (line->data[i + 2] == 'o' || line->data[i + 2] == 'O') &&
-                    (line->data[i + 3] == 's' || line->data[i + 3] == 'S') &&
-                    (line->data[i + 4] == 'e' || line->data[i + 4] == 'E')) {
-                    keep = 0;
-                    break;
-                }
-                (void)lower;
-            }
-        }
-    }
-    header_buf[header_used] = 0;
-    sw_map_set(result, sw_string_from_literal("headers", 7), sw_string_from_literal(header_buf, header_used));
-    // 响应体：有 Content-Length 精确读（连接保持）；否则读到关闭（连接失效）。
-    if (content_length >= 0) {
-        sw_string* body_text = sw_http_read_body(slot, content_length);
-        sw_map_set(result, sw_string_from_literal("body", 4), body_text);
-    } else {
-        sw_string* body_text = sw_http_read_all(c->fd);
-        sw_map_set(result, sw_string_from_literal("body", 4), body_text);
-        keep = 0;
-    }
-    if (!keep) {
-        sw_http_close(slot);
     }
     return result;
 }

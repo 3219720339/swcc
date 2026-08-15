@@ -38,3 +38,31 @@ export extern c function base64url_decode(text: string): string;
 
 /// HTML 转义：& < > " ' -> &amp; &lt; &gt; &quot; &#39;。
 export extern c function html_escape(text: string): string;
+
+/// Base32 编码（RFC 4648：A-Z2-7 字母表，= 填充）。
+/// 示例：base32_encode("hello") == "NBSWY3DP"。
+export extern c function base32_encode(text: string): string;
+
+/// Base32 解码，返回原始字节；非法字符处停止。
+export extern c function base32_decode(text: string): string;
+
+/// HTML 反转义：&amp; &lt; &gt; &quot; &#39; 及数字实体
+/// （&#NNN; 十进制 / &#xHH; 十六进制）；未识别实体按字面保留。
+/// 示例：html_unescape("a&amp;b&lt;c") == "a&b<c"。
+export extern c function html_unescape(text: string): string;
+
+// ---------------------------------------------------------------------------
+// 中文函数名（转发到英文实现，火山风格命名）
+// ---------------------------------------------------------------------------
+
+export function Base32编码(text: string): string {
+    return base32_encode(text);
+}
+
+export function Base32解码(text: string): string {
+    return base32_decode(text);
+}
+
+export function HTML反转义(text: string): string {
+    return html_unescape(text);
+}

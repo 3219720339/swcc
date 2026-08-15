@@ -51,6 +51,12 @@ export function url_query_part(url: ptr<void>): string {
     return map_get(url, "query") ?? "";
 }
 
+/// 从完整 URL 直接解析查询参数为 map（string 值，自动 URL 解码）。
+/// 示例：url_query_map("http://host/api?a=1&b=2") 后 map_get(q, "a") == "1"。
+export function url_query_map(url: string): ptr<void> {
+    return url_query(url_query_part(url_parse(url)));
+}
+
 // ---------------------------------------------------------------------------
 // 中文函数名（转发到英文实现，火山风格命名）
 // ---------------------------------------------------------------------------
@@ -81,6 +87,10 @@ export function 取网址查询(url: ptr<void>): string {
 
 export function 解析查询参数(query: string): ptr<void> {
     return url_query(query);
+}
+
+export function 网址查询参数(url: string): ptr<void> {
+    return url_query_map(url);
 }
 
 export function 生成查询参数(map: ptr<void>): string {
