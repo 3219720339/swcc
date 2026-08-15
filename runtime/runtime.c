@@ -73,7 +73,9 @@ typedef struct {
 
 #define SW_GC_HEADER_SIZE 32
 #define SW_GC_INIT_THRESHOLD (4u << 20)
-#define SW_GC_MAX_THRESHOLD (128u << 20)
+// 阈值翻倍上限：过高会导致高分配场景 GC 触发过少、死对象堆积
+// （此前 128MB 时 30 万次异常/字符串残留 50MB+）；32MB 平衡频率与峰值。
+#define SW_GC_MAX_THRESHOLD (32u << 20)
 #define SW_GC_MAX_DATA_RANGES 32
 
 typedef struct sw_gc_block {
@@ -129,9 +131,35 @@ static void sw_gc_init_platform(void) {
     uintptr_t peb = sw_read_gs(0x60);
     uintptr_t image_base = *(uintptr_t*)(peb + 0x10);
     uint32_t e_lfanew = *(uint32_t*)(image_base + 0x3C);
-    uintptr_t optional = image_base + e_lfanew + 24;
-    uint32_t size_of_image = *(uint32_t*)(optional + 0x38);
-    sw_gc_add_data_range(image_base, image_base + size_of_image);
+
+    // PE 头：e_lfanew 指向 "PE\0\0"；+4 是 COFF 头（20 字节：
+    // +0 Machine, +2 NumberOfSections, +16 SizeOfOptionalHeader, +18 Characteristics）。
+    uintptr_t pe_header = image_base + e_lfanew;
+    uint32_t number_of_sections = (uint32_t)(*(unsigned short*)(pe_header + 4 + 2));
+    uint32_t size_of_optional = (uint32_t)(*(unsigned short*)(pe_header + 4 + 16));
+    // OptionalHeader 起始 = pe_header + 4 + 20；节表紧随 OptionalHeader 之后。
+    uintptr_t optional = pe_header + 4 + 20;
+    // 只注册可写数据节（.data/.rdata/.bss 等），排除 .text 代码段——
+    // 指令字节会被保守式扫描误判为指向堆块的指针，导致全部块被标记、
+    // GC 永不回收（字符串/异常对象泄漏）。
+    uintptr_t section_table = optional + size_of_optional;
+    for (uint32_t index = 0; index < number_of_sections; index++) {
+        uintptr_t section = section_table + (uintptr_t)index * 40;
+        uint32_t characteristics = *(uint32_t*)(section + 36);
+        uint32_t virtual_size = *(uint32_t*)(section + 8);
+        uint32_t virtual_address = *(uint32_t*)(section + 12);
+        // IMAGE_SCN_MEM_WRITE (0x80000000) 或非 IMAGE_SCN_CNT_CODE (0x20)。
+        if ((characteristics & 0x80000000u) != 0 || (characteristics & 0x20u) == 0) {
+            if (virtual_size == 0) {
+                virtual_size = *(uint32_t*)(section + 16);  // SizeOfRawData 兜底
+            }
+            sw_gc_add_data_range(
+                image_base + virtual_address,
+                image_base + virtual_address + virtual_size
+            );
+
+        }
+    }
 }
 
 static uintptr_t sw_stack_top(void) {
@@ -293,6 +321,19 @@ static void sw_gc_scan_words(uintptr_t start, uintptr_t end) {
     }
 }
 
+/// 扫描堆块内容：指向本块内部的指针（如 sw_string.data 指向块内联数据）
+/// 是自引用，不能用于标记存活；只把指向其它 GC 块的指针当外部引用。
+static void sw_gc_scan_block(uintptr_t payload, uintptr_t end) {
+    payload = sw_gc_align8(payload);
+    for (uintptr_t word = payload; word + 8 <= end; word += 8) {
+        uintptr_t value = *(uintptr_t*)word;
+        if (value >= payload && value < end) {
+            continue;  // 指向本块内部：自引用，跳过
+        }
+        sw_gc_mark_word(value);
+    }
+}
+
 static void sw_gc_scan_stack(void) {
     char dummy;
     uintptr_t sp = (uintptr_t)&dummy;
@@ -322,14 +363,16 @@ static void sw_gc_collect(void) {
         qsort(sw_gc_sorted, count, sizeof(sw_gc_block*), sw_gc_compare_blocks);
     }
     sw_gc_sorted_count = count;
+
     for (int index = 0; index < sw_gc_data_range_count; index++) {
         sw_gc_scan_words(sw_gc_data_ranges[index][0], sw_gc_data_ranges[index][1]);
     }
     sw_gc_scan_stack();
     // 堆内引用：类字段/数组元素可能指向其它 GC 块（保守式，多扫无害）。
+    // 指向本块内部的指针（字符串 data 内联）不标记（自引用）。
     for (sw_gc_block* block = sw_gc_blocks; block != NULL; block = block->next) {
         uintptr_t payload = (uintptr_t)((char*)block + SW_GC_HEADER_SIZE);
-        sw_gc_scan_words(payload, payload + block->size);
+        sw_gc_scan_block(payload, payload + block->size);
     }
     if (sw_gc_sorted != NULL) {
         free(sw_gc_sorted);
@@ -348,6 +391,7 @@ static void sw_gc_collect(void) {
             free(block);
         }
     }
+
     sw_gc_allocated_since_collect = 0;
     sw_gc_in_collect = 0;
 }
@@ -2953,6 +2997,7 @@ typedef struct sw_frame {
 
 // v0.1 单线程：异常框架使用普通全局；多线程支持留到后续版本。
 static sw_frame* sw_current_frame = NULL;
+
 
 void* sw_try_begin(void) {
     // 帧由 GC 管理：sw_current_frame 是全局根（数据段被 GC 扫描），

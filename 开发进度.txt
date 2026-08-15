@@ -3,6 +3,22 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-14（main）
 
+2026-08-15 17:30  GC 内存健康修复（字符串/异常对象泄漏）：
+   - 根因 1（Windows）：sw_gc_init_platform 注册整个镜像为数据段范围，
+     保守式扫描把 .text 代码指令字节当指针，全部堆块被误标记，GC 永不回收
+     （30 万次异常 +53MB、30 万死字符串 +61MB）。改为解析 PE 节表只注册
+     可写/非代码节（.data/.rdata/.bss），修正 COFF 头偏移（NumberOfSections
+     在 COFF+2、SizeOfOptionalHeader 在 COFF+16，均 u16）。
+   - 根因 2：堆内扫描把 sw_string.data 指向块内联数据的自引用指针当外部
+     引用，每个字符串自标记永不回收。新增 sw_gc_scan_block：指向本块内部
+     的指针跳过，只把指向其它 GC 块的指针当外部引用。
+   - 效果：30 万次异常 +53MB→+4.1MB；30 万死字符串 +61MB→-1.1MB；
+     10 万条存活 map 数据 +24MB 正确保留（不被误回收）。
+   - 新增 examples/probe-gc-memory.sw（7 断言：异常回收/死字符串回收/
+     存活 map 保留与完整性），登记 run-examples。
+   - 验证：probe 7/7 PASS；18 探针回归全过（probe-closure exit=42 为设计值）；
+     cargo test 全绿（9+13+12+22）；交叉编译 musl x64/aarch64 + darwin 通过。
+
 2026-08-15 16:40  语言完整度批：浮点全局 + 对象字面量传播 + 对象解构：
    - 浮点全局变量修复（严重 bug）：declare_global 按全局类型存初始值字节
      （F32/F64 用 f64 位模式），MirExpr::Global 加载按类型 load F64/I64
