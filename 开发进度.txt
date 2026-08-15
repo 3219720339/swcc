@@ -3,6 +3,18 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-14（main）
 
+2026-08-15 15:40  空值窄化（if/三元/while 分支可空变量自动非空）：
+   - Checker 增加 narrowed 窄化栈（符号 id → 非空类型）与 else_narrow_id。
+   - symbol_type 优先查窄化表；if (x != null) then 分支、if (x == null) else 分支、
+     三元条件对应分支、while (x != null) 循环体均自动窄化 x 为非空类型。
+   - 效果：`if (n != null) { use(n.value) }` 直接成员访问合法；未受保护的
+     `n.value` 仍报「值可能为空，请使用 ?.」。
+   - 新增 examples/probe-narrow.sw（9 断言：if/else/三元/参数/while 窄化），
+     登记 run-examples。
+   - 验证：probe-narrow 9/9 PASS；14 个相关探针回归 0 失败；cargo test 全绿
+     （9+13+12+22）；交叉编译 musl x64/aarch64 + darwin 通过。
+   - 前置：本批之前已提交 af642d1（&&/|| 真短路 + 可选链字段偏移解包修复）。
+
 一、已完成
 
 1. 项目基建

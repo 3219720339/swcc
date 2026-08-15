@@ -1593,6 +1593,8 @@ impl Analyzer {
             diagnostics,
             state,
             scopes: vec![HashMap::new()],
+            narrowed: Vec::new(),
+            else_narrow_id: None,
             ret: sig.ret.clone(),
             this_class,
             loop_depth: 0,
@@ -1969,6 +1971,11 @@ struct Checker<'s> {
     diagnostics: &'s mut Diagnostics,
     state: &'s mut ModuleState,
     scopes: Vec<HashMap<String, SymbolId>>,
+    /// 空值窄化栈：符号 id → 窄化后的非空类型（if (x != null) 的 then 分支、
+    /// if (x == null) 的 else 分支、三元条件对应分支内生效）。
+    narrowed: Vec<HashMap<u32, Type>>,
+    /// if (x == null) 的 else 分支待窄化符号 id。
+    else_narrow_id: Option<u32>,
     ret: Type,
     this_class: Option<u32>,
     loop_depth: usize,
@@ -2056,6 +2063,12 @@ impl<'s> Checker<'s> {
     }
 
     fn symbol_type(&self, id: SymbolId) -> Type {
+        // 空值窄化优先：if (x != null) 等分支内 x 视为非空类型。
+        for scope in self.narrowed.iter().rev() {
+            if let Some(ty) = scope.get(&id.0) {
+                return ty.clone();
+            }
+        }
         match &self.symbols[id.0 as usize].kind {
             SymbolKind::Function(sig) => Type::Function {
                 params: sig.params.iter().map(|param| param.ty.clone()).collect(),
@@ -2168,6 +2181,75 @@ impl<'s> Checker<'s> {
         self.scopes.pop();
     }
 
+    /// 若 expr 是 `Ident != null` 返回 Some(符号 id)；否则 None。
+    fn null_test_ident(&mut self, expr: &Expr, want_null: bool) -> Option<u32> {
+        let ExprKind::Binary { op, left, right } = &expr.kind else {
+            return None;
+        };
+        let is_ne = matches!(op, BinaryOp::Ne);
+        let is_eq = matches!(op, BinaryOp::Eq);
+        // want_null=true 表示"值为 null"（x == null）；want_null=false 表示"值非空"（x != null）。
+        if (want_null && !is_eq) || (!want_null && !is_ne) {
+            return None;
+        }
+        let is_null = |e: &Expr| matches!(e.kind, ExprKind::Null);
+        let (ident_expr, null_side) = if is_null(left) {
+            (right, true)
+        } else if is_null(right) {
+            (left, false)
+        } else {
+            return None;
+        };
+        let _ = null_side;
+        let ExprKind::Ident(ident) = &ident_expr.kind else {
+            return None;
+        };
+        let id = self.lookup(&ident.name)?;
+        // 仅对可空局部变量窄化
+        let ty = self.symbol_type(id);
+        if !matches!(ty, Type::Nullable(_)) {
+            return None;
+        }
+        Some(id.0)
+    }
+
+    /// 在分支内窄化 x 为非空类型。
+    fn narrow_non_null(&mut self, symbol_id: u32) {
+        let ty = match &self.symbols[symbol_id as usize].kind {
+            SymbolKind::Local { ty, .. } | SymbolKind::Param { ty } => ty.clone(),
+            _ => return,
+        };
+        let Type::Nullable(inner) = ty else {
+            return;
+        };
+        let mut scope = HashMap::new();
+        scope.insert(symbol_id, *inner);
+        self.narrowed.push(scope);
+    }
+
+    /// 分析条件表达式：`x != null` → then 分支窄化 x；`x == null` → else 分支窄化 x。
+    /// 返回 (then 是否压入窄化, else 是否压入窄化)，检查完用 pop_narrowing 弹出。
+    fn apply_condition_narrowing(&mut self, cond: &Expr) -> (bool, bool) {
+        if let Some(id) = self.null_test_ident(cond, false) {
+            self.narrow_non_null(id);
+            return (true, false);
+        }
+        if let Some(id) = self.null_test_ident(cond, true) {
+            self.else_narrow_id = Some(id);
+            return (false, true);
+        }
+        (false, false)
+    }
+
+    fn pop_narrowing(&mut self, then_narrow: bool, else_narrow: bool) {
+        if then_narrow {
+            self.narrowed.pop();
+        }
+        if else_narrow {
+            self.else_narrow_id = None;
+        }
+    }
+
     fn check_stmt(&mut self, statement: &Stmt) {
         match &statement.kind {
             StmtKind::Block(block) => self.check_block(block),
@@ -2180,10 +2262,17 @@ impl<'s> Checker<'s> {
                         cond.span,
                     );
                 }
+                let (then_narrow, else_narrow) = self.apply_condition_narrowing(cond);
                 self.check_stmt(then);
                 if let Some(else_) = else_ {
+                    if else_narrow {
+                        if let Some(id) = self.else_narrow_id {
+                            self.narrow_non_null(id);
+                        }
+                    }
                     self.check_stmt(else_);
                 }
+                self.pop_narrowing(then_narrow, else_narrow);
             }
             StmtKind::While { cond, body } => {
                 let ty = self.check_expr(cond);
@@ -2193,9 +2282,11 @@ impl<'s> Checker<'s> {
                         cond.span,
                     );
                 }
+                let (then_narrow, _) = self.apply_condition_narrowing(cond);
                 self.loop_depth += 1;
                 self.check_stmt(body);
                 self.loop_depth -= 1;
+                self.pop_narrowing(then_narrow, false);
             }
             StmtKind::For {
                 init,
@@ -2781,8 +2872,15 @@ impl<'s> Checker<'s> {
                         cond.span,
                     );
                 }
+                let (then_narrow, else_narrow) = self.apply_condition_narrowing(cond);
                 let then_ty = self.check_expr(then);
+                if else_narrow {
+                    if let Some(id) = self.else_narrow_id {
+                        self.narrow_non_null(id);
+                    }
+                }
                 let else_ty = self.check_expr(else_);
+                self.pop_narrowing(then_narrow, else_narrow);
                 if self.is_assignable(&then_ty, &else_ty) {
                     else_ty
                 } else if self.is_assignable(&else_ty, &then_ty) {
