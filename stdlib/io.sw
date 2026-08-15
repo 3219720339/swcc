@@ -81,6 +81,9 @@ export function input_float(prompt: string): float {
 /// 格式符与宽度/精度同 format（%d/%i/%u/%x/%X/%o/%f/%e/%g/%s/%c/%%）。
 export extern c function print_format(fmt: string, ...args: any): void;
 
+/// 冲刷 stdout 缓冲（print 后立即输出用；进度条/倒计时提示场景）。
+export extern c function flush(): void;
+
 // ---------------------------------------------------------------------------
 // 中文函数名（转发到英文实现，火山风格命名）
 // ---------------------------------------------------------------------------
@@ -99,6 +102,10 @@ export function 输入整数(prompt: string): int {
 
 export function 输入小数(prompt: string): float {
     return input_float(prompt);
+}
+
+export function 冲刷输出(): void {
+    flush();
 }
 
 // 格式化输出：varargs 无法转发（展开只支持数组字面量），extern c 直连映射。

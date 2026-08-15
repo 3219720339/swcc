@@ -182,3 +182,10 @@ export function 分开捕获输出(cmd: string, args: string[]): string[] {
 export function 进程是否运行(pid: int): bool {
     return is_process_running(pid);
 }
+
+/// 当前进程内存占用（KB）；失败返回 -1。
+export extern c function memory_usage_kb(): int;
+
+export function 取内存占用(): int {
+    return memory_usage_kb();
+}

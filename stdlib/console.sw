@@ -46,6 +46,12 @@ export extern c function console_width(): int;
 /// 终端高度（字符行数）；非控制台（重定向/CI 管道）返回 0。
 export extern c function console_height(): int;
 
+/// 清空当前行并回到行首（进度条重绘用）。
+export extern c function console_clear_line(): void;
+
+/// 设置终端窗口标题。
+export extern c function console_title(text: string): void;
+
 // ---------------------------------------------------------------------------
 // 中文函数名（转发到英文实现，火山风格命名）
 // ---------------------------------------------------------------------------
@@ -84,4 +90,12 @@ export function 取终端宽度(): int {
 
 export function 取终端高度(): int {
     return console_height();
+}
+
+export function 清空当前行(): void {
+    console_clear_line();
+}
+
+export function 设置窗口标题(text: string): void {
+    console_title(text);
 }

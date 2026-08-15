@@ -1771,6 +1771,33 @@ Sw 编译器（swcc）开发进度
                         - 验证：本机 89 examples 全过、cargo test 56 全绿
                           （macOS 待 CI 复验）
 
+    2026-08-15 12:20  标准库批 9（常用基础，26 函数全中英文）：
+                        - std/string +6：char_at（UTF-8 取字符）、left/right
+                          （前/后 n 字符，UTF-8 安全）、starts_with_any/
+                          ends_with_any（多前缀/后缀匹配）、edit_distance
+                          （莱文斯坦距离，字节级 DP，C）
+                        - std/math +6（全部纯 Sw）：factorial（溢出保护
+                          n>20 返回 0）、is_prime（6k±1 加速）、next_prime、
+                          percent（百分比，total=0 返回 0）、round_to
+                          （数值级舍入，digits 0-6）、lerp（线性插值）
+                        - std/array +8（全部纯 Sw）：flatten_string
+                          （string[][]→string[]）、first/last × int/float/
+                          string（空数组返回 fallback，杜绝越界）、avg_float
+                        - std/map +2（纯 Sw）：map_merge（b 覆盖 a 新 map）、
+                          map_from_arrays（键值数组建 map，短者为准）
+                        - std/io +1 flush（C：fflush stdout）、std/console +2
+                          console_clear_line（ANSI 2K 清当前行）、console_title
+                          （SetConsoleTitleA / ANSI OSC）、std/os +1
+                          memory_usage_kb（K32GetProcessMemoryInfo /
+                          getrusage ru_maxrss；psapi 版 GetProcessMemoryInfo
+                          实测失败改 kernel32 版，免 -lpsapi）
+                        - codegen extern_c_symbol 追加 5 个映射
+                        - 新增探针 probe-batch9.sw（44 断言），登记
+                          run-examples.py；demo 新增 demo-batch9.sw 输出存
+                          outputs/demo-batch9.txt
+                        - 验证：cargo test 56 全绿；90 examples 全过；
+                          fmt 通过；runtime.c 无新外部依赖
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、

@@ -518,3 +518,76 @@ export function 大小写互换(text: string): string {
 export function 前补零(text: string, width: int): string {
     return zfill(text, width);
 }
+
+/// 取第 index 个字符（UTF-8 码点）；越界返回空串。
+export function char_at(text: string, index: int): string {
+    const code = char_code(text, index);
+    return code < 0 ? "" : from_code_point(code);
+}
+
+/// 取前 n 个字符（UTF-8 码点，越界自动裁剪）。left("hello", 2) == "he"。
+export function left(text: string, n: int): string {
+    const count = n < 0 ? 0 : (n > text.length ? text.length : n);
+    return truncate(text, count);
+}
+
+/// 取后 n 个字符（UTF-8 码点，越界自动裁剪）。right("hello", 2) == "lo"。
+export function right(text: string, n: int): string {
+    const arr = chars(text);
+    const count = n < 0 ? 0 : (n > arr.length ? arr.length : n);
+    let result = "";
+    let i = arr.length - count;
+    while (i < arr.length) {
+        result = result + arr[i];
+        i++;
+    }
+    return result;
+}
+
+/// text 是否以 prefixes 中任意一个开头（文件扩展名/URL 白名单判断常用）。
+export function starts_with_any(text: string, prefixes: string[]): bool {
+    for (const prefix of prefixes) {
+        if (starts_with(text, prefix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// text 是否以 suffixes 中任意一个结尾。
+export function ends_with_any(text: string, suffixes: string[]): bool {
+    for (const suffix of suffixes) {
+        if (ends_with(text, suffix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// 莱文斯坦编辑距离（字节级 DP；模糊搜索/纠错提示用）。
+/// 示例：edit_distance("kitten", "sitting") == 3。
+export extern c function edit_distance(a: string, b: string): int;
+
+export function 取字符文本(text: string, index: int): string {
+    return char_at(text, index);
+}
+
+export function 取左边文本(text: string, n: int): string {
+    return left(text, n);
+}
+
+export function 取右边文本(text: string, n: int): string {
+    return right(text, n);
+}
+
+export function 开头为任意(text: string, prefixes: string[]): bool {
+    return starts_with_any(text, prefixes);
+}
+
+export function 结尾为任意(text: string, suffixes: string[]): bool {
+    return ends_with_any(text, suffixes);
+}
+
+export function 编辑距离(a: string, b: string): int {
+    return edit_distance(a, b);
+}

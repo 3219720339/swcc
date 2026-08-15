@@ -162,3 +162,96 @@ export function 取随机字符串(length: int): string {
 export function 取随机令牌(length: int): string {
     return random_token(length);
 }
+
+/// 阶乘：factorial(5) == 120；n<0 或 n>20 返回 0（溢出保护）。
+export function factorial(n: int): int {
+    if (n < 0 || n > 20) {
+        return 0;
+    }
+    let result = 1;
+    let i = 2;
+    while (i <= n) {
+        result = result * i;
+        i++;
+    }
+    return result;
+}
+
+/// 是否为素数（n<2 为 false）。
+export function is_prime(n: int): bool {
+    if (n < 2) {
+        return false;
+    }
+    if (n == 2 || n == 3) {
+        return true;
+    }
+    if (n % 2 == 0 || n % 3 == 0) {
+        return false;
+    }
+    let i = 5;
+    while (i * i <= n) {
+        if (n % i == 0 || n % (i + 2) == 0) {
+            return false;
+        }
+        i += 6;
+    }
+    return true;
+}
+
+/// 大于 n 的下一个素数（n<2 返回 2）。
+export function next_prime(n: int): int {
+    let candidate = n < 2 ? 2 : n + 1;
+    while (!is_prime(candidate)) {
+        candidate++;
+    }
+    return candidate;
+}
+
+/// 百分比：percent(25, 200) == 12.5；total==0 返回 0。
+export function percent(value: int, total: int): float {
+    if (total == 0) {
+        return 0.0;
+    }
+    return value as float * 100.0 / total as float;
+}
+
+/// 数值级四舍五入：round_to(3.14159, 2) == 3.14；digits 限制 0-6。
+export function round_to(value: float, digits: int): float {
+    const d = digits < 0 ? 0 : (digits > 6 ? 6 : digits);
+    let factor = 1.0;
+    let i = 0;
+    while (i < d) {
+        factor = factor * 10.0;
+        i++;
+    }
+    return round(value * factor) / factor;
+}
+
+/// 线性插值：lerp(0.0, 10.0, 0.5) == 5.0。
+export function lerp(a: float, b: float, t: float): float {
+    return a + (b - a) * t;
+}
+
+export function 取阶乘(n: int): int {
+    return factorial(n);
+}
+
+export function 是否素数(n: int): bool {
+    return is_prime(n);
+}
+
+export function 下一个素数(n: int): int {
+    return next_prime(n);
+}
+
+export function 取百分比(value: int, total: int): float {
+    return percent(value, total);
+}
+
+export function 按位数舍入(value: float, digits: int): float {
+    return round_to(value, digits);
+}
+
+export function 线性插值(a: float, b: float, t: float): float {
+    return lerp(a, b, t);
+}

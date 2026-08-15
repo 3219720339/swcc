@@ -107,3 +107,35 @@ export function map_get_or(map: ptr<void>, key: string, fallback: string): strin
 export function 取键值或默认(map: ptr<void>, key: string, fallback: string): string {
     return map_get_or(map, key, fallback);
 }
+
+/// 合并两个 map，返回新 map（b 的同名键覆盖 a）。配置合并常用。
+export function map_merge(a: ptr<void>, b: ptr<void>): ptr<void> {
+    const result = map_new();
+    for (const key of map_keys(a)) {
+        map_set(result, key, map_get(a, key) ?? "");
+    }
+    for (const key of map_keys(b)) {
+        map_set(result, key, map_get(b, key) ?? "");
+    }
+    return result;
+}
+
+/// 用 keys/values 数组建 map（长度不同以短者为准）。
+export function map_from_arrays(keys: string[], values: string[]): ptr<void> {
+    const result = map_new();
+    const n = keys.length < values.length ? keys.length : values.length;
+    let i = 0;
+    while (i < n) {
+        map_set(result, keys[i], values[i]);
+        i++;
+    }
+    return result;
+}
+
+export function 合并映射(a: ptr<void>, b: ptr<void>): ptr<void> {
+    return map_merge(a, b);
+}
+
+export function 数组建映射(keys: string[], values: string[]): ptr<void> {
+    return map_from_arrays(keys, values);
+}

@@ -317,3 +317,81 @@ export function 数组分块小数(items: float[], size: int): float[][] {
 export function 数组分块文本(items: string[], size: int): string[][] {
     return chunk_string(items, size);
 }
+
+/// 把 string[][] 展平为 string[]（按行顺序）。flatten_string([["a","b"],["c"]]) == ["a","b","c"]。
+export function flatten_string(rows: string[][]): string[] {
+    const result: string[] = [];
+    for (const row of rows) {
+        for (const item of row) {
+            result.push(item);
+        }
+    }
+    return result;
+}
+
+/// int[] 首元素；空数组返回 fallback。
+export function first_int(items: int[], fallback: int): int {
+    return items.length > 0 ? items[0] : fallback;
+}
+
+/// int[] 尾元素；空数组返回 fallback。
+export function last_int(items: int[], fallback: int): int {
+    return items.length > 0 ? items[items.length - 1] : fallback;
+}
+
+/// float[] 首元素；空数组返回 fallback。
+export function first_float(items: float[], fallback: float): float {
+    return items.length > 0 ? items[0] : fallback;
+}
+
+/// float[] 尾元素；空数组返回 fallback。
+export function last_float(items: float[], fallback: float): float {
+    return items.length > 0 ? items[items.length - 1] : fallback;
+}
+
+/// string[] 首元素；空数组返回 fallback。
+export function first_string(items: string[], fallback: string): string {
+    return items.length > 0 ? items[0] : fallback;
+}
+
+/// string[] 尾元素；空数组返回 fallback。
+export function last_string(items: string[], fallback: string): string {
+    return items.length > 0 ? items[items.length - 1] : fallback;
+}
+
+/// float[] 平均值；空数组返回 0.0。
+export function avg_float(items: float[]): float {
+    return items.length == 0 ? 0.0 : sum_float(items) / items.length as float;
+}
+
+export function 数组展平(rows: string[][]): string[] {
+    return flatten_string(rows);
+}
+
+export function 取首元素整数(items: int[], fallback: int): int {
+    return first_int(items, fallback);
+}
+
+export function 取尾元素整数(items: int[], fallback: int): int {
+    return last_int(items, fallback);
+}
+
+export function 取首元素小数(items: float[], fallback: float): float {
+    return first_float(items, fallback);
+}
+
+export function 取尾元素小数(items: float[], fallback: float): float {
+    return last_float(items, fallback);
+}
+
+export function 取首元素文本(items: string[], fallback: string): string {
+    return first_string(items, fallback);
+}
+
+export function 取尾元素文本(items: string[], fallback: string): string {
+    return last_string(items, fallback);
+}
+
+export function 取数组平均小数(items: float[]): float {
+    return avg_float(items);
+}

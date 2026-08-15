@@ -514,6 +514,11 @@ void print(sw_array* args) {
     sw_print_any(args);
 }
 
+// 冲刷 stdout（进度条/倒计时提示等场景 print 后立即输出需要）。
+void sw_flush(void) {
+    fflush(stdout);
+}
+
 // 等待按键后继续（防止控制台窗口运行完立刻关闭）。
 void sw_pause(void) {
     const char* msg = "请按任意键继续...";
@@ -593,6 +598,31 @@ void sw_console_hide_cursor(void) {
 
 void sw_console_show_cursor(void) {
     sw_console_write("\x1b[?25h");
+}
+
+// 清空当前行并回到行首（进度条重绘用）。
+void sw_console_clear_line(void) {
+    sw_console_write("\x1b[2K\r");
+}
+
+// 设置终端窗口标题（Windows SetConsoleTitleA / POSIX ANSI OSC 序列）。
+void sw_console_title(sw_string* text) {
+#if defined(_WIN32)
+    extern int SetConsoleTitleA(const char* title);
+    if (text != NULL) {
+        char* copy = (char*)sw_gc_alloc((uint64_t)text->len + 1);
+        memcpy(copy, text->data, (uint64_t)text->len);
+        copy[text->len] = 0;
+        SetConsoleTitleA(copy);
+    }
+#else
+    if (text != NULL) {
+        fwrite("\x1b]0;", 1, 4, stdout);
+        fwrite(text->data, 1, (uint64_t)text->len, stdout);
+        fwrite("\x07", 1, 1, stdout);
+        fflush(stdout);
+    }
+#endif
 }
 
 // getch()：读一个按键不回车。Windows _getch；POSIX termios 原始模式单字节读。
@@ -4700,6 +4730,36 @@ int64_t sw_pid(void) {
 #else
     extern int getpid(void);
     return (int64_t)getpid();
+#endif
+}
+
+// 当前进程内存占用（KB）。
+// Windows：K32GetProcessMemoryInfo（kernel32，Win7+）读 WorkingSetSize。
+// POSIX：getrusage(RUSAGE_SELF) 的 ru_maxrss（Linux 单位 KB；macOS 单位字节）。
+int64_t sw_memory_usage_kb(void) {
+#if defined(_WIN32)
+    extern void* GetCurrentProcess(void);
+    extern int K32GetProcessMemoryInfo(void* process, void* counters, unsigned int cb);
+    unsigned char counters[72];
+    memset(counters, 0, sizeof(counters));
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), counters, sizeof(counters)) != 0) {
+        uint64_t working_set = *(uint64_t*)(counters + 16);  // WorkingSetSize
+        return (int64_t)(working_set / 1024);
+    }
+    return -1;
+#else
+    extern int getrusage(int who, void* usage);
+    unsigned char usage[256];
+    memset(usage, 0, sizeof(usage));
+    if (getrusage(0 /*RUSAGE_SELF*/, usage) == 0) {
+        long maxrss = *(long*)(usage + 32);  // ru_maxrss
+#if defined(__APPLE__)
+        return (int64_t)(maxrss / 1024);     // macOS 单位字节
+#else
+        return (int64_t)maxrss;              // Linux 单位 KB
+#endif
+    }
+    return -1;
 #endif
 }
 
@@ -11590,4 +11650,48 @@ sw_string* slugify(sw_string* text) {
     }
     out[w] = 0;
     return sw_string_from_literal(out, w);
+}
+
+// 莱文斯坦编辑距离（字节级 DP；模糊搜索/纠错提示用）。
+int64_t edit_distance(sw_string* a, sw_string* b) {
+    int64_t alen = a != NULL ? a->len : 0;
+    int64_t blen = b != NULL ? b->len : 0;
+    if (alen == 0) {
+        return blen;
+    }
+    if (blen == 0) {
+        return alen;
+    }
+    int64_t* prev = (int64_t*)malloc((uint64_t)(blen + 1) * sizeof(int64_t));
+    int64_t* curr = (int64_t*)malloc((uint64_t)(blen + 1) * sizeof(int64_t));
+    if (prev == NULL || curr == NULL) {
+        if (prev != NULL) {
+            free(prev);
+        }
+        if (curr != NULL) {
+            free(curr);
+        }
+        return 0;
+    }
+    for (int64_t j = 0; j <= blen; j++) {
+        prev[j] = j;
+    }
+    for (int64_t i = 1; i <= alen; i++) {
+        curr[0] = i;
+        for (int64_t j = 1; j <= blen; j++) {
+            int64_t cost = a->data[i - 1] == b->data[j - 1] ? 0 : 1;
+            int64_t del = prev[j] + 1;
+            int64_t ins = curr[j - 1] + 1;
+            int64_t sub = prev[j - 1] + cost;
+            int64_t best = del < ins ? del : ins;
+            curr[j] = best < sub ? best : sub;
+        }
+        int64_t* swap = prev;
+        prev = curr;
+        curr = swap;
+    }
+    int64_t result = prev[blen];
+    free(prev);
+    free(curr);
+    return result;
 }
