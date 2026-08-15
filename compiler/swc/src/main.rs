@@ -10,6 +10,8 @@ use sw_common::{Diagnostics, Severity, Source};
 use sw_frontend::Parser;
 use sw_semantic::{MirModule, Type, analyze};
 
+mod lsp;
+
 struct BuildOptions {
     output: Option<PathBuf>,
     target: String,
@@ -124,6 +126,9 @@ fn main() {
     if command == "init" {
         cmd_init(&args);
         return;
+    }
+    if command == "lsp" {
+        std::process::exit(lsp::run_lsp());
     }
     if !matches!(command, "check" | "build" | "run" | "test") {
         eprintln!("未知命令 `{command}`；可用 `swc help` 查看用法");
@@ -405,6 +410,7 @@ fn print_help() {
     println!("  run                编译、链接并运行");
     println!("  test               编译并运行 @test 测试（退出码=失败数）");
     println!("  init [-y]          在当前目录生成默认 swcc.toml（-y 覆盖已存在文件）");
+    println!("  lsp                LSP 语言服务器（JSON-RPC over stdio，供编辑器接入）");
     println!("  help               显示本帮助");
     println!();
     println!("选项:");
