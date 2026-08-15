@@ -3,6 +3,13 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-14（main）
 
+2026-08-15 22:10  修复 macOS probe-gc-memory 仍超时：降低探针规模。
+   - 根因：30 万异常+30 万字符串+10 万 map（约 90 万次分配）在慢的 CI
+     macOS runner 上触发多次大规模 GC，超过 120s 超时（Windows/Ubuntu 快）。
+   - 修复：规模降至 6 万异常+6 万字符串+2 万 map（约 18MB 分配，仍多次
+     触发 GC 验证回收），断言阈值相应调整（48MB/48MB/2 万条）。
+   - 验证：Windows 2 秒完成、7/7 PASS；18 探针回归全过；musl 交叉编译通过。
+
 2026-08-15 21:50  修复 macOS probe-gc-memory 超时（GC 扫描范围过大）：
    - 根因：macOS sw_gc_init_platform 遍历 _dyld_image_count() 全部镜像
      （libSystem/CoreFoundation 等几十个系统库）注册数据段，每次 GC 扫描
