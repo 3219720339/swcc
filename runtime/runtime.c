@@ -91,6 +91,21 @@ static int sw_gc_initialized = 0;
 static sw_gc_block** sw_gc_sorted = NULL;
 static uint64_t sw_gc_sorted_count = 0;
 
+// GC 暂停计数：C 函数在"纯内部计算 + 大量临时 GC 对象"期间暂停回收，
+// 避免保守式栈扫描对临时对象的误回收（rx 引擎节点树/码点数组等）。
+// 暂停期间 sw_gc_alloc 照常分配（不触发 collect），恢复后由后续 GC 回收。
+static int sw_gc_disabled = 0;
+
+static void sw_gc_disable(void) {
+    sw_gc_disabled++;
+}
+
+static void sw_gc_enable(void) {
+    if (sw_gc_disabled > 0) {
+        sw_gc_disabled--;
+    }
+}
+
 static int sw_gc_data_range_count = 0;
 static uintptr_t sw_gc_data_ranges[SW_GC_MAX_DATA_RANGES][2];
 
@@ -345,7 +360,8 @@ static void* sw_gc_alloc(uint64_t size) {
     if (size < 8) {
         size = 8;
     }
-    if (!sw_gc_in_collect && sw_gc_allocated_since_collect >= sw_gc_threshold) {
+    if (!sw_gc_in_collect && sw_gc_disabled == 0 &&
+        sw_gc_allocated_since_collect >= sw_gc_threshold) {
         sw_gc_collect();
         if (sw_gc_threshold < SW_GC_MAX_THRESHOLD) {
             sw_gc_threshold *= 2;
@@ -9394,7 +9410,22 @@ static sw_string* rx_slice(int64_t* text, int64_t start, int64_t end) {
 }
 
 // 正则匹配：整个文本是否完全匹配模式（bool）。
+static int64_t rx_regex_match_impl(sw_string* text, sw_string* pattern);
+static sw_string* rx_regex_find_impl(sw_string* text, sw_string* pattern);
+static sw_array* rx_regex_find_all_impl(sw_string* text, sw_string* pattern);
+static sw_string* rx_regex_replace_impl(sw_string* text, sw_string* pattern, sw_string* replacement);
+static sw_array* rx_regex_split_impl(sw_string* text, sw_string* pattern);
+static sw_array* rx_regex_captures_impl(sw_string* text, sw_string* pattern);
+
 int64_t regex_match(sw_string* text, sw_string* pattern) {
+    // GC 暂停：rx 编译树/码点数组为 C 临时对象，保守式扫描可能误回收。
+    sw_gc_disable();
+    int64_t result = rx_regex_match_impl(text, pattern);
+    sw_gc_enable();
+    return result;
+}
+
+static int64_t rx_regex_match_impl(sw_string* text, sw_string* pattern) {
     if (text == NULL || pattern == NULL) {
         return 0;
     }
@@ -9411,6 +9442,13 @@ int64_t regex_match(sw_string* text, sw_string* pattern) {
 
 // 正则查找：返回第一个匹配子串；无匹配返回空串。
 sw_string* regex_find(sw_string* text, sw_string* pattern) {
+    sw_gc_disable();
+    sw_string* result = rx_regex_find_impl(text, pattern);
+    sw_gc_enable();
+    return result;
+}
+
+static sw_string* rx_regex_find_impl(sw_string* text, sw_string* pattern) {
     if (text == NULL || pattern == NULL) {
         return sw_string_from_literal("", 0);
     }
@@ -9427,6 +9465,13 @@ sw_string* regex_find(sw_string* text, sw_string* pattern) {
 
 // 正则查找全部：返回所有匹配子串（非重叠，string[]）。
 sw_array* regex_find_all(sw_string* text, sw_string* pattern) {
+    sw_gc_disable();
+    sw_array* result = rx_regex_find_all_impl(text, pattern);
+    sw_gc_enable();
+    return result;
+}
+
+static sw_array* rx_regex_find_all_impl(sw_string* text, sw_string* pattern) {
     sw_array* out = sw_array_new(8, 16);
     if (text == NULL || pattern == NULL) {
         out->len = 0;
@@ -9469,6 +9514,13 @@ sw_array* regex_find_all(sw_string* text, sw_string* pattern) {
 
 // 正则替换：把 text 中所有匹配替换为 replacement（支持 $0 与 $1..$9 分组引用）。
 sw_string* regex_replace(sw_string* text, sw_string* pattern, sw_string* replacement) {
+    sw_gc_disable();
+    sw_string* result = rx_regex_replace_impl(text, pattern, replacement);
+    sw_gc_enable();
+    return result;
+}
+
+static sw_string* rx_regex_replace_impl(sw_string* text, sw_string* pattern, sw_string* replacement) {
     if (text == NULL || pattern == NULL || replacement == NULL) {
         return text;
     }
@@ -9594,6 +9646,13 @@ static int64_t rx_search_from(
 
 // 按正则匹配位置拆分：regex_split("a,b;c", "[,;]") == ["a","b","c"]。
 sw_array* regex_split(sw_string* text, sw_string* pattern) {
+    sw_gc_disable();
+    sw_array* result = rx_regex_split_impl(text, pattern);
+    sw_gc_enable();
+    return result;
+}
+
+static sw_array* rx_regex_split_impl(sw_string* text, sw_string* pattern) {
     sw_array* out = sw_array_new(8, 16);
     if (text == NULL || pattern == NULL) {
         out->len = 0;
@@ -9656,6 +9715,13 @@ sw_string* regex_escape(sw_string* text) {
 // 提取第一个匹配的捕获组（string[]，[0] 是整个匹配，[1..] 各组；
 // 未参与匹配的组返回空串）。
 sw_array* regex_captures(sw_string* text, sw_string* pattern) {
+    sw_gc_disable();
+    sw_array* result = rx_regex_captures_impl(text, pattern);
+    sw_gc_enable();
+    return result;
+}
+
+static sw_array* rx_regex_captures_impl(sw_string* text, sw_string* pattern) {
     sw_array* out = sw_array_new(8, 8);
     if (text == NULL || pattern == NULL) {
         out->len = 0;
@@ -9667,7 +9733,14 @@ sw_array* regex_captures(sw_string* text, sw_string* pattern) {
     int64_t start = 0;
     int64_t end = 0;
     if (!rx_search(node, cp.data, cp.len, &start, &end)) {
-        out->len = 0;
+        // 无匹配：返回与组数等长的空串数组（文档承诺"未参与匹配的组返回空串"），
+        // 避免调用方访问空数组元素得到 NULL 字符串。
+        int64_t count = groups > 8 ? 8 : groups;
+        for (int64_t g = 0; g < count; g++) {
+            ((int64_t*)out->data)[g] = (int64_t)sw_string_from_literal("", 0);
+        }
+        out->len = count;
+        out->cap = count;
         return out;
     }
     int64_t caps[16];

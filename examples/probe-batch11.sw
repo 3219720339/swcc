@@ -29,6 +29,12 @@ function main(): int {
         caps.length == 4 && caps[0] == "2026-08-15" && caps[1] == "2026" && caps[2] == "08" && caps[3] == "15",
         "regex_captures groups"
     );
+    passed = passed & check(regex_split("no-separator-here", ",").length == 1, "regex_split no match");
+    const no_caps = regex_captures("abc", "(\\d+)");
+    passed = passed & check(
+        no_caps.length == 2 && no_caps[0] == "" && no_caps[1] == "",
+        "regex_captures no match"
+    );
 
     // ---------- string 实用 ----------
     const wrapped = word_wrap("hello world swcc lang", 10);

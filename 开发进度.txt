@@ -1860,10 +1860,32 @@ Sw 编译器（swcc）开发进度
                         - 验证：cargo test 56 全绿；92 examples 全过；
                           fmt 通过；runtime.c 无新外部依赖
 
+     2026-08-15 09:53  批 11 崩溃根因定位与修复（跨平台方案，更正此前结论）：
+                        - 此前把批 11 崩溃归因于"保守式 GC 对 rx 临时对象
+                          误回收"，经纯 C 复现 + 源码分析确认**不准确**：
+                          GC 从未触发过 collect（入口埋点无输出），崩溃
+                          与 GC 无关，与 http 也无关
+                        - 真正根因：regex_captures 无匹配时返回 len=0 的
+                          空数组，而 Sw 的 && 编译为按位与（不短路）——
+                          测试里 `no_caps.length == 2 && no_caps[0] == ""`
+                          会继续求值 no_caps[0]，空数组元素是 NULL 指针，
+                          string_eq 解引用 NULL → 0xC0000005
+                          （http6 是唯一访问空数组元素的用例，其余变体
+                          只读 .length 所以不崩，造成"http 相关"假象）
+                        - 修复（runtime.c）：rx_regex_captures_impl 无匹配
+                          时返回与组数等长的空串数组（符合文档承诺"未参与
+                          匹配的组返回空串"），不再返回空数组
+                        - 防御性保留：sw_gc_disable/enable 暂停体系（rx
+                          编译树/码点数组为 C 临时对象，防未来阈值触发时
+                          误回收）；移除全部临时调试打印
+                        - 恢复 probe-batch11 完整断言（17 断言含两个无匹配
+                          case），tmp-debug-http6.sw 复现用例通过
+                        - 验证：probe-batch11/http6/regex/http/batch7-10/
+                          gc/hash2/util2 全过；cargo test 56 全绿
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
-       2. 编译器：GC 保守式扫描对 C 函数临时对象误回收（rx 节点树等）
-       3. 标准库继续扩充：std/encoding（base32/html_unescape）、
+       2. 标准库继续扩充：std/encoding（base32/html_unescape）、
           或 std/math 统计（mean/median/variance/stdev）、
           或 std/unicode（is_cjk 等中文判断）
 
