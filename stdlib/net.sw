@@ -78,6 +78,9 @@ export function 接收UDP数据(fd: int, max_bytes: int): string {
 /// 失败/超时返回 -1。用于避免对不可达主机无限阻塞。
 export extern c function net_connect_timeout(host: string, port: int, timeout_ms: int): int;
 
+/// 最近一次网络调用的失败详情（用于诊断，失败后读取）。
+export extern c function net_last_error(): string;
+
 /// 设置接收超时（毫秒，0 不限时）；成功返回 0，失败返回 -1。
 /// 超时后 net_recv 返回空串。
 export extern c function net_set_recv_timeout(fd: int, timeout_ms: int): int;
@@ -108,6 +111,10 @@ export extern c function net_send_all(fd: int, data: string): int;
 
 export function 带超时连接(host: string, port: int, timeout_ms: int): int {
     return net_connect_timeout(host, port, timeout_ms);
+}
+
+export function 网络错误详情(): string {
+    return net_last_error();
 }
 
 export function 设置接收超时(fd: int, timeout_ms: int): int {

@@ -1718,6 +1718,18 @@ Sw 编译器（swcc）开发进度
                        - 验证：runtime.c 三平台交叉编译通过；cargo test 56
                          全绿；本机 89 examples 全过（macOS 待 CI 复验）
 
+    2026-08-15 08:17  新增 std/net 错误详情 API net_last_error（网络错误详情）：
+                       - 目的：CI macOS 上 net_connect_timeout 失败原因无法本地复现，
+                         需要把失败点打出来；该 API 同时作为 stdlib 长期诊断能力
+                       - runtime.c：新增 sw_net_last_error_buf + sw_net_record_error，
+                         sw_net_connect_timeout 各失败点（参数/getaddrinfo/socket/
+                         connect/select/so_error）记录详情与数值；sw_net_errno_value 按
+                         三平台取 errno/WSAGetLastError
+                       - stdlib/net.sw：export net_last_error + 中文别名 网络错误详情；
+                         codegen 映射 +1；probe-batch8 失败时打印详情与 port
+                       - 验证：cargo test 56 全绿、89 examples 全过、runtime.c 三平台
+                         交叉编译通过（本批不修行为，纯加诊断，等 CI 打出失败点）
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、

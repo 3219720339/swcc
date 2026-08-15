@@ -14,6 +14,7 @@ import {
     net_peer_ip,
     net_peer_port,
     net_resolve,
+    net_last_error,
 } from "std/net";
 import { crc32, crc32_file, crc16, sha1, sha1_file, hmac_sha256 } from "std/hash";
 import {
@@ -51,6 +52,9 @@ function main(): int {
     const port = net_port(server);
 
     const client = net_connect_timeout("127.0.0.1", port, 2000);
+    if (client < 0) {
+        println(`net_connect_timeout 失败详情: ${net_last_error()} (port=${port})`);
+    }
     passed = passed & check(client >= 0, "net_connect_timeout ok");
     if (client >= 0) {
         const peer = net_accept(server);

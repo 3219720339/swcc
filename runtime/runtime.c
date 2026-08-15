@@ -6875,8 +6875,28 @@ static int sw_net_connect_result(int64_t fd) {
 }
 
 // 带超时的 TCP 连接（timeout_ms<=0 不限时）。返回 fd；失败/超时返回 -1。
+static char sw_net_last_error_buf[256] = "";
+static void sw_net_record_error(const char* msg, int64_t detail) {
+    snprintf(sw_net_last_error_buf, sizeof(sw_net_last_error_buf), "%s (%lld)", msg, (long long)detail);
+}
+static int64_t sw_net_errno_value(void) {
+#if defined(_WIN32)
+    extern int WSAGetLastError(void);
+    return WSAGetLastError();
+#elif defined(__APPLE__)
+    extern int* __error(void);
+    return *__error();
+#else
+    extern int* __errno_location(void);
+    return *__errno_location();
+#endif
+}
+sw_string* sw_net_last_error(void) {
+    return sw_string_from_literal(sw_net_last_error_buf, (int64_t)strlen(sw_net_last_error_buf));
+}
 int64_t sw_net_connect_timeout(sw_string* host, int64_t port, int64_t timeout_ms) {
     if (host == NULL || port < 0 || port > 65535) {
+        sw_net_record_error("参数非法", port);
         return -1;
     }
     char* host_copy = (char*)sw_gc_alloc((uint64_t)host->len + 1);
@@ -6904,19 +6924,23 @@ int64_t sw_net_connect_timeout(sw_string* host, int64_t port, int64_t timeout_ms
     hints.family = 2;
     hints.socktype = 1;
     void* results = NULL;
-    if (getaddrinfo(host_copy, port_text, &hints, &results) != 0 || results == NULL) {
+    int gai_rc = getaddrinfo(host_copy, port_text, &hints, &results);
+    if (gai_rc != 0 || results == NULL) {
+        sw_net_record_error("getaddrinfo", gai_rc);
         return -1;
     }
     sw_addrinfo* info = (sw_addrinfo*)results;
 #if defined(_WIN32)
     uintptr_t sock = socket(info->family, info->socktype, info->protocol);
     if (sock == (uintptr_t)~0) {
+        sw_net_record_error("socket", sw_net_errno_value());
         freeaddrinfo(results);
         return -1;
     }
 #else
     int sock = socket(info->family, info->socktype, info->protocol);
     if (sock < 0) {
+        sw_net_record_error("socket", sw_net_errno_value());
         freeaddrinfo(results);
         return -1;
     }
@@ -6940,6 +6964,7 @@ int64_t sw_net_connect_timeout(sw_string* host, int64_t port, int64_t timeout_ms
         in_progress = *__errno_location() == 115;  // EINPROGRESS（Linux）
 #endif
         if (!in_progress) {
+            sw_net_record_error("connect", sw_net_errno_value());
             freeaddrinfo(results);
 #if defined(_WIN32)
             closesocket(sock);
@@ -6949,7 +6974,9 @@ int64_t sw_net_connect_timeout(sw_string* host, int64_t port, int64_t timeout_ms
             return -1;
         }
         int ready = sw_net_wait_writable((int64_t)sock, timeout_ms);
-        if (ready <= 0 || sw_net_connect_result((int64_t)sock) != 0) {
+        int conn_error = ready > 0 ? sw_net_connect_result((int64_t)sock) : 0;
+        if (ready <= 0 || conn_error != 0) {
+            sw_net_record_error(ready <= 0 ? "select" : "so_error", ready <= 0 ? ready : conn_error);
             freeaddrinfo(results);
 #if defined(_WIN32)
             closesocket(sock);

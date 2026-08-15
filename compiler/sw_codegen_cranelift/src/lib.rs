@@ -1131,6 +1131,7 @@ fn extern_c_symbol(name: &str) -> &str {
         "net_accept" => "sw_net_accept",
         "net_port" => "sw_net_port",
         "net_connect_timeout" => "sw_net_connect_timeout",
+        "net_last_error" => "sw_net_last_error",
         "net_set_recv_timeout" => "sw_net_set_recv_timeout",
         "net_set_send_timeout" => "sw_net_set_send_timeout",
         "net_available" => "sw_net_available",
