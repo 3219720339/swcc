@@ -12,5 +12,6 @@
 *.lib
 *.swp
 dist/
+build-check/
 .idea/
 .vscode/

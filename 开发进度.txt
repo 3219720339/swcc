@@ -1883,6 +1883,19 @@ Sw 编译器（swcc）开发进度
                         - 验证：probe-batch11/http6/regex/http/batch7-10/
                           gc/hash2/util2 全过；cargo test 56 全绿
 
+     2026-08-15 10:05  修复后三平台交叉编译验证（本机 Windows + llvm-mingw）：
+                        - x86_64-unknown-linux-musl：probe-batch11 完整链接
+                          成功（ELF x86-64 可执行，llvm-readobj 确认）
+                        - aarch64-unknown-linux-musl：probe-batch11 完整链接
+                          成功（ELF AArch64 可执行）
+                        - aarch64-unknown-linux-gnu：fib 对象生成成功
+                          （ELF AArch64，仿 CI Windows job）
+                        - aarch64-apple-darwin：probe-batch11 对象生成成功
+                          （Mach-O arm64，仿 CI macOS job）
+                        - 即本次 runtime.c 修复在三平台目标编译链接均通过；
+                          Linux/macOS 实际运行由 GitHub Actions 三平台 CI 验证
+                        - .gitignore 追加 build-check/（交叉编译产物不入库）
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/encoding（base32/html_unescape）、
