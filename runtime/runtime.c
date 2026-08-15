@@ -7050,13 +7050,20 @@ int64_t sw_net_available(int64_t fd) {
         return -1;
     }
     return (int64_t)n;
+#elif defined(__APPLE__)
+    // macOS: ioctl(FIONREAD) 在此环境 EFAULT，改用 getsockopt(SO_NREAD)。
+    extern int getsockopt(int s, int level, int optname, void* optval, unsigned int* optlen);
+    int n = 0;
+    unsigned int len = sizeof(n);
+    if (getsockopt((int)fd, SW_SOL_SOCKET, 0x1020 /*SO_NREAD*/, &n, &len) != 0) {
+        sw_net_record_error("net_available", sw_net_errno_value());
+        return -1;
+    }
+    return (int64_t)n;
 #else
     extern int ioctl(int fd, unsigned long request, void* arg);
     int n = 0;
-    unsigned long request = 0x541B;  // FIONREAD（Linux）
-#if defined(__APPLE__)
-    request = 0x4004667Fu;           // FIONREAD（macOS/BSD）
-#endif
+    unsigned long request = 0x541B;  // FIONREAD (Linux)
     if (ioctl((int)fd, request, &n) != 0) {
         sw_net_record_error("net_available", sw_net_errno_value());
         return -1;

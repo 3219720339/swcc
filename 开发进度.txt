@@ -1749,6 +1749,17 @@ Sw 编译器（swcc）开发进度
                        - 验证：runtime.c 三平台交叉编译零警告、cargo test 56 全绿、
                          89 examples 全过
 
+    2026-08-15 08:45  macOS net_available 修复：FIONREAD ioctl 返回 EFAULT(errno 14)
+                       - 诊断：值=-1 详情=net_available(14)；反汇编确认 fd/请求值/指针
+                         均正确（x0=fd, x1=0x4004667F, x2=&n），ioctl 调用无误
+                       - 对照 xnu 源码：ioctl 系统调用对 IOC_OUT 用 copyout 回写，
+                         该环境内核路径返回 EFAULT；getsockopt(SOL_SOCKET) 路径
+                         已证可用（SO_ERROR 读取正常）
+                       - 修复：macOS 分支改用 getsockopt(SO_NREAD=0x1020，xnu 专门
+                         查询可读字节的选项），Windows/Linux 保持 FIONREAD 不变
+                       - 验证：runtime.c 三平台交叉编译零警告、cargo test 56 全绿、
+                         89 examples 全过（macOS 待 CI 复验）
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
        2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、
