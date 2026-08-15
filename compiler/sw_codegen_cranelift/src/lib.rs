@@ -1753,7 +1753,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
     }
 
     fn field_type(&self, owner: &Type, index: usize) -> Option<Type> {
-        match owner {
+        match owner.without_nullable() {
             Type::Struct(id) => self.struct_field_types.get(id)?.get(index).cloned(),
             Type::Class(id) => self.class_field_types.get(id)?.get(index).cloned(),
             _ => None,
@@ -1801,7 +1801,9 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
     }
 
     /// 字段字节偏移：struct 用内联偏移表；class 暂按每字段 8 字节（vtable 头在接口批次引入）。
+    /// 可空类型（T?）解包后按 T 布局（?. 的接收者即 T?，字段偏移与 T 一致）。
     fn field_offset(&self, owner: &Type, index: usize) -> usize {
+        let owner = owner.without_nullable();
         match owner {
             Type::Struct(id) => self
                 .struct_field_offsets
@@ -2087,6 +2089,58 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 }
             }
             MirExpr::Binary { op, left, right } => {
+                // 逻辑 && / || 必须真短路：先只求值 left，视其真假再决定是否求值 right。
+                // （放在 right 无条件求值之前，否则右侧副作用仍会执行。）
+                if matches!(op, MirBinary::And | MirBinary::Or) {
+                    let left = self.expr(left)?;
+                    let zero = self.builder.ins().iconst(types::I64, 0);
+                    if matches!(op, MirBinary::And) {
+                        // left 为假（0）时短路：结果即 left，不求值 right。
+                        let is_false = self.builder.ins().icmp(IntCC::Equal, left, zero);
+                        let short_block = self.builder.create_block();
+                        let right_block = self.builder.create_block();
+                        let join_block = self.builder.create_block();
+                        let slot = self.new_slot();
+                        self.builder
+                            .ins()
+                            .brif(is_false, short_block, &[], right_block, &[]);
+                        self.builder.switch_to_block(short_block);
+                        self.builder.ins().stack_store(types::I64, left, slot, 0);
+                        self.builder.ins().jump(join_block, &[]);
+                        self.builder.switch_to_block(right_block);
+                        let right = self.expr(right)?;
+                        self.builder.ins().stack_store(types::I64, right, slot, 0);
+                        self.builder.ins().jump(join_block, &[]);
+                        self.builder.switch_to_block(join_block);
+                        self.builder.seal_block(join_block);
+                        return Ok(self
+                            .builder
+                            .ins()
+                            .stack_load(types::I64, types::I64, slot, 0));
+                    }
+                    // MirBinary::Or：left 为真（非 0）时短路，结果即 left。
+                    let is_true = self.builder.ins().icmp(IntCC::NotEqual, left, zero);
+                    let short_block = self.builder.create_block();
+                    let right_block = self.builder.create_block();
+                    let join_block = self.builder.create_block();
+                    let slot = self.new_slot();
+                    self.builder
+                        .ins()
+                        .brif(is_true, short_block, &[], right_block, &[]);
+                    self.builder.switch_to_block(short_block);
+                    self.builder.ins().stack_store(types::I64, left, slot, 0);
+                    self.builder.ins().jump(join_block, &[]);
+                    self.builder.switch_to_block(right_block);
+                    let right = self.expr(right)?;
+                    self.builder.ins().stack_store(types::I64, right, slot, 0);
+                    self.builder.ins().jump(join_block, &[]);
+                    self.builder.switch_to_block(join_block);
+                    self.builder.seal_block(join_block);
+                    return Ok(self
+                        .builder
+                        .ins()
+                        .stack_load(types::I64, types::I64, slot, 0));
+                }
                 let left = self.expr(left)?;
                 let right = self.expr(right)?;
                 let is_float = self.builder.func.dfg.value_type(left) == types::F64
@@ -2127,8 +2181,10 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                         self.builder.ins().srem(left, right)
                     }
                     MirBinary::Pow => return Err("`**` 后端暂不支持".into()),
-                    MirBinary::And => self.builder.ins().band(left, right),
-                    MirBinary::Or => self.builder.ins().bor(left, right),
+                    MirBinary::And | MirBinary::Or => {
+                        // && / || 已在 Binary 分支顶部短路处理，此处不可达。
+                        unreachable!("逻辑与/或已在顶部短路处理")
+                    }
                     MirBinary::BitAnd => self.builder.ins().band(left, right),
                     MirBinary::BitOr => self.builder.ins().bor(left, right),
                     MirBinary::BitXor => self.builder.ins().bxor(left, right),

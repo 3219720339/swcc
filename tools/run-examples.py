@@ -105,6 +105,8 @@ EXPECTED = {
     "probe-batch11.sw": 0,
     "probe-batch12.sw": 0,
     "probe-batch13.sw": 0,
+    "probe-shortcircuit.sw": 0,
+    "probe-generic-enum.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]
