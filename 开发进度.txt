@@ -3,6 +3,16 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-14（main）
 
+2026-08-15 21:50  修复 macOS probe-gc-memory 超时（GC 扫描范围过大）：
+   - 根因：macOS sw_gc_init_platform 遍历 _dyld_image_count() 全部镜像
+     （libSystem/CoreFoundation 等几十个系统库）注册数据段，每次 GC 扫描
+     巨大范围 → 30 万次分配触发多次 GC → 120s 超时。
+   - 修复：只注册主可执行镜像（识别含 LC_MAIN=0x80000028 命令的镜像，
+     找不到退回 index 0）。用户代码的全局/字符串池都在主 exe（runtime 编译
+     进主程序，无动态库），系统库不用 sw_gc_alloc，无需扫描。
+   - 验证：Windows probe-gc/probe-gc-memory/18 探针全过；cargo test 全绿；
+     darwin 交叉编译通过。
+
 2026-08-15 21:20  修复 macOS GC 崩溃（第二轮：段粒度过滤）：
    - 上轮按 segment initprot 排除可执行段仍崩溃——Mach-O 的 __TEXT 段同时
      含代码（__text）与只读数据（__const/__cstring 字符串池），整段排除会

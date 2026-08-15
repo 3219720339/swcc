@@ -220,13 +220,40 @@ extern long _dyld_get_image_vmaddr_slide(unsigned int index);
 
 static void sw_gc_init_platform(void) {
     unsigned int count = _dyld_image_count();
+    // 只注册主可执行镜像的数据节：用户代码的全局/字符串池都在主程序里
+    // （runtime.c 编译进主 exe），系统库（libSystem 等）不使用 sw_gc_alloc，
+    // 扫描它们只会让每次 GC 极慢（几十个镜像的数据段累计巨大）。
+    // 识别主镜像：含 LC_MAIN（0x80000028）命令；找不到时退回 index 0。
+    int main_index = -1;
     for (unsigned int index = 0; index < count; index++) {
         const unsigned char* header =
             (const unsigned char*)_dyld_get_image_header(index);
-        long slide = _dyld_get_image_vmaddr_slide(index);
         if (header == NULL || *(uint32_t*)header != 0xFEEDFACF) {
             continue;
         }
+        uint32_t ncmds = *(uint32_t*)(header + 16);
+        const unsigned char* cmd = header + 32;
+        for (uint32_t i = 0; i < ncmds; i++) {
+            uint32_t cmd_type = *(uint32_t*)cmd;
+            uint32_t cmd_size = *(uint32_t*)(cmd + 4);
+            if (cmd_type == 0x80000028u) {  // LC_MAIN
+                main_index = (int)index;
+                break;
+            }
+            cmd += cmd_size;
+        }
+        if (main_index >= 0) {
+            break;
+        }
+    }
+    if (main_index < 0) {
+        main_index = 0;  // 兜底：主程序通常是第一个镜像
+    }
+    {
+        const unsigned char* header =
+            (const unsigned char*)_dyld_get_image_header((unsigned int)main_index);
+        long slide = _dyld_get_image_vmaddr_slide((unsigned int)main_index);
+        if (header != NULL && *(uint32_t*)header == 0xFEEDFACF) {
         uint32_t ncmds = *(uint32_t*)(header + 16);
         const unsigned char* cmd = header + 32;
         for (uint32_t i = 0; i < ncmds; i++) {
@@ -261,6 +288,7 @@ static void sw_gc_init_platform(void) {
                 }
             }
             cmd += cmd_size;
+        }
         }
     }
     // 兜底：若 section 解析没注册任何范围（布局异常/解析失败），回退注册
