@@ -19,13 +19,19 @@ Sw 是一门静态强类型、面向本机程序的编译型语言，表层语�
 - 标准库：`std/io`（print/println/read_line）、`std/math`、`std/fs`（文件读写）、`std/string`（查找/子串）
 - CLI：`swc help`、`--version`、构建耗时输出、`--target` 交叉编译、`--emit-object`
 
-## 下载与发布（v0.1.1）
+## 下载与发布（v0.1.2）
 
 三平台解压即用 SDK 由 GitHub Actions 在 `v*` 标签上自动构建并挂到 Release：
 
-- Windows：`swc-windows-x64-0.1.1.zip`（swc + lld + MinGW UCRT 库 + 预编译运行时）
-- Linux：`swc-linux-x64-0.1.1.tar.gz`（swc + lld + musl 静态库 + 预编译运行时，无需安装任何工具链）
-- macOS：`swc-macos-0.1.1.zip`（原生链接使用系统 `cc`，仅需 swc + 标准库）
+- Windows：`swc-windows-x64-0.1.2.zip`（swc + lld + MinGW UCRT 库 + 预编译运行时，解压即用，无需任何外部工具链；用法见 [docs/09-发布与分发.md](docs/09-发布与分发.md)）
+- Linux：`swc-linux-x64-0.1.2.tar.gz`（swc + lld + musl 静态库 + 预编译运行时，无需安装任何工具链）
+- macOS：`swc-macos-0.1.2.zip`（原生链接使用系统 `cc`，仅需 swc + 标准库）
+
+每个 Release 同时附 `SHA256SUMS`（GNU 风格校验和清单，由 CI 对产物计算生成），下载后可校验完整性：
+
+```bash
+sha256sum -c SHA256SUMS    # 在包含各 SDK 归档的目录下执行
+```
 
 仓库当前托管在 Gitee；要让 CI/Release 在 GitHub 上运行，需要把仓库镜像过去：
 
@@ -35,7 +41,7 @@ git remote add github https://github.com/<你的用户名>/swcc.git
 git push github main --tags
 ```
 
-之后每次打 `v0.1.0` 之类的标签并推送，GitHub 会自动跑测试、打包三平台 SDK 并生成 Release。
+之后每次打 `v0.1.2` 之类的标签并推送，GitHub 会自动跑测试、打包三平台 SDK、生成校验和并创建 Release。
 
 ## 构建与验证
 

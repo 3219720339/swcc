@@ -87,10 +87,24 @@ jobs:
         with:
           path: artifacts
 
+      - name: Compute SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 对全部下载的 SDK 归档生成 GNU 风格校验和清单（哈希  相对路径），
+          # 与 tools/make-checksums.py 的输出格式一致，用户可 sha256sum -c 验证
+          cd artifacts
+          find . -type f \( -name '*.zip' -o -name '*.tar.gz' \) -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
+          echo "== SHA256SUMS =="
+          cat SHA256SUMS
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/**/*.zip
             artifacts/**/*.tar.gz
+            artifacts/SHA256SUMS
           generate_release_notes: true
