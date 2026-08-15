@@ -591,3 +591,47 @@ export function 结尾为任意(text: string, suffixes: string[]): bool {
 export function 编辑距离(a: string, b: string): int {
     return edit_distance(a, b);
 }
+
+/// 按宽度折行（单词边界优先；超长单词不硬切），返回 string[]。
+/// 示例：word_wrap("hello world swcc", 10) == ["hello", "world swcc"]。
+export function word_wrap(text: string, width: int): string[] {
+    const w = width < 1 ? 1 : width;
+    const result: string[] = [];
+    const words = split_whitespace(text);
+    let line = "";
+    for (const word of words) {
+        if (line == "") {
+            line = word;
+        } else if (line.length + 1 + word.length <= w) {
+            line = line + " " + word;
+        } else {
+            result.push(line);
+            line = word;
+        }
+    }
+    if (line != "") {
+        result.push(line);
+    }
+    return result;
+}
+
+/// 中间截断（文件名显示）：保留首尾、中间加 "..."。
+/// 示例：truncate_middle("abcdefghij", 7) == "ab...ij"；短文本原样返回。
+export function truncate_middle(text: string, max_chars: int): string {
+    const len = text.length;
+    if (len <= max_chars || max_chars < 4) {
+        return text;
+    }
+    const keep = max_chars - 3;
+    const left_n = keep / 2;
+    const right_n = keep - left_n;
+    return left(text, left_n) + "..." + right(text, right_n);
+}
+
+export function 自动换行(text: string, width: int): string[] {
+    return word_wrap(text, width);
+}
+
+export function 中间截断(text: string, max_chars: int): string {
+    return truncate_middle(text, max_chars);
+}

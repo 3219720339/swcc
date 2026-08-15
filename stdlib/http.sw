@@ -69,3 +69,50 @@ export function http_get_json(url: string): ptr<void> {
 export function 取网页JSON(url: string): ptr<void> {
     return http_get_json(url);
 }
+
+/// 建立 HTTP keep-alive 会话（同一连接复用多次请求）；失败返回 -1。
+/// 与 http_request_on/http_close 配合：会话内每次请求复用连接，
+/// 响应按 Content-Length 分帧；服务器关闭连接时请求返回 status 0，
+/// 需重新 http_open。
+export extern c function http_open(host: string, port: int): int;
+
+/// 在会话上发请求（method/path/headers(map，可 null)/body），返回
+/// map：status/body/headers。连接保持复用。
+export extern c function http_request_on(
+    handle: int, method: string, path: string, headers: ptr<void>, body: string
+): ptr<void>;
+
+/// 关闭 keep-alive 会话。
+export extern c function http_close(handle: int): int;
+
+/// 会话 GET（便捷包装）：http_get_on(handle, "/path")。
+export function http_get_on(handle: int, path: string): ptr<void> {
+    return http_request_on(handle, "GET", path, null, "");
+}
+
+/// 会话 POST（便捷包装）：http_post_on(handle, "/path", body)。
+export function http_post_on(handle: int, path: string, body: string): ptr<void> {
+    return http_request_on(handle, "POST", path, null, body);
+}
+
+export function 打开HTTP会话(host: string, port: int): int {
+    return http_open(host, port);
+}
+
+export function HTTP会话请求(
+    handle: int, method: string, path: string, headers: ptr<void>, body: string
+): ptr<void> {
+    return http_request_on(handle, method, path, headers, body);
+}
+
+export function 关闭HTTP会话(handle: int): int {
+    return http_close(handle);
+}
+
+export function HTTP会话GET(handle: int, path: string): ptr<void> {
+    return http_get_on(handle, path);
+}
+
+export function HTTP会话POST(handle: int, path: string, body: string): ptr<void> {
+    return http_post_on(handle, path, body);
+}

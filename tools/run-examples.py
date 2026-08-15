@@ -101,6 +101,7 @@ EXPECTED = {
     "probe-batch8.sw": 0,
     "probe-batch9.sw": 0,
     "probe-batch10.sw": 0,
+    "probe-batch11.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]

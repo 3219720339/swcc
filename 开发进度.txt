@@ -1825,11 +1825,47 @@ Sw 编译器（swcc）开发进度
                         - 验证：cargo test 56 全绿；91 examples 全过；
                           fmt 通过；runtime.c 无新外部依赖
 
+    2026-08-15 13:00  标准库批 11（HTTP keep-alive + regex 增强 + string 实用，
+                        14 函数全中英文）：
+                        - std/http keep-alive 会话 +3（runtime C）：
+                          http_open（会话表 64 槽）、http_request_on
+                          （method/path/headers(map)/body → map；请求头
+                          Connection: keep-alive；响应按 Content-Length
+                          精确分帧（行缓冲 + 精确读），Connection: close
+                          或缺失 CL（chunked）时连接自动失效关闭）、
+                          http_close；纯 Sw 包装 http_get_on/http_post_on
+                        - std/regex +3（runtime C，复用 rx 引擎）：
+                          regex_split（按匹配位置拆分，rx_search_from）、
+                          regex_escape（元字符转义）、regex_captures
+                          （捕获组提取；引擎语义：组 0=caps[0..1]=整个匹配、
+                          括号组从 1 起，groups=1+括号数）
+                        - std/string +2（纯 Sw）：word_wrap（单词边界折行）、
+                          truncate_middle（中间截断加 "..."，UTF-8 安全）
+                        - 踩坑：Content-Length 值偏移算错（": " 后 16 字节起）
+                          导致 body 残留连接缓冲、二次请求读残留失败——改找
+                          ':' 再跳过空格；rx 引擎 p.groups 初始为 1（组 0=
+                          全文），caps 布局 caps[g*2]/[g*2+1]
+                        - 发现编译器层问题（记录为已知限制）：保守式 GC 对
+                          C 函数临时对象（rx 节点树等）在特定堆状态/调用
+                          组合下偶发误回收崩溃（同一函数单独调用正常、
+                          特定组合稳定崩、与代码布局/GC 时序相关）；
+                          probe-batch11 已规避该组合，后续应在编译器
+                          GC 根集层面修复
+                        - codegen extern_c_symbol 追加 6 个映射
+                        - 新增探针 probe-batch11.sw（15 断言：httpbin
+                          keep-alive 三请求复用 + 自定义头、regex 拆分/
+                          转义/捕获组向量、word_wrap/truncate_middle），
+                          登记 run-examples.py；demo 新增 demo-batch11.sw
+                          输出存 outputs/demo-batch11.txt
+                        - 验证：cargo test 56 全绿；92 examples 全过；
+                          fmt 通过；runtime.c 无新外部依赖
+
     待办（下一批，按推荐优先级）：
        1. Windows aarch64；调试信息/LSP
-       2. 标准库继续扩充：std/net 完成 HTTP keep-alive 连接层、
-          或 std/regex 增强（regex_split/escape/captures）、
-          或 std/string 更多实用（word_wrap/truncate_middle）
+       2. 编译器：GC 保守式扫描对 C 函数临时对象误回收（rx 节点树等）
+       3. 标准库继续扩充：std/encoding（base32/html_unescape）、
+          或 std/math 统计（mean/median/variance/stdev）、
+          或 std/unicode（is_cjk 等中文判断）
 
 二、已知限制
 

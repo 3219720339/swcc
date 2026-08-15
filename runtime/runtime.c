@@ -9570,6 +9570,130 @@ sw_string* regex_replace(sw_string* text, sw_string* pattern, sw_string* replace
 }
 
 // ---------------------------------------------------------------------------
+// 正则增强（std/regex）：拆分 / 转义 / 捕获组。
+// ---------------------------------------------------------------------------
+
+// 从 from 起搜索第一个匹配（rx_search 只能从头搜）。
+static int64_t rx_search_from(
+    rx_node* node, int64_t* text, int64_t len, int64_t from, int64_t* out_start, int64_t* out_end
+) {
+    for (int64_t s = from; s <= len; s++) {
+        int64_t caps[16];
+        for (int64_t i = 0; i < 16; i++) {
+            caps[i] = -1;
+        }
+        int64_t e = rx_match_full(node, text, len, s, caps, 16);
+        if (e >= 0) {
+            *out_start = s;
+            *out_end = e;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// 按正则匹配位置拆分：regex_split("a,b;c", "[,;]") == ["a","b","c"]。
+sw_array* regex_split(sw_string* text, sw_string* pattern) {
+    sw_array* out = sw_array_new(8, 16);
+    if (text == NULL || pattern == NULL) {
+        out->len = 0;
+        return out;
+    }
+    int64_t groups = 0;
+    rx_node* node = rx_compile(pattern->data, pattern->len, &groups);
+    rx_codepoints cp = rx_decode(text->data, text->len);
+    int64_t slot = 0;
+    int64_t cursor = 0;
+    while (cursor <= cp.len) {
+        int64_t start = 0;
+        int64_t end = 0;
+        if (!rx_search_from(node, cp.data, cp.len, cursor, &start, &end) || start < cursor) {
+            break;
+        }
+        if (slot >= out->len) {
+            sw_array* bigger = sw_array_new(8, out->len * 2 + 1);
+            for (int64_t i = 0; i < slot; i++) {
+                ((int64_t*)bigger->data)[i] = ((int64_t*)out->data)[i];
+            }
+            out = bigger;
+        }
+        ((int64_t*)out->data)[slot++] = (int64_t)rx_slice(cp.data, cursor, start);
+        cursor = end > start ? end : start + 1;
+    }
+    if (slot >= out->len) {
+        sw_array* bigger = sw_array_new(8, out->len * 2 + 1);
+        for (int64_t i = 0; i < slot; i++) {
+            ((int64_t*)bigger->data)[i] = ((int64_t*)out->data)[i];
+        }
+        out = bigger;
+    }
+    ((int64_t*)out->data)[slot++] = (int64_t)rx_slice(cp.data, cursor, cp.len);
+    out->len = slot;
+    out->cap = slot;
+    return out;
+}
+
+// 转义正则元字符（\. ^ $ * + ? { } [ ] ( ) | 前加反斜杠）。
+sw_string* regex_escape(sw_string* text) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    char* buffer = (char*)sw_gc_alloc((uint64_t)text->len * 2 + 1);
+    int64_t used = 0;
+    for (int64_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        if (c == '.' || c == '^' || c == '$' || c == '*' || c == '+' || c == '?' ||
+            c == '{' || c == '}' || c == '[' || c == ']' || c == '(' || c == ')' ||
+            c == '|' || c == '\\') {
+            buffer[used++] = '\\';
+        }
+        buffer[used++] = c;
+    }
+    buffer[used] = 0;
+    return sw_string_from_literal(buffer, used);
+}
+
+// 提取第一个匹配的捕获组（string[]，[0] 是整个匹配，[1..] 各组；
+// 未参与匹配的组返回空串）。
+sw_array* regex_captures(sw_string* text, sw_string* pattern) {
+    sw_array* out = sw_array_new(8, 8);
+    if (text == NULL || pattern == NULL) {
+        out->len = 0;
+        return out;
+    }
+    int64_t groups = 0;
+    rx_node* node = rx_compile(pattern->data, pattern->len, &groups);
+    rx_codepoints cp = rx_decode(text->data, text->len);
+    int64_t start = 0;
+    int64_t end = 0;
+    if (!rx_search(node, cp.data, cp.len, &start, &end)) {
+        out->len = 0;
+        return out;
+    }
+    int64_t caps[16];
+    for (int64_t i = 0; i < 16; i++) {
+        caps[i] = -1;
+    }
+    rx_match_full(node, cp.data, cp.len, start, caps, 16);
+    // 引擎语义：组 0（caps[0..1]）= 整个匹配，括号组从 1 起（caps[2..]）；
+    // groups = 1 + 括号数。返回 [整个匹配, 组1, 组2, ...]。
+    int64_t count = groups;
+    if (count > 8) {
+        count = 8;
+    }
+    ((int64_t*)out->data)[0] = (int64_t)rx_slice(cp.data, start, end);
+    for (int64_t g = 1; g < groups && g < count; g++) {
+        int64_t s = caps[g * 2];
+        int64_t e = caps[g * 2 + 1];
+        sw_string* part = (s >= 0 && e >= s) ? rx_slice(cp.data, s, e) : sw_string_from_literal("", 0);
+        ((int64_t*)out->data)[g] = (int64_t)part;
+    }
+    out->len = count;
+    out->cap = count;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // MD5 / SHA-256（标准实现，纯自包含，用于文件/文本校验）
 // ---------------------------------------------------------------------------
 
@@ -10503,6 +10627,293 @@ void* http_get(sw_string* url) {
 
 void* http_post(sw_string* url, sw_string* body) {
     return http_request(sw_string_from_literal("POST", 4), url, body);
+}
+
+// ---------------------------------------------------------------------------
+// HTTP keep-alive 会话（std/http）：同一连接复用多次请求。
+// 句柄为 0-63 的表索引；响应按 Content-Length 分帧，连接保持；
+// 响应无 Content-Length 或 Connection: close 时连接自动失效关闭。
+// ---------------------------------------------------------------------------
+
+#define SW_MAX_HTTP_CONNS 64
+
+typedef struct sw_http_conn {
+    int64_t fd;
+    char* line_buf;
+    int64_t line_len;
+    int64_t line_cap;
+    sw_string* host;
+} sw_http_conn;
+
+static sw_http_conn sw_http_conns[SW_MAX_HTTP_CONNS];
+
+static int64_t sw_http_slot_alloc(void) {
+    for (int64_t i = 0; i < SW_MAX_HTTP_CONNS; i++) {
+        if (sw_http_conns[i].fd <= 0) {  // 静态表初始 fd=0，用 <=0 判空
+            return i;
+        }
+    }
+    return -1;
+}
+
+int64_t sw_http_open(sw_string* host, int64_t port) {
+    if (host == NULL || port < 1 || port > 65535) {
+        return -1;
+    }
+    int64_t fd = sw_net_connect(host, port);
+    if (fd < 0) {
+        return -1;
+    }
+    int64_t slot = sw_http_slot_alloc();
+    if (slot < 0) {
+        sw_net_close(fd);
+        return -1;
+    }
+    sw_http_conn* c = &sw_http_conns[slot];
+    memset(c, 0, sizeof(*c));
+    c->fd = fd;
+    c->host = host;
+    return slot;
+}
+
+// 从会话读一行（\n 结尾，去 \r\n）；EOF 返回空串（缓冲残余也返回）。
+static sw_string* sw_http_read_line(int64_t slot) {
+    sw_http_conn* c = &sw_http_conns[slot];
+    while (1) {
+        for (int64_t i = 0; i < c->line_len; i++) {
+            if (c->line_buf[i] == '\n') {
+                int64_t len = i;
+                if (len > 0 && c->line_buf[len - 1] == '\r') {
+                    len--;
+                }
+                sw_string* result = sw_string_from_literal(c->line_buf, len);
+                memmove(c->line_buf, c->line_buf + i + 1, (uint64_t)(c->line_len - i - 1));
+                c->line_len -= (i + 1);
+                return result;
+            }
+        }
+        sw_string* chunk = sw_net_recv(c->fd, 4096);
+        if (chunk == NULL || chunk->len == 0) {
+            if (c->line_len > 0) {
+                sw_string* result = sw_string_from_literal(c->line_buf, c->line_len);
+                c->line_len = 0;
+                return result;
+            }
+            return sw_string_from_literal("", 0);
+        }
+        if (c->line_len + chunk->len > c->line_cap) {
+            int64_t new_cap = (c->line_len + chunk->len) * 2 + 64;
+            char* bigger = (char*)realloc(c->line_buf, (sw_size)new_cap);
+            if (bigger == NULL) {
+                return sw_string_from_literal("", 0);
+            }
+            c->line_buf = bigger;
+            c->line_cap = new_cap;
+        }
+        memcpy(c->line_buf + c->line_len, chunk->data, (uint64_t)chunk->len);
+        c->line_len += chunk->len;
+    }
+}
+
+// 精确读 n 字节（先消费行缓冲剩余，再收网络）。
+static sw_string* sw_http_read_body(int64_t slot, int64_t n) {
+    sw_http_conn* c = &sw_http_conns[slot];
+    char* buffer = (char*)sw_gc_alloc((uint64_t)n + 1);
+    int64_t got = 0;
+    if (c->line_len > 0) {
+        int64_t take = c->line_len < n ? c->line_len : n;
+        memcpy(buffer, c->line_buf, (uint64_t)take);
+        memmove(c->line_buf, c->line_buf + take, (uint64_t)(c->line_len - take));
+        c->line_len -= take;
+        got = take;
+    }
+    while (got < n) {
+        sw_string* chunk = sw_net_recv(c->fd, n - got);
+        if (chunk == NULL || chunk->len == 0) {
+            break;
+        }
+        memcpy(buffer + got, chunk->data, (uint64_t)chunk->len);
+        got += chunk->len;
+    }
+    buffer[got] = 0;
+    return sw_string_from_literal(buffer, got);
+}
+
+// 关闭会话（释放槽）。
+void sw_http_close(int64_t slot) {
+    if (slot < 0 || slot >= SW_MAX_HTTP_CONNS || sw_http_conns[slot].fd <= 0) {
+        return;
+    }
+    sw_http_conn* c = &sw_http_conns[slot];
+    sw_net_close(c->fd);
+    if (c->line_buf != NULL) {
+        free(c->line_buf);
+    }
+    memset(c, 0, sizeof(*c));
+    c->fd = -1;
+}
+
+// 会话请求：method/path/headers(map)/body → map：status/body/headers。
+// 连接保持复用；失败/失效返回 status 0（连接已关闭，需重新 http_open）。
+void* sw_http_request_on(
+    int64_t slot, sw_string* method, sw_string* path, void* headers_map, sw_string* body
+) {
+    void* result = sw_map_new();
+    sw_map_set_int(result, sw_string_from_literal("status", 6), 0);
+    sw_map_set(result, sw_string_from_literal("body", 4), sw_string_from_literal("", 0));
+    sw_map_set(result, sw_string_from_literal("headers", 7), sw_string_from_literal("", 0));
+    if (slot < 0 || slot >= SW_MAX_HTTP_CONNS || sw_http_conns[slot].fd <= 0) {
+        return result;
+    }
+    sw_http_conn* c = &sw_http_conns[slot];
+    if (method == NULL || path == NULL || c->host == NULL) {
+        return result;
+    }
+    // 构造请求头
+    int64_t cap = method->len + path->len + c->host->len + 256;
+    char* request = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    for (int64_t i = 0; i < method->len && used + 1 < cap; i++) {
+        request[used++] = method->data[i];
+    }
+    request[used++] = ' ';
+    for (int64_t i = 0; i < path->len && used + 1 < cap; i++) {
+        request[used++] = path->data[i];
+    }
+    const char* proto = " HTTP/1.1\r\nHost: ";
+    for (int64_t i = 0; proto[i] && used + 1 < cap; i++) {
+        request[used++] = proto[i];
+    }
+    for (int64_t i = 0; i < c->host->len && used + 1 < cap; i++) {
+        request[used++] = c->host->data[i];
+    }
+    const char* conn_hdr = "\r\nConnection: keep-alive\r\n";
+    for (int64_t i = 0; conn_hdr[i] && used + 1 < cap; i++) {
+        request[used++] = conn_hdr[i];
+    }
+    // 自定义请求头（map：Key → 值字符串）
+    if (headers_map != NULL) {
+        sw_array* keys = sw_map_keys(headers_map);
+        sw_array* values = sw_map_values(headers_map);
+        for (int64_t i = 0; i < keys->len && used + 2 < cap; i++) {
+            sw_string* key = (sw_string*)((int64_t*)keys->data)[i];
+            sw_string* value = (sw_string*)((int64_t*)values->data)[i];
+            for (int64_t k = 0; k < key->len && used + 1 < cap; k++) {
+                request[used++] = key->data[k];
+            }
+            request[used++] = ':';
+            request[used++] = ' ';
+            for (int64_t k = 0; k < value->len && used + 1 < cap; k++) {
+                request[used++] = value->data[k];
+            }
+            request[used++] = '\r';
+            request[used++] = '\n';
+        }
+    }
+    int64_t body_len = body != NULL ? body->len : 0;
+    if (body_len > 0) {
+        const char* len_hdr = "Content-Length: ";
+        for (int64_t i = 0; len_hdr[i] && used + 16 < cap; i++) {
+            request[used++] = len_hdr[i];
+        }
+        used += snprintf(request + used, (sw_size)(cap - used), "%lld\r\n", (long long)body_len);
+        const char* ctype = "Content-Type: application/x-www-form-urlencoded\r\n";
+        for (int64_t i = 0; ctype[i] && used + 1 < cap; i++) {
+            request[used++] = ctype[i];
+        }
+    }
+    request[used++] = '\r';
+    request[used++] = '\n';
+    sw_string* head = sw_string_from_literal(request, used);
+    if (sw_net_send_all(c->fd, head) != head->len) {
+        sw_http_close(slot);
+        return result;
+    }
+    if (body_len > 0 && sw_net_send_all(c->fd, body) != body_len) {
+        sw_http_close(slot);
+        return result;
+    }
+    // 读状态行与响应头
+    sw_string* status_line = sw_http_read_line(slot);
+    int64_t status = sw_http_parse_status(status_line);
+    sw_map_set_int(result, sw_string_from_literal("status", 6), status);
+    int64_t content_length = -1;
+    int keep = 1;
+    int64_t header_cap = 256;
+    char* header_buf = (char*)sw_gc_alloc((uint64_t)header_cap);
+    int64_t header_used = 0;
+    while (1) {
+        sw_string* line = sw_http_read_line(slot);
+        if (line->len == 0) {
+            break;
+        }
+        if (header_used + line->len + 3 > header_cap) {
+            header_cap = (header_used + line->len) * 2 + 64;
+            char* bigger = (char*)sw_gc_alloc((uint64_t)header_cap);
+            memcpy(bigger, header_buf, (uint64_t)header_used);
+            header_buf = bigger;
+        }
+        memcpy(header_buf + header_used, line->data, (uint64_t)line->len);
+        header_used += line->len;
+        header_buf[header_used++] = '\r';
+        header_buf[header_used++] = '\n';
+        // Content-Length（找 ':' 再跳过空格取数字，不依赖固定偏移）
+        if (line->len >= 14 && line->data[0] == 'C' && line->data[1] == 'o' &&
+            line->data[2] == 'n' && line->data[3] == 't' && line->data[4] == 'e' &&
+            line->data[5] == 'n' && line->data[6] == 't' && line->data[7] == '-' &&
+            line->data[8] == 'L' && line->data[9] == 'e' && line->data[10] == 'n') {
+            int64_t colon = -1;
+            for (int64_t k = 0; k < line->len; k++) {
+                if (line->data[k] == ':') {
+                    colon = k;
+                    break;
+                }
+            }
+            int64_t v = 0;
+            if (colon >= 0) {
+                int64_t i = colon + 1;
+                while (i < line->len && (line->data[i] == ' ' || line->data[i] == '\t')) {
+                    i++;
+                }
+                while (i < line->len && line->data[i] >= '0' && line->data[i] <= '9') {
+                    v = v * 10 + (line->data[i] - '0');
+                    i++;
+                }
+            }
+            content_length = v;
+        }
+        // Connection: close
+        if (line->len >= 9 && (line->data[0] == 'C' || line->data[0] == 'c') &&
+            line->data[1] == 'o' && line->data[2] == 'n' && line->data[3] == 'n') {
+            sw_string* lower = line;
+            for (int64_t i = 8; i + 4 < line->len; i++) {
+                if ((line->data[i] == 'c' || line->data[i] == 'C') &&
+                    (line->data[i + 1] == 'l' || line->data[i + 1] == 'L') &&
+                    (line->data[i + 2] == 'o' || line->data[i + 2] == 'O') &&
+                    (line->data[i + 3] == 's' || line->data[i + 3] == 'S') &&
+                    (line->data[i + 4] == 'e' || line->data[i + 4] == 'E')) {
+                    keep = 0;
+                    break;
+                }
+                (void)lower;
+            }
+        }
+    }
+    header_buf[header_used] = 0;
+    sw_map_set(result, sw_string_from_literal("headers", 7), sw_string_from_literal(header_buf, header_used));
+    // 响应体：有 Content-Length 精确读（连接保持）；否则读到关闭（连接失效）。
+    if (content_length >= 0) {
+        sw_string* body_text = sw_http_read_body(slot, content_length);
+        sw_map_set(result, sw_string_from_literal("body", 4), body_text);
+    } else {
+        sw_string* body_text = sw_http_read_all(c->fd);
+        sw_map_set(result, sw_string_from_literal("body", 4), body_text);
+        keep = 0;
+    }
+    if (!keep) {
+        sw_http_close(slot);
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------
