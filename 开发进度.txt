@@ -3,6 +3,19 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-14（main）
 
+2026-08-15 21:20  修复 macOS GC 崩溃（第二轮：段粒度过滤）：
+   - 上轮按 segment initprot 排除可执行段仍崩溃——Mach-O 的 __TEXT 段同时
+     含代码（__text）与只读数据（__const/__cstring 字符串池），整段排除会
+     误删数据节，GC 扫不到字符串池/全局只读数据，误回收存活对象（信号 11）。
+   - 修复：改为按 section_64 粒度过滤——只排除纯指令节
+     （S_ATTR_PURE_INSTRUCTIONS=0x80000000），数据节（含 __TEXT,__const、
+     __DATA/__DATA_CONST/__BSS）全部注册；section.addr 用链接后绝对虚拟
+     地址（slide + saddr，已用 lld 链接 darwin 可执行 + llvm-readobj 确认
+     __text=0x100000330 为绝对地址，非段内偏移）。
+   - 兜底：若 section 解析未注册任何范围，回退注册全部镜像（保守但正确）。
+   - 验证：Windows 18 探针全过；cargo test 全绿；darwin 交叉编译通过；
+     lld 链接 Mach-O 可执行确认 section.addr 语义。
+
 2026-08-15 20:40  修复 macOS GC 崩溃（上批段过滤常量错误）：
    - 根因：macOS LC_SEGMENT_64 的 initprot 判断可执行段用了 VM_PROT_READ=0x1
      而非 VM_PROT_EXECUTE=0x4——__DATA（rw-）与 __DATA_CONST（r--）都被排除，

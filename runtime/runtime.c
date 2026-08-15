@@ -233,25 +233,63 @@ static void sw_gc_init_platform(void) {
             uint32_t cmd_type = *(uint32_t*)cmd;
             uint32_t cmd_size = *(uint32_t*)(cmd + 4);
             if (cmd_type == 0x19 && cmd_size >= 72) {
-                uint64_t vmaddr = *(uint64_t*)(cmd + 24);
-                uint64_t vmsize = *(uint64_t*)(cmd + 32);
-                uint64_t filesize = *(uint64_t*)(cmd + 48);
-                // initprot 在 +60（LC_SEGMENT_64：+8 segname[16], +24 vmaddr,
-                // +32 vmsize, +40 fileoff, +48 filesize, +56 maxprot, +60 initprot）。
-                // 排除可执行段（VM_PROT_EXECUTE=0x4，__TEXT 代码段）——指令字节
-                // 会被保守式扫描误判为指向堆块的指针，导致全部块被标记、GC
-                // 永不回收/极慢。数据段（__DATA/__DATA_CONST/__BSS 含字符串池）
-                // 都保留。注意：0x1 是 VM_PROT_READ，不能用它判断可执行。
-                uint32_t initprot = *(uint32_t*)(cmd + 60);
-                if (vmsize > 0 && (initprot & 0x4) == 0) {
-                    uint64_t size = vmsize ? vmsize : filesize;
-                    sw_gc_add_data_range(
-                        (uintptr_t)(slide + vmaddr),
-                        (uintptr_t)(slide + vmaddr + size)
-                    );
+                // LC_SEGMENT_64：+8 segname[16], +24 vmaddr, +32 vmsize,
+                // +40 fileoff, +48 filesize, +56 maxprot, +60 initprot,
+                // +64 nsects, +68 flags；其后是 nsects 个 section_64（各 80 字节：
+                // +0 sectname[16], +16 segname[16], +32 addr, +40 size,
+                // +48 offset, +64 flags）。
+                // 必须按 section 粒度过滤：__TEXT 段同时含代码（__text）与
+                // 只读数据（__const/__cstring 等字符串池），整段排除会误删
+                // 数据节导致 GC 扫不到全局/字符串池、误回收存活对象崩溃。
+                // 只排除纯指令节（S_ATTR_PURE_INSTRUCTIONS=0x80000000），
+                // 数据节（含 __TEXT,__const）全部注册。
+                uint32_t nsects = *(uint32_t*)(cmd + 64);
+                const unsigned char* section = cmd + 72;
+                for (uint32_t s = 0; s < nsects; s++) {
+                    uint32_t sflags = *(uint32_t*)(section + 64);
+                    uint64_t saddr = *(uint64_t*)(section + 32);
+                    uint64_t ssize = *(uint64_t*)(section + 40);
+                    if ((sflags & 0x80000000u) == 0 && ssize > 0) {
+                        // 已链接镜像的 section.addr 是链接时绝对虚拟地址
+                        // （含 __TEXT 基址），运行时 = slide + addr。
+                        sw_gc_add_data_range(
+                            (uintptr_t)(slide + saddr),
+                            (uintptr_t)(slide + saddr + ssize)
+                        );
+                    }
+                    section += 80;
                 }
             }
             cmd += cmd_size;
+        }
+    }
+    // 兜底：若 section 解析没注册任何范围（布局异常/解析失败），回退注册
+    // 全部镜像——保守但正确（多扫可能误标记只导致少回收，不会误回收崩溃）。
+    if (sw_gc_data_range_count == 0) {
+        for (unsigned int index = 0; index < count; index++) {
+            const unsigned char* header =
+                (const unsigned char*)_dyld_get_image_header(index);
+            long slide = _dyld_get_image_vmaddr_slide(index);
+            if (header == NULL || *(uint32_t*)header != 0xFEEDFACF) {
+                continue;
+            }
+            uint32_t ncmds = *(uint32_t*)(header + 16);
+            const unsigned char* cmd = header + 32;
+            for (uint32_t i = 0; i < ncmds; i++) {
+                uint32_t cmd_type = *(uint32_t*)cmd;
+                uint32_t cmd_size = *(uint32_t*)(cmd + 4);
+                if (cmd_type == 0x19 && cmd_size >= 72) {
+                    uint64_t vmaddr = *(uint64_t*)(cmd + 24);
+                    uint64_t vmsize = *(uint64_t*)(cmd + 32);
+                    if (vmsize > 0) {
+                        sw_gc_add_data_range(
+                            (uintptr_t)(slide + vmaddr),
+                            (uintptr_t)(slide + vmaddr + vmsize)
+                        );
+                    }
+                }
+                cmd += cmd_size;
+            }
         }
     }
 }
