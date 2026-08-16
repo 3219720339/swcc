@@ -7930,6 +7930,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     };
                     if matches!(method, ArrayMethodKind::Push | ArrayMethodKind::Pop) {
                         let (name, params) = match method {
+                            ArrayMethodKind::Push if matches!(elem, Type::U8) => {
+                                ("sw_array_push_u8", 1usize)
+                            }
                             ArrayMethodKind::Push => ("sw_array_push", 1usize),
                             _ => ("sw_array_pop", 0usize),
                         };

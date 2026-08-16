@@ -809,6 +809,7 @@ fn link_windows(
         "-lshell32",
         "-lole32",
         "-lws2_32",
+        "-lwinmm",
     ] {
         args.push(library.into());
     }

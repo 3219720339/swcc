@@ -3249,6 +3249,19 @@ int64_t sw_array_push(sw_array* array, int64_t value) {
     return array->len;
 }
 
+int64_t sw_array_push_u8(sw_array* array, int64_t value) {
+    if (array == NULL) return 0;
+    if (array->len >= array->cap) {
+        int64_t new_cap = array->cap * 2 + 1;
+        sw_array* bigger = sw_array_new(1, new_cap);
+        memcpy(bigger->data, array->data, (sw_size)array->len);
+        bigger->len = array->len;
+        *array = *bigger;
+    }
+    ((unsigned char*)array->data)[array->len++] = (unsigned char)value;
+    return array->len;
+}
+
 // 弹出末尾元素（空数组返回 0）。
 int64_t sw_array_pop(sw_array* array) {
     if (array == NULL || array->len <= 0) {
@@ -15269,3 +15282,65 @@ int64_t sw_task_detach(int64_t id) {
 #endif
     return 0;
 }
+
+// ---------------------------------------------------------------------------
+// 音频播放器：Windows 使用系统 MCI（winmm），不引入第三方解码库。其他平台的
+// 数据处理 API 仍可用；播放后端后续替换为统一的原生设备实现。
+// ---------------------------------------------------------------------------
+
+#if defined(_WIN32)
+#define SW_AUDIO_MAX_HANDLES 32
+typedef struct { int used; int state; int64_t speed; char alias[32]; } sw_audio_entry;
+static sw_audio_entry sw_audio_handles[SW_AUDIO_MAX_HANDLES];
+extern unsigned int mciSendStringA(const char* command, char* result, unsigned int result_len, void* callback);
+extern unsigned int mciSendStringW(const unsigned short* command, unsigned short* result, unsigned int result_len, void* callback);
+extern int MultiByteToWideChar(unsigned int code_page, unsigned long flags, const char* text, int text_len, unsigned short* wide, int wide_len);
+
+static sw_audio_entry* sw_audio_get(int64_t handle) {
+    if (handle <= 0 || handle > SW_AUDIO_MAX_HANDLES) return NULL;
+    sw_audio_entry* entry = &sw_audio_handles[handle - 1];
+    return entry->used ? entry : NULL;
+}
+static int sw_audio_command(const char* command) { return mciSendStringA(command, NULL, 0, NULL) == 0 ? 0 : -1; }
+static int64_t sw_audio_number(sw_audio_entry* entry, const char* query) {
+    char command[96]; char value[64]; char* end = NULL;
+    snprintf(command, sizeof(command), "status %s %s", entry->alias, query);
+    if (mciSendStringA(command, value, sizeof(value), NULL) != 0) return -1;
+    return strtoll(value, &end, 10);
+}
+int64_t audio_open(sw_string* path) {
+    if (path == NULL || path->len <= 0) return -1;
+    int slot = -1; for (int i = 0; i < SW_AUDIO_MAX_HANDLES; i++) if (!sw_audio_handles[i].used) { slot = i; break; }
+    if (slot < 0) return -1;
+    sw_audio_entry* entry = &sw_audio_handles[slot];
+    snprintf(entry->alias, sizeof(entry->alias), "sw_audio_%d", slot + 1);
+    char command[4096]; unsigned short wide[4096];
+    snprintf(command, sizeof(command), "open \"%.*s\" type mpegvideo alias %s", (int)path->len, path->data, entry->alias);
+    // Sw string 是 UTF-8；MCI 的 A 接口按系统代码页解释，中文路径会失败。
+    if (MultiByteToWideChar(65001, 0, command, -1, wide, 4096) == 0 ||
+        mciSendStringW(wide, NULL, 0, NULL) != 0) return -1;
+    entry->used = 1; entry->state = 0; entry->speed = 100; return slot + 1;
+}
+int64_t audio_play(int64_t handle) { sw_audio_entry* e = sw_audio_get(handle); if (!e) return -1; char c[80]; snprintf(c, sizeof(c), "play %s", e->alias); if (sw_audio_command(c)) return -1; e->state = 1; return 0; }
+int64_t audio_pause(int64_t handle) { sw_audio_entry* e = sw_audio_get(handle); if (!e) return -1; char c[80]; snprintf(c, sizeof(c), "pause %s", e->alias); if (sw_audio_command(c)) return -1; e->state = 2; return 0; }
+int64_t audio_resume(int64_t handle) { return audio_play(handle); }
+int64_t audio_stop(int64_t handle) { sw_audio_entry* e = sw_audio_get(handle); if (!e) return -1; char c[80]; snprintf(c, sizeof(c), "stop %s", e->alias); if (sw_audio_command(c)) return -1; e->state = 0; return 0; }
+int64_t audio_close(int64_t handle) { sw_audio_entry* e = sw_audio_get(handle); if (!e) return -1; char c[80]; snprintf(c, sizeof(c), "close %s", e->alias); int ok = sw_audio_command(c); e->used = 0; return ok; }
+int64_t audio_state(int64_t handle) { sw_audio_entry* e = sw_audio_get(handle); if (!e) return -1; char c[80], value[32]; snprintf(c, sizeof(c), "status %s mode", e->alias); if (mciSendStringA(c, value, sizeof(value), NULL) != 0) return e->state; if (memcmp(value, "playing", 7) == 0) return 1; if (memcmp(value, "paused", 6) == 0) return 2; if (memcmp(value, "stopped", 7) == 0) return e->state == 1 ? 3 : 0; return e->state; }
+int64_t audio_position_ms(int64_t handle) { sw_audio_entry* e = sw_audio_get(handle); return e ? sw_audio_number(e, "position") : -1; }
+int64_t audio_duration_ms(int64_t handle) { sw_audio_entry* e = sw_audio_get(handle); return e ? sw_audio_number(e, "length") : -1; }
+int64_t audio_set_volume(int64_t handle, int64_t percent) { sw_audio_entry* e = sw_audio_get(handle); if (!e) return -1; if (percent < 0) percent = 0; if (percent > 100) percent = 100; char c[96]; snprintf(c, sizeof(c), "setaudio %s volume to %lld", e->alias, percent * 10); return sw_audio_command(c); }
+int64_t audio_set_speed(int64_t handle, int64_t speed) { sw_audio_entry* e = sw_audio_get(handle); if (!e || speed < 25 || speed > 400) return -1; char c[96]; snprintf(c, sizeof(c), "set %s speed %lld", e->alias, speed * 10); if (sw_audio_command(c)) return -1; e->speed = speed; return 0; }
+#else
+int64_t audio_open(sw_string* path) { (void)path; return -1; }
+int64_t audio_play(int64_t handle) { (void)handle; return -1; }
+int64_t audio_pause(int64_t handle) { (void)handle; return -1; }
+int64_t audio_resume(int64_t handle) { (void)handle; return -1; }
+int64_t audio_stop(int64_t handle) { (void)handle; return -1; }
+int64_t audio_close(int64_t handle) { (void)handle; return -1; }
+int64_t audio_state(int64_t handle) { (void)handle; return -1; }
+int64_t audio_position_ms(int64_t handle) { (void)handle; return -1; }
+int64_t audio_duration_ms(int64_t handle) { (void)handle; return -1; }
+int64_t audio_set_volume(int64_t handle, int64_t percent) { (void)handle; (void)percent; return -1; }
+int64_t audio_set_speed(int64_t handle, int64_t speed) { (void)handle; (void)speed; return -1; }
+#endif
