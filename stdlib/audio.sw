@@ -4,8 +4,9 @@
 
 import { read_file_bytes, write_file_bytes } from "std/fs";
 import { bytes_read_u16_le, bytes_read_u32_le } from "std/bytes";
-import { from_utf8_bytes } from "std/string";
+import { from_utf8_bytes, format_int, index_of, substring, to_upper } from "std/string";
 
+/// 音频文件元数据；字段在无法解析时保持默认值。
 export struct AudioMetadata {
     valid: bool;
     format: string;
@@ -19,12 +20,18 @@ export struct AudioMetadata {
     album: string;
 }
 
+/// 播放器状态：已停止。
 export const AUDIO_STOPPED = 0;
+/// 播放器状态：播放中。
 export const AUDIO_PLAYING = 1;
+/// 播放器状态：已暂停。
 export const AUDIO_PAUSED = 2;
+/// 播放器状态：自然播放结束。
 export const AUDIO_ENDED = 3;
+/// 播放器状态：发生错误。
 export const AUDIO_FAILED = 4;
 
+/// WAV PCM 头和数据块信息。
 export struct WavInfo {
     valid: bool;
     format: int;
@@ -41,6 +48,7 @@ function tag_at(data: u8[], at: int, a: int, b: int, c: int, d: int): bool {
 }
 
 /// 解析 RIFF/WAVE；不支持或损坏文件返回 valid=false。
+/// 从内存字节解析 RIFF/WAVE 信息。
 export function wav_info_bytes(data: u8[]): WavInfo {
     if (data.length < 12 || !tag_at(data, 0, 82, 73, 70, 70) || !tag_at(data, 8, 87, 65, 86, 69)) {
         return { valid: false, format: 0, channels: 0, sample_rate: 0, bits_per_sample: 0, data_offset: 0, data_size: 0, duration_ms: 0 };
@@ -69,8 +77,18 @@ export function wav_info_bytes(data: u8[]): WavInfo {
     return { valid, format, channels, sample_rate: rate, bits_per_sample: bits, data_offset: data_at, data_size, duration_ms: valid ? data_size * 1000 / bytes_per_sec : 0 };
 }
 
+/// 从文件解析 WAV 信息。
 export function wav_info(path: string): WavInfo { return wav_info_bytes(read_file_bytes(path)); }
+/// 返回 WAV 文件时长（毫秒）；文件无效时返回 0。
 export function wav_duration_ms(path: string): int { return wav_info(path).duration_ms; }
+
+/// 将毫秒时长格式化为 HH:MM:SS；不足一小时则返回 MM:SS。
+export function audio_format_duration_ms(duration_ms: int): string {
+    if (duration_ms < 0) { return "--:--"; }
+    const total = duration_ms / 1000; const seconds = total % 60; const minutes = (total / 60) % 60; const hours = total / 3600;
+    if (hours > 0) { return format_int(hours, 2, 1) + ":" + format_int(minutes, 2, 1) + ":" + format_int(seconds, 2, 1); }
+    return format_int(minutes, 2, 1) + ":" + format_int(seconds, 2, 1);
+}
 
 function metadata_empty(): AudioMetadata {
     return { valid: false, format: "", channels: 0, sample_rate: 0, bits_per_sample: 0,
@@ -105,6 +123,7 @@ function id3_text(data: u8[], at: int, size: int): string {
 }
 
 /// 读取 WAV/MP3/FLAC 的基础元数据；未支持或损坏数据返回 valid=false。
+/// 从内存字节读取 WAV/MP3/FLAC 元数据。
 export function audio_metadata_bytes(data: u8[]): AudioMetadata {
     let result = metadata_empty();
     const wav = wav_info_bytes(data);
@@ -125,6 +144,25 @@ export function audio_metadata_bytes(data: u8[]): AudioMetadata {
                 const total = ((data[at + 17] as int) & 15) * 16777216 + (data[at + 18] as int) * 65536 + (data[at + 19] as int) * 256 + (data[at + 20] as int);
                 result.valid = true; result.format = "flac"; result.channels = channels; result.sample_rate = rate;
                 result.bits_per_sample = bits; result.duration_ms = rate > 0 ? total * 1000 / rate : 0;
+            }
+            if (block_type == 4 && size >= 8) {
+                let cursor = at + 8; const end = at + 4 + size;
+                const vendor_len = bytes_read_u32_le(data, cursor); cursor += 4 + vendor_len;
+                if (cursor + 4 <= end) {
+                    const count = bytes_read_u32_le(data, cursor); cursor += 4; let item = 0;
+                    while (item < count && cursor + 4 <= end) {
+                        const item_len = bytes_read_u32_le(data, cursor); cursor += 4;
+                        if (item_len < 0 || cursor + item_len > end) { break; }
+                        const text = metadata_text(data, cursor, item_len); const equals = index_of(text, "=");
+                        if (equals > 0) {
+                            const key = to_upper(substring(text, 0, equals)); const value = substring(text, equals + 1, item_len - equals - 1);
+                            if (key == "TITLE") { result.title = value; }
+                            if (key == "ARTIST") { result.artist = value; }
+                            if (key == "ALBUM") { result.album = value; }
+                        }
+                        cursor += item_len; item++;
+                    }
+                }
             }
             const last_block = (data[at] as int) >= 128; at = at + 4 + size; if (last_block) { break; }
         }
@@ -162,6 +200,7 @@ export function audio_metadata_bytes(data: u8[]): AudioMetadata {
     return result;
 }
 
+/// 读取 WAV/MP3/FLAC 文件的元数据。
 export function audio_metadata(path: string): AudioMetadata { return audio_metadata_bytes(read_file_bytes(path)); }
 
 function put_u32_le(data: u8[], at: int, value: int): void {
@@ -170,6 +209,7 @@ function put_u32_le(data: u8[], at: int, value: int): void {
 }
 
 /// 线性 PCM 音量，percent 范围 0..200；仅修改 data chunk，返回空数组表示不支持。
+/// 对内存中的 WAV PCM 应用音量增益。
 export function wav_gain_bytes(data: u8[], percent: int): u8[] {
     const info = wav_info_bytes(data); if (!info.valid) { return []; }
     const out: u8[] = []; let copy = 0; while (copy < data.length) { out.push(data[copy]); copy++; }
@@ -184,6 +224,7 @@ export function wav_gain_bytes(data: u8[], percent: int): u8[] {
 }
 
 /// 线性重采样变速。speed_percent=200 表示两倍速，输出时长减半。
+/// 对内存中的 WAV PCM 做线性重采样变速。
 export function wav_speed_bytes(data: u8[], speed_percent: int): u8[] {
     const info = wav_info_bytes(data); if (!info.valid || speed_percent < 25 || speed_percent > 400) { return []; }
     const frame = info.channels * (info.bits_per_sample / 8); const frames = info.data_size / frame;
@@ -226,6 +267,7 @@ function pcm_write(data: u8[], at: int, bits: int, value: int): void {
 }
 
 /// 对 PCM 数据做淡入；duration_ms 超过文件时长时按整段淡入。
+/// 对 WAV PCM 应用渐入效果。
 export function wav_fade_in_bytes(data: u8[], duration_ms: int): u8[] {
     const info = wav_info_bytes(data); if (!info.valid || duration_ms <= 0) { return data; }
     const out: u8[] = []; let copy = 0; while (copy < data.length) { out.push(data[copy]); copy++; }
@@ -246,6 +288,7 @@ export function wav_fade_in_bytes(data: u8[], duration_ms: int): u8[] {
 }
 
 /// 对 PCM 数据做淡出；duration_ms 超过文件时长时按整段淡出。
+/// 对 WAV PCM 应用渐出效果。
 export function wav_fade_out_bytes(data: u8[], duration_ms: int): u8[] {
     const info = wav_info_bytes(data); if (!info.valid || duration_ms <= 0) { return data; }
     const out: u8[] = []; let copy = 0; while (copy < data.length) { out.push(data[copy]); copy++; }
@@ -266,6 +309,7 @@ export function wav_fade_out_bytes(data: u8[], duration_ms: int): u8[] {
 }
 
 /// 将第二个同格式 PCM WAV 混入第一个文件，overlay_percent 范围 0..200。
+/// 将同格式 WAV PCM 叠加混音并返回新字节数组。
 export function wav_mix_bytes(base: u8[], overlay: u8[], overlay_percent: int): u8[] {
     const a = wav_info_bytes(base); const b = wav_info_bytes(overlay);
     if (!a.valid || !b.valid || a.channels != b.channels || a.sample_rate != b.sample_rate || a.bits_per_sample != b.bits_per_sample) { return []; }
@@ -285,6 +329,7 @@ export function wav_mix_bytes(base: u8[], overlay: u8[], overlay_percent: int): 
 }
 
 /// 生成 0..100 的每桶峰值，适合绘制波形预览。
+/// 生成 0..100 的分桶波形峰值。
 export function wav_waveform_peaks(data: u8[], buckets: int): int[] {
     const info = wav_info_bytes(data); const peaks: int[] = [];
     if (!info.valid || buckets <= 0) { return peaks; }
@@ -297,22 +342,57 @@ export function wav_waveform_peaks(data: u8[], buckets: int): int[] {
     return peaks;
 }
 
+/// 将 WAV 增益效果应用并写入目标文件。
 export function wav_gain_file(source: string, destination: string, percent: int): int { return write_file_bytes(destination, wav_gain_bytes(read_file_bytes(source), percent)); }
+/// 将 WAV 线性变速效果应用并写入目标文件。
 export function wav_speed_file(source: string, destination: string, speed_percent: int): int { return write_file_bytes(destination, wav_speed_bytes(read_file_bytes(source), speed_percent)); }
 
+/// 打开音频文件并返回播放器句柄。
 export extern c function audio_open(path: string): int;
+/// 开始或重新开始播放。
 export extern c function audio_play(handle: int): int;
+/// 暂停播放并保留当前位置。
 export extern c function audio_pause(handle: int): int;
+/// 从暂停位置继续播放。
 export extern c function audio_resume(handle: int): int;
+/// 停止播放并将位置复位到 0。
 export extern c function audio_stop(handle: int): int;
+/// 关闭句柄并释放解码器、设备和队列资源。
 export extern c function audio_close(handle: int): int;
+/// 读取播放器状态常量。
 export extern c function audio_state(handle: int): int;
+/// 读取当前播放位置（毫秒）。
 export extern c function audio_position_ms(handle: int): int;
+/// 读取当前音频总时长（毫秒）。
 export extern c function audio_duration_ms(handle: int): int;
+/// 读取当前进度百分比（0..100）。
 export extern c function audio_progress_percent(handle: int): int;
+/// 请求跳转到指定毫秒位置。
 export extern c function audio_seek(handle: int, position_ms: int): int;
+/// 设置音量（0..200%，100 为原始音量）。
 export extern c function audio_set_volume(handle: int, percent: int): int;
+/// 设置播放速度（25..400%，100 为正常速度）。
 export extern c function audio_set_speed(handle: int, speed_percent: int): int;
+/// 读取最近一次错误码。
 export extern c function audio_last_error(handle: int): int;
+/// 返回可用播放设备数量。
 export extern c function audio_device_count(): int;
+/// 返回指定播放设备名称；索引无效时返回空字符串。
+export extern c function audio_device_name(index: int): string;
+/// 设置后续打开句柄使用的默认播放设备索引。
+export extern c function audio_set_default_device(index: int): int;
+/// 将待播放文件加入队列，播放结束后自动切换。
 export extern c function audio_queue(handle: int, path: string): int;
+/// 轮询一个播放器事件；无事件返回 0。
+export extern c function audio_event_poll(handle: int): int;
+/// 返回最近一次取出的事件发生位置（毫秒）。
+export extern c function audio_event_position_ms(handle: int): int;
+
+/// 事件队列：当前没有事件。
+export const AUDIO_EVENT_NONE = 0;
+/// 事件队列：当前曲目播放结束。
+export const AUDIO_EVENT_ENDED = 1;
+/// 事件队列：队列切换或解码发生错误。
+export const AUDIO_EVENT_ERROR = 2;
+/// 事件队列：输出设备丢失或无法启动。
+export const AUDIO_EVENT_DEVICE_LOST = 3;

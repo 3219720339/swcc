@@ -2346,4 +2346,15 @@ Sw 编译器（swcc）开发进度
    - `examples/probe-audio.sw` 增加 3 次每秒进度轮询，输出状态、当前位置、总时长和百分比；本机实测
      位置约 1000/2010/3020ms、百分比 0/0/1%，暂停位置冻结、恢复和跳转通过，最终 `PASS`。
    - `cargo fmt --all -- --check`、`cargo test --workspace`（59 项）及 Linux x64、Linux arm64、
-     macOS arm64 目标对象生成通过。
+   macOS arm64 目标对象生成通过。
+
+2026-08-16 23:08  音频事件、后台切歌、设备诊断与文档完善：
+   - 播放器新增固定容量事件队列，提供 `audio_event_poll` 和 `audio_event_position_ms`，覆盖播放结束、
+     队列解码错误、输出设备启动失败事件；音频线程只写入原生队列，不回调 Sw。
+   - 每个播放器启动独立控制线程，自动检测播放结束并切换队列下一项；`audio_state` 不再承担切歌副作用。
+   - 新增播放设备名称查询和默认设备选择接口；无设备、设备启动、解码错误均保留详细错误码。
+   - FLAC STREAMINFO 之外补充 VorbisComment 的 TITLE/ARTIST/ALBUM 解析；新增 `audio_format_duration_ms`。
+   - 播放案例增加设备名、格式化总时长、事件轮询、44.1kHz 立体声线性重采样和 22.05kHz 回归检查，
+     本机输出全部 `PASS`。
+   - 为 `std/audio.sw` 的结构体、常量、WAV/PCM 方法、播放器和诊断导出接口补齐中文文档注释。
+   - Windows 原生及 Linux 桩 C 语法检查通过；修复新增系统头文件对无宿主音频头交叉目标的影响。

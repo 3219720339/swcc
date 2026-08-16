@@ -4,8 +4,10 @@ import { platform } from "std/os";
 import { read_file_bytes } from "std/fs";
 import { wav_info_bytes, wav_gain_bytes, wav_speed_bytes, wav_fade_in_bytes, wav_fade_out_bytes, wav_mix_bytes, wav_waveform_peaks,
     audio_open, audio_play, audio_pause, audio_resume, audio_stop, audio_close, audio_seek,
-    audio_state, audio_position_ms, audio_duration_ms, audio_progress_percent, audio_set_volume, audio_set_speed,
-    audio_metadata, audio_last_error, audio_device_count, audio_queue,
+    audio_state, audio_position_ms, audio_duration_ms, audio_progress_percent, audio_format_duration_ms,
+    audio_set_volume, audio_set_speed,
+    audio_metadata, audio_last_error, audio_device_count, audio_device_name, audio_set_default_device,
+    audio_queue, audio_event_poll, audio_event_position_ms,
     AUDIO_STOPPED, AUDIO_PLAYING, AUDIO_PAUSED } from "std/audio";
 
 function check(condition: bool, label: string): int {
@@ -27,7 +29,10 @@ function play_demo(): int {
     const metadata = audio_metadata(path);
     const raw_audio = read_file_bytes(path);
     println(`metadata: bytes=${raw_audio.length}, format=${metadata.format}, channels=${metadata.channels}, rate=${metadata.sample_rate}, bitrate=${metadata.bitrate_kbps}kbps, title=${metadata.title}`);
-    println(`diagnostics: devices=${audio_device_count()}, last_error=${audio_last_error(handle)}`);
+    const devices = audio_device_count();
+    println(`diagnostics: devices=${devices}, first=${devices > 0 ? audio_device_name(0) : ""}, last_error=${audio_last_error(handle)}, event=${audio_event_poll(handle)}`);
+    println(`duration format: ${audio_format_duration_ms(audio_duration_ms(handle))}`);
+    audio_set_default_device(-1);
     println(`queue: add-next=${audio_queue(handle, path)}`);
     const second = audio_open(path);
     println(`multi-handle: second=${second}, independent=${second > 0 && audio_state(second) == AUDIO_STOPPED}`);
@@ -64,6 +69,7 @@ function play_demo(): int {
     sleep_ms(700); audio_set_volume(handle, 25); println("playback effect: fade-out 25%");
     sleep_ms(700); audio_set_volume(handle, 0); println("playback effect: fade-out 0%");
     const final_state = audio_state(handle);
+    println(`event poll: code=${audio_event_poll(handle)}, position=${audio_event_position_ms(handle)}ms`);
     audio_stop(handle); audio_close(handle);
     return check(paused == 0 && resumed == 0 && seeked == 0 && final_state >= AUDIO_PLAYING && frozen == before_pause, "playback controls");
 }
@@ -104,6 +110,17 @@ function main(): int {
     for (const value of stereo_header) { stereo16.push(value as u8); }
     const stereo_info = wav_info_bytes(stereo16);
     passed = passed & check(stereo_info.valid && stereo_info.channels == 2 && stereo_info.sample_rate == 44100 && stereo_info.bits_per_sample == 16, "wav 16-bit stereo");
+    const stereo_speed = wav_speed_bytes(stereo16, 150);
+    const stereo_speed_info = wav_info_bytes(stereo_speed);
+    println(`resample quality: stereo 44.1kHz -> 1.5x, bytes=${stereo_speed.length}`);
+    passed = passed & check(stereo_speed_info.valid && stereo_speed_info.channels == 2 && stereo_speed_info.bits_per_sample == 16 && stereo_speed_info.data_size == 4, "linear resample stereo");
+    const wav22: u8[] = [];
+    for (const value of stereo16) { wav22.push(value); }
+    wav22[24] = 34; wav22[25] = 86; wav22[26] = 0; wav22[27] = 0;
+    wav22[28] = 136; wav22[29] = 88; wav22[30] = 0; wav22[31] = 0;
+    const rate22 = wav_info_bytes(wav22);
+    println(`resample input: channels=${rate22.channels}, rate=${rate22.sample_rate}, bits=${rate22.bits_per_sample}`);
+    passed = passed & check(rate22.valid && rate22.sample_rate == 22050, "wav 22.05kHz stereo");
     passed = passed & play_demo();
     println(`final=${passed == 1 ? "PASS" : "FAIL"}`);
     return passed == 1 ? 0 : 1;
