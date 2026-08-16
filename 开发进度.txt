@@ -3,6 +3,14 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-16（main）
 
+2026-08-16 18:20  跨平台构建验证：
+   - 使用 release swc 对 probe-bounds 完成 x86_64-unknown-linux-musl 与
+     aarch64-unknown-linux-musl 静态可执行文件构建，产物位于 build-check/。
+   - llvm-readobj 验证：x64 为 elf64-x86-64 / EM_X86_64，arm64 为
+     elf64-littleaarch64 / EM_AARCH64。
+   - aarch64-apple-darwin 目标成功生成 Mach-O arm64 对象
+     build-check/bounds-macos-a64.o；本机无 macOS SDK，因此仅做对象格式验证。
+
 2026-08-16 17:38  文本与时间边界补强：
    - utf8_char_at 对空字符串和负字符下标统一返回 -1；utf8_substring 对空值/非正长度
      返回空串，负起点钳制为 0，避免低层 UTF-8 访问的索引语义不一致。
