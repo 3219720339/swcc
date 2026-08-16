@@ -17,6 +17,7 @@ import {
     shift_time,
     time_diff,
     uptime_ms,
+    parse_datetime,
     取年份,
     取星期文本,
     时间戳增减,
@@ -52,6 +53,8 @@ function main(): int {
     passed = passed & check(days_in_month(2024, 2) == 29, "days_in_month leap");
     passed = passed & check(days_in_month(2023, 2) == 28, "days_in_month normal");
     passed = passed & check(days_in_year(2024) == 366 && days_in_year(2023) == 365, "days_in_year");
+    passed = passed & check(parse_datetime("2024-02-29") >= 0, "parse_datetime leap day");
+    passed = passed & check(parse_datetime("2023-02-29") == -1, "parse_datetime invalid day");
 
     const tomorrow = shift_time(ts, 1, 0, 0, 0);
     passed = passed & check(day_of(tomorrow) == 25, "shift_time +1 day");

@@ -2024,6 +2024,9 @@ int64_t utf8_len(sw_string* text) {
 }
 
 int64_t utf8_char_at(sw_string* text, int64_t index) {
+    if (text == NULL || index < 0) {
+        return -1;
+    }
     int64_t position = 0;
     int64_t offset = 0;
     while (offset < text->len && position < index) {
@@ -2038,6 +2041,12 @@ int64_t utf8_char_at(sw_string* text, int64_t index) {
 }
 
 sw_string* utf8_substring(sw_string* text, int64_t start, int64_t count) {
+    if (text == NULL || count <= 0) {
+        return sw_string_from_literal("", 0);
+    }
+    if (start < 0) {
+        start = 0;
+    }
     int64_t offset = 0;
     int64_t position = 0;
     while (offset < text->len && position < start) {
@@ -5989,6 +5998,8 @@ double sw_tau(void) {
 
 #define SW_IS_DIGIT(c) ((c) >= '0' && (c) <= '9')
 
+int64_t days_in_month(int64_t year, int64_t month);
+
 int64_t sw_parse_datetime(sw_string* text) {
     if (text == NULL || text->len < 10) {
         return -1;
@@ -6002,7 +6013,7 @@ int64_t sw_parse_datetime(sw_string* text) {
     int64_t year = (d[0] - '0') * 1000 + (d[1] - '0') * 100 + (d[2] - '0') * 10 + (d[3] - '0');
     int64_t month = (d[5] - '0') * 10 + (d[6] - '0');
     int64_t day = (d[8] - '0') * 10 + (d[9] - '0');
-    if (month < 1 || month > 12 || day < 1 || day > 31) {
+    if (month < 1 || month > 12 || day < 1 || day > days_in_month(year, month)) {
         return -1;
     }
     if (text->len == 10) {

@@ -3,6 +3,14 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-16（main）
 
+2026-08-16 17:38  文本与时间边界补强：
+   - utf8_char_at 对空字符串和负字符下标统一返回 -1；utf8_substring 对空值/非正长度
+     返回空串，负起点钳制为 0，避免低层 UTF-8 访问的索引语义不一致。
+   - parse_datetime 从仅校验 1-31 改为按实际月份天数校验，正确拒绝如 2023-02-29 的
+     不存在日期；std/time 文档同步说明。
+   - 验证：cargo test --workspace（56 项）通过；probe-time 增加有效闰日和无效日期断言，
+     25 项运行断言全部通过。
+
 2026-08-16 17:35  跨平台运行时安全与系统库可靠性批：
    - 数组下标安全：Cranelift 对 int/float/string/u8/struct 数组的读写统一插入
      sw_array_check_bounds，拒绝负数和超过 len 的下标并以 exit(3) 终止；补齐
