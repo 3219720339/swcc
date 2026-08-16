@@ -66,7 +66,7 @@ def main():
         if os.path.exists(source):
             shutil.copy2(source, os.path.join(sdk, "bin", dll))
     for name in ("libucrt.a", "libucrtbase.a", "libkernel32.a", "libshell32.a",
-                 "libole32.a", "libws2_32.a"):
+                 "libole32.a", "libws2_32.a", "libwinmm.a"):
         source = os.path.join(mingw_lib, name)
         if not os.path.exists(source):
             sys.exit(f"工具链缺少链接库：{source}")

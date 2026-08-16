@@ -2275,3 +2275,7 @@ Sw 编译器（swcc）开发进度
      该问题会影响二进制文件与音频数据处理。
    - 新增 `probe-audio.sw`，覆盖 WAV 解析、音量和离线 2 倍速；Windows 播放器使用 UTF-16
      系统接口处理中文路径。MP3 系统解码兼容性仍待以可随 SDK 分发的统一后端收口。
+
+2026-08-16 21:43  Windows SDK 音频链接修复：
+   - `std/audio` 的 Windows 后端需要 `winmm`；补充 Windows SDK 打包脚本复制 `libwinmm.a`，
+     并把它加入 CI 解压 SDK 自检，修复 Actions 中 SDK 编译任意 Sw 程序时报 `-lwinmm` 缺失。

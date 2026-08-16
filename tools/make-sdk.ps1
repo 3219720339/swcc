@@ -49,7 +49,7 @@ foreach ($dll in @("libLLVM-22.dll", "libc++.dll", "libunwind.dll")) {
     }
 }
 foreach ($name in @("libucrt.a", "libucrtbase.a", "libkernel32.a", "libshell32.a",
-                    "libole32.a", "libws2_32.a")) {
+                    "libole32.a", "libws2_32.a", "libwinmm.a")) {
     $source = Join-Path $mingwLib $name
     if (-not (Test-Path $source)) {
         throw "Toolchain missing link library: $source"
