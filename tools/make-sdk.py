@@ -77,6 +77,7 @@ def main():
     target = "x86_64-w64-windows-gnu"
     for source, output in (
         ("runtime.c", "runtime.obj"),
+        ("runtime_audio.c", "runtime_audio.obj"),
         ("runtime_x64.S", "runtime_asm.obj"),
         ("startup.s", "startup.obj"),
     ):
@@ -94,7 +95,7 @@ def main():
             "-o",
             dst,
         ]
-        if source != "runtime.c":
+        if source not in ("runtime.c", "runtime_audio.c"):
             command = [clang, "-target", target, "-c", src, "-o", dst]
         run(command)
 

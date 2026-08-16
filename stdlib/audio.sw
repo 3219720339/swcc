@@ -1,5 +1,6 @@
-// std/audio - WAV/PCM 数据处理与跨平台播放器句柄。
-// WAV 处理支持 PCM 8/16 位整数；播放器不在音频线程回调 Sw 代码。
+// std/audio - WAV/PCM 数据处理与播放器句柄。
+// WAV 处理支持 PCM 8/16 位整数；Windows 播放器内置 WAV/MP3/FLAC 解码，
+// 音频线程不回调 Sw 代码。Linux/macOS 播放设备后端仍在打包中，数据 API 可用。
 
 import { read_file_bytes, write_file_bytes } from "std/fs";
 import { bytes_read_u16_le, bytes_read_u32_le } from "std/bytes";

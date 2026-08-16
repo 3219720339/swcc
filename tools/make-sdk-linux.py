@@ -77,6 +77,9 @@ def main():
         run([clang, "-target", target, "-O2", "-ffunction-sections", "-fdata-sections",
              "-c", os.path.join(ROOT, "runtime", "runtime.c"),
              "-o", os.path.join(sdk, "lib", f"runtime_{arch}.o")])
+        run([clang, "-target", target, "-O2", "-ffunction-sections", "-fdata-sections",
+             "-c", os.path.join(ROOT, "runtime", "runtime_audio.c"),
+             "-o", os.path.join(sdk, "lib", f"runtime_audio_{arch}.o")])
         run([clang, "-target", target, "-c", os.path.join(ROOT, "runtime", asm),
              "-o", os.path.join(sdk, "lib", f"runtime_asm_{arch}.o")])
 

@@ -1117,6 +1117,7 @@ fn compile_runtime_objects(
         std::process::exit(2);
     });
     let runtime_c = runtime_dir.join("runtime.c");
+    let runtime_audio_c = runtime_dir.join("runtime_audio.c");
     let runtime_s = runtime_dir.join(runtime_asm_file(arch_of(target)));
     let suffix = if family == "windows" { "obj" } else { "o" };
     let target_tag = target.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
@@ -1125,6 +1126,10 @@ fn compile_runtime_objects(
         if no_main { "dll_" } else { "" }
     ));
     let runtime_asm_obj = cache_dir.join(format!("runtime_asm_{target_tag}.{suffix}"));
+    let runtime_audio_obj = cache_dir.join(format!(
+        "runtime_audio_{}{target_tag}.{suffix}",
+        if no_main { "dll_" } else { "" }
+    ));
     let startup_obj = cache_dir.join(format!("startup_{target_tag}.{suffix}"));
     let mut result = Vec::new();
     let mut main_args = vec!["-target".to_owned(), target.to_owned(), "-O2".to_owned()];
@@ -1136,6 +1141,18 @@ fn compile_runtime_objects(
     main_args.push("-c".to_owned());
     let mut tasks = vec![
         (runtime_c.clone(), runtime_obj.clone(), main_args),
+        (
+            runtime_audio_c,
+            runtime_audio_obj.clone(),
+            vec![
+                "-target".to_owned(),
+                target.to_owned(),
+                "-O2".to_owned(),
+                "-ffunction-sections".to_owned(),
+                "-fdata-sections".to_owned(),
+                "-c".to_owned(),
+            ],
+        ),
         (
             runtime_s.clone(),
             runtime_asm_obj.clone(),
@@ -1235,7 +1252,16 @@ fn compile_if_stale(
 
 /// FNV-1a 64 位内容哈希（十六进制），用于运行时缓存失效判断。
 fn file_hash(path: &Path) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
+    let mut bytes = fs::read(path).ok()?;
+    // runtime_audio.c includes the vendored implementation header. Include it
+    // in the cache key so an audio decoder/backend update recompiles the object.
+    if path
+        .file_name()
+        .is_some_and(|name| name == "runtime_audio.c")
+    {
+        let header = path.join("..").join("vendor/miniaudio/miniaudio.h");
+        bytes.extend(fs::read(header).ok()?);
+    }
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in &bytes {
         hash ^= u64::from(*byte);
@@ -1331,26 +1357,30 @@ fn runtime_objects_for_root(root: &Path, target: &str) -> Option<Vec<PathBuf>> {
     let arch = arch_of(target);
     match target_family(target) {
         "windows" => {
-            let (runtime, asm, startup) = if arch == "aarch64" {
+            let (runtime, audio, asm, startup) = if arch == "aarch64" {
                 (
                     lib.join("runtime_aarch64.obj"),
+                    lib.join("runtime_audio_aarch64.obj"),
                     lib.join("runtime_asm_aarch64.obj"),
                     lib.join("startup_aarch64.obj"),
                 )
             } else {
                 (
                     lib.join("runtime.obj"),
+                    lib.join("runtime_audio.obj"),
                     lib.join("runtime_asm.obj"),
                     lib.join("startup.obj"),
                 )
             };
-            (runtime.is_file() && asm.is_file() && startup.is_file())
-                .then(|| vec![runtime, asm, startup])
+            (runtime.is_file() && audio.is_file() && asm.is_file() && startup.is_file())
+                .then(|| vec![runtime, audio, asm, startup])
         }
         "linux" => {
             let runtime = lib.join(format!("runtime_{arch}.o"));
+            let audio = lib.join(format!("runtime_audio_{arch}.o"));
             let asm = lib.join(format!("runtime_asm_{arch}.o"));
-            (runtime.is_file() && asm.is_file()).then(|| vec![runtime, asm])
+            (runtime.is_file() && audio.is_file() && asm.is_file())
+                .then(|| vec![runtime, audio, asm])
         }
         _ => None,
     }

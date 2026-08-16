@@ -143,6 +143,9 @@ jobs:
           foreach ($lib in @('libucrt.a','libucrtbase.a','libkernel32.a','libshell32.a','libole32.a','libws2_32.a','libwinmm.a','libclang_rt.builtins-x86_64.a')) {
             if (-not (Test-Path (Join-Path $sdk "lib\$lib"))) { throw "SDK missing lib/$lib" }
           }
+          foreach ($obj in @('runtime.obj','runtime_audio.obj','runtime_asm.obj','startup.obj')) {
+            if (-not (Test-Path (Join-Path $sdk "lib\$obj"))) { throw "SDK missing runtime object: $obj" }
+          }
           $work = Join-Path $env:RUNNER_TEMP 'sdk-smoke-work'
           New-Item -ItemType Directory -Force -Path $work | Out-Null
           Copy-Item "${{ github.workspace }}/examples/probe-batch11.sw" $work
