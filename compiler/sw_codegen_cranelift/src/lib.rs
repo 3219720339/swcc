@@ -370,6 +370,11 @@ impl Generator {
         // 预声明函数体内引用的外部符号
         let mut refs = RefTable::default();
         collect_refs(self, mir, function, exports, &mut ctx, &mut refs)?;
+        let safepoint_sig = Signature::new(self.module.isa().default_call_conv());
+        let safepoint_id = self.declare_import("sw_gc_safepoint", &safepoint_sig)?;
+        let safepoint_ref = self
+            .module
+            .declare_func_in_func(safepoint_id, &mut ctx.func);
 
         let mut func_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
@@ -418,6 +423,10 @@ impl Generator {
             strings: &mir.strings,
             last_terminated: false,
         };
+
+        // 每个 Sw 函数入口都是协作式 GC 安全点。未来 worker 线程首次进入
+        // 编译代码时会在此注册，并在停世界收集期间保存自己的栈根。
+        lower.builder.ins().call(safepoint_ref, &[]);
 
         // 参数入槽
         let param_values = lower.builder.block_params(entry).to_vec();
@@ -1219,6 +1228,31 @@ fn extern_c_symbol(name: &str) -> &str {
         "log_runtime_level" => "sw_log_level",
         "atomic_write" => "atomic_write",
         "atomic_write_bytes" => "atomic_write_bytes",
+        "mutex_new" => "sw_mutex_new",
+        "mutex_lock" => "sw_mutex_lock",
+        "mutex_try_lock" => "sw_mutex_try_lock",
+        "mutex_unlock" => "sw_mutex_unlock",
+        "mutex_close" => "sw_mutex_close",
+        "cond_new" => "sw_cond_new",
+        "cond_wait" => "sw_cond_wait",
+        "cond_signal" => "sw_cond_signal",
+        "cond_broadcast" => "sw_cond_broadcast",
+        "cond_close" => "sw_cond_close",
+        "atomic_new" => "sw_atomic_new",
+        "atomic_load" => "sw_atomic_load",
+        "atomic_store" => "sw_atomic_store",
+        "atomic_add" => "sw_atomic_add",
+        "atomic_compare_exchange" => "sw_atomic_compare_exchange",
+        "atomic_close" => "sw_atomic_close",
+        "channel_string_new" => "sw_channel_string_new",
+        "channel_string_send" => "sw_channel_string_send",
+        "channel_string_recv" => "sw_channel_string_recv",
+        "channel_bytes_new" => "sw_channel_bytes_new",
+        "channel_bytes_send" => "sw_channel_bytes_send",
+        "channel_bytes_recv" => "sw_channel_bytes_recv",
+        "channel_len" => "sw_channel_len",
+        "channel_close" => "sw_channel_close",
+        "sync_runtime_self_test" => "sw_sync_runtime_self_test",
         "ini_parse" => "ini_parse",
         "ini_save" => "ini_save",
         "random_string" => "random_string",

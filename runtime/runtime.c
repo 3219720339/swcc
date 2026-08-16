@@ -77,6 +77,7 @@ typedef struct {
 // （此前 128MB 时 30 万次异常/字符串残留 50MB+）；32MB 平衡频率与峰值。
 #define SW_GC_MAX_THRESHOLD (32u << 20)
 #define SW_GC_MAX_DATA_RANGES 32
+#define SW_GC_MAX_THREADS 64
 
 typedef struct sw_gc_block {
     struct sw_gc_block* next;
@@ -93,18 +94,87 @@ static int sw_gc_initialized = 0;
 static sw_gc_block** sw_gc_sorted = NULL;
 static uint64_t sw_gc_sorted_count = 0;
 
+typedef struct {
+    int active;
+    int parked;
+    uintptr_t stack_pointer;
+    uintptr_t stack_top;
+    uintptr_t exception_frame;
+    unsigned char registers[0x140];
+} sw_gc_thread;
+
+// GC 堆与线程表分别受自旋锁保护。运行时没有任何宿主头文件依赖，使用
+// Clang/GCC/MSVC 兼容的原子内建实现这些极小的锁。
+static volatile uint32_t sw_gc_heap_lock = 0;
+static volatile uint32_t sw_gc_thread_lock = 0;
+static volatile uint32_t sw_gc_stop_requested = 0;
+static sw_gc_thread sw_gc_threads[SW_GC_MAX_THREADS];
+
+typedef struct {
+    int gc_thread_slot;
+    int gc_disabled;
+    void* current_frame;
+} sw_thread_local_state;
+
+#if defined(_WIN32)
+static volatile uint32_t sw_runtime_tls_key = 0xFFFFFFFFu;
+extern uint32_t TlsAlloc(void);
+extern void* TlsGetValue(uint32_t key);
+extern int TlsSetValue(uint32_t key, void* value);
+extern int TlsFree(uint32_t key);
+
+static sw_thread_local_state* sw_thread_state(void) {
+    uint32_t key = __atomic_load_n(&sw_runtime_tls_key, __ATOMIC_ACQUIRE);
+    if (key == 0xFFFFFFFFu) {
+        uint32_t fresh = TlsAlloc();
+        if (fresh == 0xFFFFFFFFu) {
+            return NULL;
+        }
+        uint32_t expected = 0xFFFFFFFFu;
+        if (!__atomic_compare_exchange_n(
+                &sw_runtime_tls_key, &expected, fresh, 0,
+                __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
+            TlsFree(fresh);
+            key = expected;
+        } else {
+            key = fresh;
+        }
+    }
+    sw_thread_local_state* state = (sw_thread_local_state*)TlsGetValue(key);
+    if (state == NULL) {
+        state = (sw_thread_local_state*)calloc(1, sizeof(sw_thread_local_state));
+        if (state == NULL) {
+            return NULL;
+        }
+        state->gc_thread_slot = -1;
+        if (!TlsSetValue(key, state)) {
+            free(state);
+            return NULL;
+        }
+    }
+    return state;
+}
+#else
+static __thread sw_thread_local_state sw_runtime_tls_state = { -1, 0, NULL };
+static sw_thread_local_state* sw_thread_state(void) {
+    return &sw_runtime_tls_state;
+}
+#endif
+
 // GC 暂停计数：C 函数在"纯内部计算 + 大量临时 GC 对象"期间暂停回收，
 // 避免保守式栈扫描对临时对象的误回收（rx 引擎节点树/码点数组等）。
 // 暂停期间 sw_gc_alloc 照常分配（不触发 collect），恢复后由后续 GC 回收。
-static int sw_gc_disabled = 0;
-
 static void sw_gc_disable(void) {
-    sw_gc_disabled++;
+    sw_thread_local_state* state = sw_thread_state();
+    if (state != NULL) {
+        state->gc_disabled++;
+    }
 }
 
 static void sw_gc_enable(void) {
-    if (sw_gc_disabled > 0) {
-        sw_gc_disabled--;
+    sw_thread_local_state* state = sw_thread_state();
+    if (state != NULL && state->gc_disabled > 0) {
+        state->gc_disabled--;
     }
 }
 
@@ -352,6 +422,129 @@ static uintptr_t sw_stack_top(void) {
 }
 #endif
 
+static void sw_runtime_yield(void) {
+#if defined(_WIN32)
+    extern void Sleep(unsigned long milliseconds);
+    Sleep(1);
+#else
+    extern int sched_yield(void);
+    sched_yield();
+#endif
+}
+
+static int sw_spin_try_lock(volatile uint32_t* lock) {
+    uint32_t expected = 0;
+    return __atomic_compare_exchange_n(lock, &expected, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+}
+
+static void sw_spin_lock(volatile uint32_t* lock) {
+    while (!sw_spin_try_lock(lock)) {
+        sw_runtime_yield();
+    }
+}
+
+static void sw_spin_unlock(volatile uint32_t* lock) {
+    __atomic_store_n(lock, 0, __ATOMIC_RELEASE);
+}
+
+void sw_gc_thread_attach(void) {
+    sw_thread_local_state* state = sw_thread_state();
+    if (state == NULL || state->gc_thread_slot >= 0) {
+        return;
+    }
+    sw_spin_lock(&sw_gc_thread_lock);
+    for (int index = 0; index < SW_GC_MAX_THREADS; index++) {
+        if (!sw_gc_threads[index].active) {
+            sw_gc_threads[index].active = 1;
+            sw_gc_threads[index].parked = 0;
+            sw_gc_threads[index].stack_pointer = 0;
+            sw_gc_threads[index].stack_top = sw_stack_top();
+            sw_gc_threads[index].exception_frame = 0;
+            state->gc_thread_slot = index;
+            break;
+        }
+    }
+    sw_spin_unlock(&sw_gc_thread_lock);
+}
+
+void sw_gc_thread_detach(void) {
+    sw_thread_local_state* state = sw_thread_state();
+    int slot = state != NULL ? state->gc_thread_slot : -1;
+    if (slot < 0 || slot >= SW_GC_MAX_THREADS) {
+        return;
+    }
+    sw_spin_lock(&sw_gc_thread_lock);
+    sw_gc_threads[slot].active = 0;
+    sw_gc_threads[slot].parked = 0;
+    sw_gc_threads[slot].stack_pointer = 0;
+    sw_gc_threads[slot].stack_top = 0;
+    sw_gc_threads[slot].exception_frame = 0;
+    state->gc_thread_slot = -1;
+    sw_spin_unlock(&sw_gc_thread_lock);
+}
+
+// 编译生成的 Sw 函数入口和分配路径都会调用。GC 请求到达时，线程在此保存
+// 栈/寄存器根并停驻，直到收集完成。当前阶段尚未开放 Sw worker 线程，但该
+// 协议已用于后续 std/thread 与运行时后台任务。
+void sw_gc_safepoint(void) {
+    sw_gc_thread_attach();
+    sw_thread_local_state* state = sw_thread_state();
+    int slot = state != NULL ? state->gc_thread_slot : -1;
+    if (slot < 0 || !__atomic_load_n(&sw_gc_stop_requested, __ATOMIC_ACQUIRE)) {
+        return;
+    }
+
+    char stack_marker;
+    unsigned char registers[0x140];
+    sw_setjmp(registers);
+    sw_spin_lock(&sw_gc_thread_lock);
+    if (__atomic_load_n(&sw_gc_stop_requested, __ATOMIC_ACQUIRE) &&
+        sw_gc_threads[slot].active) {
+        sw_gc_threads[slot].stack_pointer = (uintptr_t)&stack_marker;
+        sw_gc_threads[slot].stack_top = sw_stack_top();
+        sw_gc_threads[slot].exception_frame = (uintptr_t)state->current_frame;
+        memcpy(sw_gc_threads[slot].registers, registers, sizeof(registers));
+        sw_gc_threads[slot].parked = 1;
+    }
+    sw_spin_unlock(&sw_gc_thread_lock);
+
+    while (__atomic_load_n(&sw_gc_stop_requested, __ATOMIC_ACQUIRE)) {
+        sw_runtime_yield();
+    }
+
+    sw_spin_lock(&sw_gc_thread_lock);
+    if (sw_gc_threads[slot].active) {
+        sw_gc_threads[slot].parked = 0;
+    }
+    sw_spin_unlock(&sw_gc_thread_lock);
+}
+
+static void sw_gc_stop_world(void) {
+    __atomic_store_n(&sw_gc_stop_requested, 1, __ATOMIC_RELEASE);
+    sw_thread_local_state* state = sw_thread_state();
+    int current_slot = state != NULL ? state->gc_thread_slot : -1;
+    for (;;) {
+        int pending = 0;
+        sw_spin_lock(&sw_gc_thread_lock);
+        for (int index = 0; index < SW_GC_MAX_THREADS; index++) {
+            if (index != current_slot && sw_gc_threads[index].active &&
+                !sw_gc_threads[index].parked) {
+                pending = 1;
+                break;
+            }
+        }
+        sw_spin_unlock(&sw_gc_thread_lock);
+        if (!pending) {
+            return;
+        }
+        sw_runtime_yield();
+    }
+}
+
+static void sw_gc_resume_world(void) {
+    __atomic_store_n(&sw_gc_stop_requested, 0, __ATOMIC_RELEASE);
+}
+
 static uintptr_t sw_gc_align8(uintptr_t value) {
     return (value + 7u) & ~(uintptr_t)7u;
 }
@@ -422,9 +615,36 @@ static void sw_gc_scan_stack(void) {
     unsigned char regs[0x140];
     sw_setjmp(regs);
     sw_gc_scan_words((uintptr_t)regs, (uintptr_t)regs + sizeof(regs));
+    sw_thread_local_state* state = sw_thread_state();
+    if (state != NULL) {
+        sw_gc_mark_word((uintptr_t)state->current_frame);
+    }
+}
+
+static void sw_gc_scan_parked_threads(void) {
+    sw_thread_local_state* state = sw_thread_state();
+    int current_slot = state != NULL ? state->gc_thread_slot : -1;
+    sw_spin_lock(&sw_gc_thread_lock);
+    for (int index = 0; index < SW_GC_MAX_THREADS; index++) {
+        sw_gc_thread* thread = &sw_gc_threads[index];
+        if (index == current_slot || !thread->active || !thread->parked) {
+            continue;
+        }
+        if (thread->stack_top > thread->stack_pointer && thread->stack_pointer != 0) {
+            sw_gc_scan_words(thread->stack_pointer, thread->stack_top);
+        }
+        sw_gc_scan_words(
+            (uintptr_t)thread->registers,
+            (uintptr_t)thread->registers + sizeof(thread->registers)
+        );
+        sw_gc_mark_word(thread->exception_frame);
+    }
+    sw_spin_unlock(&sw_gc_thread_lock);
 }
 
 static void sw_gc_collect(void) {
+    // 调用者持有 sw_gc_heap_lock；其它已注册 Sw 线程在 safepoint 保存根后停驻。
+    sw_gc_stop_world();
     sw_gc_in_collect = 1;
     uint64_t count = 0;
     for (sw_gc_block* block = sw_gc_blocks; block != NULL; block = block->next) {
@@ -445,6 +665,7 @@ static void sw_gc_collect(void) {
         sw_gc_scan_words(sw_gc_data_ranges[index][0], sw_gc_data_ranges[index][1]);
     }
     sw_gc_scan_stack();
+    sw_gc_scan_parked_threads();
     // 堆内引用：类字段/数组元素可能指向其它 GC 块（保守式，多扫无害）。
     // 指向本块内部的指针（字符串 data 内联）不标记（自引用）。
     for (sw_gc_block* block = sw_gc_blocks; block != NULL; block = block->next) {
@@ -471,9 +692,18 @@ static void sw_gc_collect(void) {
 
     sw_gc_allocated_since_collect = 0;
     sw_gc_in_collect = 0;
+    sw_gc_resume_world();
 }
 
 static void* sw_gc_alloc(uint64_t size) {
+    sw_gc_thread_attach();
+    sw_gc_safepoint();
+    // 在竞争 GC 堆锁时持续检查 safepoint：收集线程已持锁并请求停世界时，
+    // 不能让等待分配的线程阻塞在锁上而无法停驻。
+    while (!sw_spin_try_lock(&sw_gc_heap_lock)) {
+        sw_gc_safepoint();
+        sw_runtime_yield();
+    }
     if (!sw_gc_initialized) {
         sw_gc_init_platform();
         sw_gc_initialized = 1;
@@ -481,7 +711,8 @@ static void* sw_gc_alloc(uint64_t size) {
     if (size < 8) {
         size = 8;
     }
-    if (!sw_gc_in_collect && sw_gc_disabled == 0 &&
+    sw_thread_local_state* state = sw_thread_state();
+    if (!sw_gc_in_collect && (state == NULL || state->gc_disabled == 0) &&
         sw_gc_allocated_since_collect >= sw_gc_threshold) {
         sw_gc_collect();
         if (sw_gc_threshold < SW_GC_MAX_THRESHOLD) {
@@ -490,6 +721,7 @@ static void* sw_gc_alloc(uint64_t size) {
     }
     sw_gc_block* block = (sw_gc_block*)malloc(SW_GC_HEADER_SIZE + (sw_size)size);
     if (block == NULL) {
+        sw_spin_unlock(&sw_gc_heap_lock);
         return NULL;
     }
     block->next = sw_gc_blocks;
@@ -498,7 +730,24 @@ static void* sw_gc_alloc(uint64_t size) {
     block->_pad = 0;
     sw_gc_blocks = block;
     sw_gc_allocated_since_collect += size + SW_GC_HEADER_SIZE;
+    sw_spin_unlock(&sw_gc_heap_lock);
     return (char*)block + SW_GC_HEADER_SIZE;
+}
+
+static int64_t sw_gc_collect_now(void) {
+    sw_gc_thread_attach();
+    sw_gc_safepoint();
+    while (!sw_spin_try_lock(&sw_gc_heap_lock)) {
+        sw_gc_safepoint();
+        sw_runtime_yield();
+    }
+    if (!sw_gc_initialized) {
+        sw_gc_init_platform();
+        sw_gc_initialized = 1;
+    }
+    sw_gc_collect();
+    sw_spin_unlock(&sw_gc_heap_lock);
+    return 0;
 }
 
 // 字符串：结构体与数据区合并为一个 GC 块。
@@ -3110,17 +3359,17 @@ typedef struct sw_frame {
     struct sw_frame* prev;
 } sw_frame;
 
-// v0.1 单线程：异常框架使用普通全局；多线程支持留到后续版本。
-static sw_frame* sw_current_frame = NULL;
-
-
 void* sw_try_begin(void) {
-    // 帧由 GC 管理：sw_current_frame 是全局根（数据段被 GC 扫描），
+    // 帧由 GC 管理：线程本地状态由停世界 GC 扫描，
     // try_leave 出链后自然可回收，不再 malloc/free。
+    sw_thread_local_state* state = sw_thread_state();
+    if (state == NULL) {
+        return NULL;
+    }
     sw_frame* frame = (sw_frame*)sw_gc_alloc(sizeof(sw_frame));
     frame->exception = NULL;
-    frame->prev = sw_current_frame;
-    sw_current_frame = frame;
+    frame->prev = (sw_frame*)state->current_frame;
+    state->current_frame = frame;
     return frame;
 }
 
@@ -3130,11 +3379,15 @@ void* sw_try_value(void* frame) {
 
 void sw_try_leave(void* frame) {
     sw_frame* current = (sw_frame*)frame;
-    sw_current_frame = current->prev;
+    sw_thread_local_state* state = sw_thread_state();
+    if (state != NULL) {
+        state->current_frame = current->prev;
+    }
 }
 
 void sw_throw(void* value, int64_t type_id) {
-    sw_frame* frame = sw_current_frame;
+    sw_thread_local_state* state = sw_thread_state();
+    sw_frame* frame = state != NULL ? (sw_frame*)state->current_frame : NULL;
     // 异常对象由 GC 管理：挂在帧上（帧在链上直到 try_leave），catch 后随帧一起回收。
     sw_exception* exception = (sw_exception*)sw_gc_alloc(sizeof(sw_exception));
     exception->type_id = type_id;
@@ -3144,7 +3397,8 @@ void sw_throw(void* value, int64_t type_id) {
 }
 
 void sw_rethrow(void* exception) {
-    sw_frame* frame = sw_current_frame;
+    sw_thread_local_state* state = sw_thread_state();
+    sw_frame* frame = state != NULL ? (sw_frame*)state->current_frame : NULL;
     frame->exception = (sw_exception*)exception;
     sw_longjmp(frame->buf, 1);
 }
@@ -14197,4 +14451,535 @@ int64_t edit_distance(sw_string* a, sw_string* b) {
     free(prev);
     free(curr);
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// 并发基础：原生同步句柄与复制型 channel。
+//
+// 同步对象不由 Sw GC 管理，避免跨线程保存 GC 指针。channel 入队时复制文本/字节，
+// 接收端才构造新的 Sw string/u8[]。关闭仅标记，不立即 free，防止并发调用使用悬垂句柄。
+// ---------------------------------------------------------------------------
+
+typedef struct sw_sync_mutex {
+    int64_t id;
+    volatile uint32_t locked;
+    volatile uint32_t closed;
+    struct sw_sync_mutex* next;
+} sw_sync_mutex;
+
+typedef struct sw_sync_cond {
+    int64_t id;
+    volatile uint64_t sequence;
+    volatile uint32_t closed;
+    struct sw_sync_cond* next;
+} sw_sync_cond;
+
+typedef struct sw_sync_atomic {
+    int64_t id;
+    volatile int64_t value;
+    volatile uint32_t closed;
+    struct sw_sync_atomic* next;
+} sw_sync_atomic;
+
+typedef struct sw_sync_message {
+    struct sw_sync_message* next;
+    int64_t len;
+    unsigned char data[1];
+} sw_sync_message;
+
+typedef struct sw_sync_channel {
+    int64_t id;
+    int64_t capacity;
+    int64_t count;
+    int kind;
+    volatile uint32_t locked;
+    volatile uint32_t closed;
+    sw_sync_message* head;
+    sw_sync_message* tail;
+    struct sw_sync_channel* next;
+} sw_sync_channel;
+
+static volatile uint32_t sw_sync_registry_lock = 0;
+static volatile int64_t sw_sync_next_id = 1;
+static sw_sync_mutex* sw_sync_mutexes = NULL;
+static sw_sync_cond* sw_sync_conds = NULL;
+static sw_sync_atomic* sw_sync_atomics = NULL;
+static sw_sync_channel* sw_sync_channels = NULL;
+
+static int64_t sw_sync_new_id(void) {
+    return __atomic_fetch_add(&sw_sync_next_id, 1, __ATOMIC_RELAXED);
+}
+
+static int64_t sw_sync_now_ms(void) {
+    return uptime_ms();
+}
+
+static int sw_sync_timed_out(int64_t started, int64_t timeout_ms) {
+    return timeout_ms >= 0 && sw_sync_now_ms() - started >= timeout_ms;
+}
+
+static sw_sync_mutex* sw_sync_find_mutex(int64_t id) {
+    sw_sync_mutex* result = NULL;
+    sw_spin_lock(&sw_sync_registry_lock);
+    for (sw_sync_mutex* item = sw_sync_mutexes; item != NULL; item = item->next) {
+        if (item->id == id) {
+            result = item;
+            break;
+        }
+    }
+    sw_spin_unlock(&sw_sync_registry_lock);
+    return result;
+}
+
+static sw_sync_cond* sw_sync_find_cond(int64_t id) {
+    sw_sync_cond* result = NULL;
+    sw_spin_lock(&sw_sync_registry_lock);
+    for (sw_sync_cond* item = sw_sync_conds; item != NULL; item = item->next) {
+        if (item->id == id) {
+            result = item;
+            break;
+        }
+    }
+    sw_spin_unlock(&sw_sync_registry_lock);
+    return result;
+}
+
+static sw_sync_atomic* sw_sync_find_atomic(int64_t id) {
+    sw_sync_atomic* result = NULL;
+    sw_spin_lock(&sw_sync_registry_lock);
+    for (sw_sync_atomic* item = sw_sync_atomics; item != NULL; item = item->next) {
+        if (item->id == id) {
+            result = item;
+            break;
+        }
+    }
+    sw_spin_unlock(&sw_sync_registry_lock);
+    return result;
+}
+
+static sw_sync_channel* sw_sync_find_channel(int64_t id, int kind) {
+    sw_sync_channel* result = NULL;
+    sw_spin_lock(&sw_sync_registry_lock);
+    for (sw_sync_channel* item = sw_sync_channels; item != NULL; item = item->next) {
+        if (item->id == id && item->kind == kind) {
+            result = item;
+            break;
+        }
+    }
+    sw_spin_unlock(&sw_sync_registry_lock);
+    return result;
+}
+
+int64_t sw_mutex_new(void) {
+    sw_sync_mutex* item = (sw_sync_mutex*)calloc(1, sizeof(sw_sync_mutex));
+    if (item == NULL) {
+        return -1;
+    }
+    item->id = sw_sync_new_id();
+    sw_spin_lock(&sw_sync_registry_lock);
+    item->next = sw_sync_mutexes;
+    sw_sync_mutexes = item;
+    sw_spin_unlock(&sw_sync_registry_lock);
+    return item->id;
+}
+
+int64_t sw_mutex_try_lock(int64_t id) {
+    sw_sync_mutex* item = sw_sync_find_mutex(id);
+    if (item == NULL || __atomic_load_n(&item->closed, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    return sw_spin_try_lock(&item->locked) ? 1 : 0;
+}
+
+int64_t sw_mutex_lock(int64_t id, int64_t timeout_ms) {
+    sw_sync_mutex* item = sw_sync_find_mutex(id);
+    if (item == NULL) {
+        return -1;
+    }
+    int64_t started = sw_sync_now_ms();
+    for (;;) {
+        if (__atomic_load_n(&item->closed, __ATOMIC_ACQUIRE)) {
+            return -1;
+        }
+        if (sw_spin_try_lock(&item->locked)) {
+            return 0;
+        }
+        if (sw_sync_timed_out(started, timeout_ms)) {
+            return 1;
+        }
+        sw_runtime_yield();
+    }
+}
+
+int64_t sw_mutex_unlock(int64_t id) {
+    sw_sync_mutex* item = sw_sync_find_mutex(id);
+    if (item == NULL || __atomic_load_n(&item->closed, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    sw_spin_unlock(&item->locked);
+    return 0;
+}
+
+int64_t sw_mutex_close(int64_t id) {
+    sw_sync_mutex* item = sw_sync_find_mutex(id);
+    if (item == NULL) {
+        return -1;
+    }
+    __atomic_store_n(&item->closed, 1, __ATOMIC_RELEASE);
+    return 0;
+}
+
+int64_t sw_cond_new(void) {
+    sw_sync_cond* item = (sw_sync_cond*)calloc(1, sizeof(sw_sync_cond));
+    if (item == NULL) {
+        return -1;
+    }
+    item->id = sw_sync_new_id();
+    sw_spin_lock(&sw_sync_registry_lock);
+    item->next = sw_sync_conds;
+    sw_sync_conds = item;
+    sw_spin_unlock(&sw_sync_registry_lock);
+    return item->id;
+}
+
+int64_t sw_cond_wait(int64_t cond_id, int64_t mutex_id, int64_t timeout_ms) {
+    sw_sync_cond* cond = sw_sync_find_cond(cond_id);
+    sw_sync_mutex* mutex = sw_sync_find_mutex(mutex_id);
+    if (cond == NULL || mutex == NULL ||
+        __atomic_load_n(&cond->closed, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    uint64_t sequence = __atomic_load_n(&cond->sequence, __ATOMIC_ACQUIRE);
+    if (sw_mutex_unlock(mutex_id) != 0) {
+        return -1;
+    }
+    int64_t started = sw_sync_now_ms();
+    int64_t result = 0;
+    while (__atomic_load_n(&cond->sequence, __ATOMIC_ACQUIRE) == sequence &&
+           !__atomic_load_n(&cond->closed, __ATOMIC_ACQUIRE)) {
+        if (sw_sync_timed_out(started, timeout_ms)) {
+            result = 1;
+            break;
+        }
+        sw_runtime_yield();
+    }
+    if (sw_mutex_lock(mutex_id, -1) != 0) {
+        return -1;
+    }
+    return result;
+}
+
+int64_t sw_cond_signal(int64_t id) {
+    sw_sync_cond* item = sw_sync_find_cond(id);
+    if (item == NULL || __atomic_load_n(&item->closed, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    __atomic_fetch_add(&item->sequence, 1, __ATOMIC_RELEASE);
+    return 0;
+}
+
+int64_t sw_cond_broadcast(int64_t id) {
+    return sw_cond_signal(id);
+}
+
+int64_t sw_cond_close(int64_t id) {
+    sw_sync_cond* item = sw_sync_find_cond(id);
+    if (item == NULL) {
+        return -1;
+    }
+    __atomic_store_n(&item->closed, 1, __ATOMIC_RELEASE);
+    __atomic_fetch_add(&item->sequence, 1, __ATOMIC_RELEASE);
+    return 0;
+}
+
+int64_t sw_atomic_new(int64_t initial) {
+    sw_sync_atomic* item = (sw_sync_atomic*)calloc(1, sizeof(sw_sync_atomic));
+    if (item == NULL) {
+        return -1;
+    }
+    item->id = sw_sync_new_id();
+    item->value = initial;
+    sw_spin_lock(&sw_sync_registry_lock);
+    item->next = sw_sync_atomics;
+    sw_sync_atomics = item;
+    sw_spin_unlock(&sw_sync_registry_lock);
+    return item->id;
+}
+
+int64_t sw_atomic_load(int64_t id) {
+    sw_sync_atomic* item = sw_sync_find_atomic(id);
+    return item == NULL || __atomic_load_n(&item->closed, __ATOMIC_ACQUIRE)
+        ? 0 : __atomic_load_n(&item->value, __ATOMIC_ACQUIRE);
+}
+
+int64_t sw_atomic_store(int64_t id, int64_t value) {
+    sw_sync_atomic* item = sw_sync_find_atomic(id);
+    if (item == NULL || __atomic_load_n(&item->closed, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    __atomic_store_n(&item->value, value, __ATOMIC_RELEASE);
+    return 0;
+}
+
+int64_t sw_atomic_add(int64_t id, int64_t delta) {
+    sw_sync_atomic* item = sw_sync_find_atomic(id);
+    if (item == NULL || __atomic_load_n(&item->closed, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    return __atomic_add_fetch(&item->value, delta, __ATOMIC_ACQ_REL);
+}
+
+int64_t sw_atomic_compare_exchange(int64_t id, int64_t expected, int64_t replacement) {
+    sw_sync_atomic* item = sw_sync_find_atomic(id);
+    if (item == NULL || __atomic_load_n(&item->closed, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    return __atomic_compare_exchange_n(
+        &item->value, &expected, replacement, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE
+    ) ? 1 : 0;
+}
+
+int64_t sw_atomic_close(int64_t id) {
+    sw_sync_atomic* item = sw_sync_find_atomic(id);
+    if (item == NULL) {
+        return -1;
+    }
+    __atomic_store_n(&item->closed, 1, __ATOMIC_RELEASE);
+    return 0;
+}
+
+static int64_t sw_channel_new(int kind, int64_t capacity) {
+    sw_sync_channel* item = (sw_sync_channel*)calloc(1, sizeof(sw_sync_channel));
+    if (item == NULL) {
+        return -1;
+    }
+    item->id = sw_sync_new_id();
+    item->kind = kind;
+    item->capacity = capacity < 0 ? 0 : capacity;
+    sw_spin_lock(&sw_sync_registry_lock);
+    item->next = sw_sync_channels;
+    sw_sync_channels = item;
+    sw_spin_unlock(&sw_sync_registry_lock);
+    return item->id;
+}
+
+static int64_t sw_channel_send(int64_t id, int kind, const void* data, int64_t len, int64_t timeout_ms) {
+    sw_sync_channel* channel = sw_sync_find_channel(id, kind);
+    if (channel == NULL || data == NULL || len < 0) {
+        return -1;
+    }
+    int64_t started = sw_sync_now_ms();
+    for (;;) {
+        sw_spin_lock(&channel->locked);
+        if (__atomic_load_n(&channel->closed, __ATOMIC_ACQUIRE)) {
+            sw_spin_unlock(&channel->locked);
+            return -1;
+        }
+        if (channel->capacity == 0 || channel->count < channel->capacity) {
+            sw_sync_message* message = (sw_sync_message*)malloc((sw_size)(sizeof(sw_sync_message) + (uint64_t)len));
+            if (message == NULL) {
+                sw_spin_unlock(&channel->locked);
+                return -1;
+            }
+            message->next = NULL;
+            message->len = len;
+            if (len > 0) {
+                memcpy(message->data, data, (sw_size)len);
+            }
+            if (channel->tail == NULL) {
+                channel->head = message;
+            } else {
+                channel->tail->next = message;
+            }
+            channel->tail = message;
+            channel->count++;
+            sw_spin_unlock(&channel->locked);
+            return 0;
+        }
+        sw_spin_unlock(&channel->locked);
+        if (sw_sync_timed_out(started, timeout_ms)) {
+            return 1;
+        }
+        sw_runtime_yield();
+    }
+}
+
+static sw_sync_message* sw_channel_recv(int64_t id, int kind, int64_t timeout_ms) {
+    sw_sync_channel* channel = sw_sync_find_channel(id, kind);
+    if (channel == NULL) {
+        return NULL;
+    }
+    int64_t started = sw_sync_now_ms();
+    for (;;) {
+        sw_spin_lock(&channel->locked);
+        sw_sync_message* message = channel->head;
+        if (message != NULL) {
+            channel->head = message->next;
+            if (channel->head == NULL) {
+                channel->tail = NULL;
+            }
+            channel->count--;
+            sw_spin_unlock(&channel->locked);
+            return message;
+        }
+        int closed = __atomic_load_n(&channel->closed, __ATOMIC_ACQUIRE);
+        sw_spin_unlock(&channel->locked);
+        if (closed || sw_sync_timed_out(started, timeout_ms)) {
+            return NULL;
+        }
+        sw_runtime_yield();
+    }
+}
+
+int64_t sw_channel_string_new(int64_t capacity) { return sw_channel_new(1, capacity); }
+
+int64_t sw_channel_string_send(int64_t id, sw_string* value, int64_t timeout_ms) {
+    return value == NULL ? -1 : sw_channel_send(id, 1, value->data, value->len, timeout_ms);
+}
+
+sw_string* sw_channel_string_recv(int64_t id, int64_t timeout_ms) {
+    sw_sync_message* message = sw_channel_recv(id, 1, timeout_ms);
+    if (message == NULL) {
+        return NULL;
+    }
+    sw_string* result = sw_string_from_literal((const char*)message->data, message->len);
+    free(message);
+    return result;
+}
+
+int64_t sw_channel_bytes_new(int64_t capacity) { return sw_channel_new(2, capacity); }
+
+int64_t sw_channel_bytes_send(int64_t id, sw_array* value, int64_t timeout_ms) {
+    return value == NULL ? -1 : sw_channel_send(id, 2, value->data, value->len, timeout_ms);
+}
+
+sw_array* sw_channel_bytes_recv(int64_t id, int64_t timeout_ms) {
+    sw_sync_message* message = sw_channel_recv(id, 2, timeout_ms);
+    if (message == NULL) {
+        return NULL;
+    }
+    sw_array* result = sw_array_new(1, message->len);
+    if (message->len > 0) {
+        memcpy(result->data, message->data, (sw_size)message->len);
+    }
+    free(message);
+    return result;
+}
+
+int64_t sw_channel_len(int64_t id) {
+    sw_sync_channel* channel = sw_sync_find_channel(id, 1);
+    if (channel == NULL) {
+        channel = sw_sync_find_channel(id, 2);
+    }
+    if (channel == NULL) {
+        return -1;
+    }
+    sw_spin_lock(&channel->locked);
+    int64_t count = channel->count;
+    sw_spin_unlock(&channel->locked);
+    return count;
+}
+
+int64_t sw_channel_close(int64_t id) {
+    sw_sync_channel* channel = sw_sync_find_channel(id, 1);
+    if (channel == NULL) {
+        channel = sw_sync_find_channel(id, 2);
+    }
+    if (channel == NULL) {
+        return -1;
+    }
+    __atomic_store_n(&channel->closed, 1, __ATOMIC_RELEASE);
+    return 0;
+}
+
+typedef struct {
+    volatile uint32_t running;
+    volatile uint32_t ready;
+    int64_t atomic;
+} sw_sync_runtime_probe;
+
+#if defined(_WIN32)
+static unsigned long sw_sync_runtime_probe_thread(void* raw) {
+    sw_sync_runtime_probe* state = (sw_sync_runtime_probe*)raw;
+    sw_gc_thread_attach();
+    __atomic_store_n(&state->ready, 1, __ATOMIC_RELEASE);
+    for (int index = 0; index < 1000; index++) {
+        sw_atomic_add(state->atomic, 1);
+    }
+    while (__atomic_load_n(&state->running, __ATOMIC_ACQUIRE)) {
+        sw_gc_safepoint();
+        sw_runtime_yield();
+    }
+    sw_gc_thread_detach();
+    return 0;
+}
+#else
+static void* sw_sync_runtime_probe_thread(void* raw) {
+    sw_sync_runtime_probe* state = (sw_sync_runtime_probe*)raw;
+    sw_gc_thread_attach();
+    __atomic_store_n(&state->ready, 1, __ATOMIC_RELEASE);
+    for (int index = 0; index < 1000; index++) {
+        sw_atomic_add(state->atomic, 1);
+    }
+    while (__atomic_load_n(&state->running, __ATOMIC_ACQUIRE)) {
+        sw_gc_safepoint();
+        sw_runtime_yield();
+    }
+    sw_gc_thread_detach();
+    return NULL;
+}
+#endif
+
+// 运行时回归自检：验证原生 worker 的线程注册、safepoint 停驻、GC 栈扫描与
+// 原子对象并发访问。供 probe 使用，不替代未来 std/thread 的公开 API。
+int64_t sw_sync_runtime_self_test(void) {
+    sw_sync_runtime_probe state;
+    memset(&state, 0, sizeof(state));
+    state.atomic = sw_atomic_new(0);
+    if (state.atomic < 0) {
+        return -1;
+    }
+    __atomic_store_n(&state.running, 1, __ATOMIC_RELEASE);
+#if defined(_WIN32)
+    void* thread = CreateThread(NULL, 0, sw_sync_runtime_probe_thread, &state, 0, NULL);
+    if (thread == NULL) {
+        sw_atomic_close(state.atomic);
+        return -1;
+    }
+#else
+    extern int pthread_create(uintptr_t* thread, const void* attributes,
+        void* (*start)(void*), void* parameter);
+    extern int pthread_join(uintptr_t thread, void** result);
+    uintptr_t thread = 0;
+    if (pthread_create(&thread, NULL, sw_sync_runtime_probe_thread, &state) != 0) {
+        sw_atomic_close(state.atomic);
+        return -1;
+    }
+#endif
+    int spins = 0;
+    while (!__atomic_load_n(&state.ready, __ATOMIC_ACQUIRE) && spins++ < 10000) {
+        sw_runtime_yield();
+    }
+    if (!__atomic_load_n(&state.ready, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&state.running, 0, __ATOMIC_RELEASE);
+#if defined(_WIN32)
+        WaitForSingleObject(thread, 0xFFFFFFFFu);
+        CloseHandle(thread);
+#else
+        pthread_join(thread, NULL);
+#endif
+        sw_atomic_close(state.atomic);
+        return -1;
+    }
+    sw_gc_collect_now();
+    __atomic_store_n(&state.running, 0, __ATOMIC_RELEASE);
+#if defined(_WIN32)
+    WaitForSingleObject(thread, 0xFFFFFFFFu);
+    CloseHandle(thread);
+#else
+    pthread_join(thread, NULL);
+#endif
+    int64_t value = sw_atomic_load(state.atomic);
+    sw_atomic_close(state.atomic);
+    return value == 1000 ? 0 : -1;
 }

@@ -104,10 +104,10 @@ EXPECTED = {
     "probe-batch8.sw": 0,
     "probe-batch9.sw": 0,
     "probe-batch10.sw": 0,
-    "probe-batch11.sw": 0,
     "probe-batch12.sw": 0,
     "probe-batch13.sw": 0,
     "probe-batch14.sw": 0,
+    "probe-sync.sw": 0,
     "probe-shortcircuit.sw": 0,
     "probe-generic-enum.sw": 0,
     "probe-narrow.sw": 0,
@@ -129,6 +129,7 @@ STDIN = {
 # 依赖外网的探针（默认不跑；`--network` 显式启用）。
 NETWORK_EXAMPLES = {
     "probe-http.sw": 0,
+    "probe-batch11.sw": 0,
 }
 
 

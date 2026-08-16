@@ -2219,3 +2219,21 @@ Sw 编译器（swcc）开发进度
      复制到运行时所有权，避免直接共享 GC 对象。
    - 第三阶段才开放 `std/thread` 的 spawn/join/detach；完成线程与 GC 回归后，再设计 task/future 与
      `async/await`。音频首版可只使用第一、二阶段的运行时后台任务与状态轮询。
+
+2026-08-16 19:53  并发运行时第一、二阶段实现：
+   - 运行时新增线程注册/注销、线程本地异常帧与 GC 暂停计数；GC 堆和线程表受原子自旋锁保护。
+   - GC 使用协作式 safepoint 请求停世界，扫描已停驻 Sw 线程的栈、寄存器和异常帧后再恢复执行。
+   - 新增 `std/sync`：Mutex、条件变量、64 位原子计数，以及复制 `string`/`u8[]` 消息的 channel；
+     channel 不直接共享 GC 对象，close 后延迟释放底层句柄以避免并发悬垂引用。
+   - 新增 `probe-sync.sw`，覆盖原生 worker + STW GC 自检、同步原语、消息复制接口和 GC 分配路径。
+   - 当前不开放 `std/thread`/async：仍需在循环回边插入 safepoint，并为阻塞的外部 C 调用建立 native
+     scope，避免未来用户 worker 让停世界 GC 永久等待。
+
+2026-08-16 19:56  并发基础验证：
+   - `cargo fmt --all -- --check`、`cargo test --workspace`（58 项）和 release `swc` 构建均通过；
+     `swc fmt --check stdlib/sync.sw examples/probe-sync.sw` 已通过。
+   - 隔离目录本机编译运行 `probe-sync.sw`，全部同步、停世界 GC 与消息 channel 探针通过，`final=PASS`。
+   - 离线全量 examples 回归通过 101 个文件；将实际访问 httpbin.org 的 `probe-batch11` 修正为仅在
+     `tools/run-examples.py --network` 时执行，防止默认 CI 因外网波动超时。
+   - 交叉生成并检查目标对象：Linux x64 为 ELF x86-64、Linux arm64 为 ELF AArch64、macOS arm64
+     为 Mach-O arm64，均成功编译 `probe-sync.sw`。
