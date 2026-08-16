@@ -78,6 +78,7 @@ typedef struct {
 #define SW_GC_MAX_THRESHOLD (32u << 20)
 #define SW_GC_MAX_DATA_RANGES 32
 #define SW_GC_MAX_THREADS 64
+#define SW_GC_MAX_EXTERNAL_ROOTS 256
 
 typedef struct sw_gc_block {
     struct sw_gc_block* next;
@@ -109,11 +110,14 @@ static volatile uint32_t sw_gc_heap_lock = 0;
 static volatile uint32_t sw_gc_thread_lock = 0;
 static volatile uint32_t sw_gc_stop_requested = 0;
 static sw_gc_thread sw_gc_threads[SW_GC_MAX_THREADS];
+static volatile uint32_t sw_gc_external_root_lock = 0;
+static uintptr_t sw_gc_external_roots[SW_GC_MAX_EXTERNAL_ROOTS];
 
 typedef struct {
     int gc_thread_slot;
     int gc_disabled;
     void* current_frame;
+    void* current_task;
 } sw_thread_local_state;
 
 #if defined(_WIN32)
@@ -155,7 +159,7 @@ static sw_thread_local_state* sw_thread_state(void) {
     return state;
 }
 #else
-static __thread sw_thread_local_state sw_runtime_tls_state = { -1, 0, NULL };
+static __thread sw_thread_local_state sw_runtime_tls_state = { -1, 0, NULL, NULL };
 static sw_thread_local_state* sw_thread_state(void) {
     return &sw_runtime_tls_state;
 }
@@ -447,6 +451,33 @@ static void sw_spin_unlock(volatile uint32_t* lock) {
     __atomic_store_n(lock, 0, __ATOMIC_RELEASE);
 }
 
+// 原生任务记录不在 GC 堆上；把闭包放入这个小型根表，直到 worker 完成，
+// 这样主线程创建任务后即使立刻触发 GC，也不会丢失捕获环境。
+static int sw_gc_external_root_add(void* value) {
+    if (value == NULL) {
+        return -1;
+    }
+    sw_spin_lock(&sw_gc_external_root_lock);
+    for (int index = 0; index < SW_GC_MAX_EXTERNAL_ROOTS; index++) {
+        if (sw_gc_external_roots[index] == 0) {
+            sw_gc_external_roots[index] = (uintptr_t)value;
+            sw_spin_unlock(&sw_gc_external_root_lock);
+            return index;
+        }
+    }
+    sw_spin_unlock(&sw_gc_external_root_lock);
+    return -1;
+}
+
+static void sw_gc_external_root_remove(int index) {
+    if (index < 0 || index >= SW_GC_MAX_EXTERNAL_ROOTS) {
+        return;
+    }
+    sw_spin_lock(&sw_gc_external_root_lock);
+    sw_gc_external_roots[index] = 0;
+    sw_spin_unlock(&sw_gc_external_root_lock);
+}
+
 void sw_gc_thread_attach(void) {
     sw_thread_local_state* state = sw_thread_state();
     if (state == NULL || state->gc_thread_slot >= 0) {
@@ -642,6 +673,14 @@ static void sw_gc_scan_parked_threads(void) {
     sw_spin_unlock(&sw_gc_thread_lock);
 }
 
+static void sw_gc_scan_external_roots(void) {
+    sw_spin_lock(&sw_gc_external_root_lock);
+    for (int index = 0; index < SW_GC_MAX_EXTERNAL_ROOTS; index++) {
+        sw_gc_mark_word(sw_gc_external_roots[index]);
+    }
+    sw_spin_unlock(&sw_gc_external_root_lock);
+}
+
 static void sw_gc_collect(void) {
     // 调用者持有 sw_gc_heap_lock；其它已注册 Sw 线程在 safepoint 保存根后停驻。
     sw_gc_stop_world();
@@ -666,6 +705,7 @@ static void sw_gc_collect(void) {
     }
     sw_gc_scan_stack();
     sw_gc_scan_parked_threads();
+    sw_gc_scan_external_roots();
     // 堆内引用：类字段/数组元素可能指向其它 GC 块（保守式，多扫无害）。
     // 指向本块内部的指针（字符串 data 内联）不标记（自引用）。
     for (sw_gc_block* block = sw_gc_blocks; block != NULL; block = block->next) {
@@ -14982,4 +15022,250 @@ int64_t sw_sync_runtime_self_test(void) {
     int64_t value = sw_atomic_load(state.atomic);
     sw_atomic_close(state.atomic);
     return value == 1000 ? 0 : -1;
+}
+
+// ---------------------------------------------------------------------------
+// Sw 线程 / Task：任务记录驻留在原生堆，闭包通过 GC 外部根表存活到执行结束。
+// 公开 ABI 仅接受 `() => int` 闭包；未捕获异常被转换为 FAILED 状态，绝不跨线程
+// longjmp。取消是协作式：任务开始前会取消，运行中由 task_cancelled() 自行轮询。
+// ---------------------------------------------------------------------------
+
+#define SW_TASK_RUNNING 1
+#define SW_TASK_COMPLETED 2
+#define SW_TASK_FAILED 3
+#define SW_TASK_CANCELLED 4
+
+typedef struct sw_task {
+    struct sw_task* next;
+    int64_t id;
+    void* closure;
+    int root_slot;
+    volatile int state;
+    volatile int cancel_requested;
+    volatile int handle_claimed;
+    int64_t result;
+    int64_t exception_type;
+#if defined(_WIN32)
+    void* handle;
+#else
+    uintptr_t handle;
+#endif
+} sw_task;
+
+typedef int64_t (*sw_task_entry_fn)(void* environment);
+
+static volatile uint32_t sw_task_registry_lock = 0;
+static sw_task* sw_tasks = NULL;
+static volatile int64_t sw_task_next_id = 1;
+
+static sw_task* sw_task_find(int64_t id) {
+    if (id <= 0) {
+        return NULL;
+    }
+    sw_task* result = NULL;
+    sw_spin_lock(&sw_task_registry_lock);
+    for (sw_task* task = sw_tasks; task != NULL; task = task->next) {
+        if (task->id == id) {
+            result = task;
+            break;
+        }
+    }
+    sw_spin_unlock(&sw_task_registry_lock);
+    return result;
+}
+
+static void sw_task_finish(sw_task* task, int state, int64_t result, int64_t exception_type) {
+    __atomic_store_n(&task->result, result, __ATOMIC_RELEASE);
+    __atomic_store_n(&task->exception_type, exception_type, __ATOMIC_RELEASE);
+    __atomic_store_n(&task->state, state, __ATOMIC_RELEASE);
+}
+
+static void sw_task_worker_run(sw_task* task) {
+    sw_gc_thread_attach();
+    sw_thread_local_state* tls = sw_thread_state();
+    if (tls != NULL) {
+        tls->current_task = task;
+    }
+    __atomic_store_n(&task->state, SW_TASK_RUNNING, __ATOMIC_RELEASE);
+
+    if (__atomic_load_n(&task->cancel_requested, __ATOMIC_ACQUIRE)) {
+        sw_task_finish(task, SW_TASK_CANCELLED, 0, 0);
+    } else {
+        sw_frame* frame = (sw_frame*)sw_try_begin();
+        if (frame == NULL) {
+            sw_task_finish(task, SW_TASK_FAILED, 0, -1);
+        } else if (sw_setjmp(frame->buf) == 0) {
+            sw_closure* closure = (sw_closure*)task->closure;
+            sw_task_entry_fn entry = closure != NULL ? (sw_task_entry_fn)closure->fn : NULL;
+            int64_t result = entry != NULL ? entry(closure->env) : 0;
+            sw_try_leave(frame);
+            if (__atomic_load_n(&task->cancel_requested, __ATOMIC_ACQUIRE)) {
+                sw_task_finish(task, SW_TASK_CANCELLED, 0, 0);
+            } else {
+                sw_task_finish(task, SW_TASK_COMPLETED, result, 0);
+            }
+        } else {
+            sw_exception* exception = frame->exception;
+            int64_t type_id = exception != NULL ? exception->type_id : -1;
+            sw_try_leave(frame);
+            sw_task_finish(task, SW_TASK_FAILED, 0, type_id);
+        }
+    }
+
+    if (tls != NULL) {
+        tls->current_task = NULL;
+    }
+    sw_gc_external_root_remove(task->root_slot);
+    task->root_slot = -1;
+    task->closure = NULL;
+    sw_gc_thread_detach();
+}
+
+#if defined(_WIN32)
+static unsigned long sw_task_thread_start(void* raw) {
+    sw_task_worker_run((sw_task*)raw);
+    return 0;
+}
+#else
+static void* sw_task_thread_start(void* raw) {
+    sw_task_worker_run((sw_task*)raw);
+    return NULL;
+}
+#endif
+
+int64_t sw_task_spawn(void* closure) {
+    if (closure == NULL) {
+        return -1;
+    }
+    sw_task* task = (sw_task*)calloc(1, sizeof(sw_task));
+    if (task == NULL) {
+        return -1;
+    }
+    task->root_slot = sw_gc_external_root_add(closure);
+    if (task->root_slot < 0) {
+        free(task);
+        return -1;
+    }
+    task->id = __atomic_fetch_add(&sw_task_next_id, 1, __ATOMIC_ACQ_REL);
+    task->closure = closure;
+    task->state = SW_TASK_RUNNING;
+    sw_spin_lock(&sw_task_registry_lock);
+    task->next = sw_tasks;
+    sw_tasks = task;
+    sw_spin_unlock(&sw_task_registry_lock);
+
+#if defined(_WIN32)
+    task->handle = CreateThread(NULL, 0, sw_task_thread_start, task, 0, NULL);
+    if (task->handle == NULL) {
+#else
+    extern int pthread_create(uintptr_t* thread, const void* attributes,
+        void* (*start)(void*), void* parameter);
+    if (pthread_create(&task->handle, NULL, sw_task_thread_start, task) != 0) {
+#endif
+        sw_gc_external_root_remove(task->root_slot);
+        task->root_slot = -1;
+        task->closure = NULL;
+        sw_task_finish(task, SW_TASK_FAILED, 0, -1);
+        return -1;
+    }
+    return task->id;
+}
+
+int64_t sw_task_state(int64_t id) {
+    sw_task* task = sw_task_find(id);
+    return task == NULL ? -1 : __atomic_load_n(&task->state, __ATOMIC_ACQUIRE);
+}
+
+int64_t sw_task_poll(int64_t id) {
+    return sw_task_state(id);
+}
+
+int64_t sw_task_result(int64_t id) {
+    sw_task* task = sw_task_find(id);
+    if (task == NULL || __atomic_load_n(&task->state, __ATOMIC_ACQUIRE) != SW_TASK_COMPLETED) {
+        return 0;
+    }
+    return __atomic_load_n(&task->result, __ATOMIC_ACQUIRE);
+}
+
+int64_t sw_task_exception_type(int64_t id) {
+    sw_task* task = sw_task_find(id);
+    if (task == NULL || __atomic_load_n(&task->state, __ATOMIC_ACQUIRE) != SW_TASK_FAILED) {
+        return 0;
+    }
+    return __atomic_load_n(&task->exception_type, __ATOMIC_ACQUIRE);
+}
+
+int64_t sw_task_cancel(int64_t id) {
+    sw_task* task = sw_task_find(id);
+    if (task == NULL) {
+        return -1;
+    }
+    int state = __atomic_load_n(&task->state, __ATOMIC_ACQUIRE);
+    if (state >= SW_TASK_COMPLETED) {
+        return 0;
+    }
+    __atomic_store_n(&task->cancel_requested, 1, __ATOMIC_RELEASE);
+    return 1;
+}
+
+int64_t sw_task_cancelled(void) {
+    sw_thread_local_state* tls = sw_thread_state();
+    sw_task* task = tls != NULL ? (sw_task*)tls->current_task : NULL;
+    return task != NULL && __atomic_load_n(&task->cancel_requested, __ATOMIC_ACQUIRE) ? 1 : 0;
+}
+
+int64_t sw_task_join(int64_t id, int64_t timeout_ms) {
+    sw_task* task = sw_task_find(id);
+    if (task == NULL || __atomic_load_n(&task->handle_claimed, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    int64_t started = sw_sync_now_ms();
+    while (__atomic_load_n(&task->state, __ATOMIC_ACQUIRE) < SW_TASK_COMPLETED) {
+        if (sw_sync_timed_out(started, timeout_ms)) {
+            return 1;
+        }
+        sw_gc_safepoint();
+        sw_runtime_yield();
+    }
+    int expected = 0;
+    if (__atomic_compare_exchange_n(&task->handle_claimed, &expected, 1, 0,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+#if defined(_WIN32)
+        WaitForSingleObject(task->handle, 0xFFFFFFFFu);
+        CloseHandle(task->handle);
+#else
+        extern int pthread_join(uintptr_t thread, void** result);
+        pthread_join(task->handle, NULL);
+#endif
+    }
+    return 0;
+}
+
+int64_t sw_task_await(int64_t id) {
+    if (sw_task_join(id, -1) != 0) {
+        return 0;
+    }
+    return sw_task_result(id);
+}
+
+int64_t sw_task_detach(int64_t id) {
+    sw_task* task = sw_task_find(id);
+    if (task == NULL) {
+        return -1;
+    }
+    int expected = 0;
+    if (!__atomic_compare_exchange_n(&task->handle_claimed, &expected, 1, 0,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+#if defined(_WIN32)
+    CloseHandle(task->handle);
+#else
+    extern int pthread_detach(uintptr_t thread);
+    if (pthread_detach(task->handle) != 0) {
+        return -1;
+    }
+#endif
+    return 0;
 }

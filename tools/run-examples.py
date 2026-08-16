@@ -108,6 +108,7 @@ EXPECTED = {
     "probe-batch13.sw": 0,
     "probe-batch14.sw": 0,
     "probe-sync.sw": 0,
+    "probe-thread-task.sw": 0,
     "probe-shortcircuit.sw": 0,
     "probe-generic-enum.sw": 0,
     "probe-narrow.sw": 0,

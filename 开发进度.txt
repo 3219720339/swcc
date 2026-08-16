@@ -2237,3 +2237,17 @@ Sw 编译器（swcc）开发进度
      `tools/run-examples.py --network` 时执行，防止默认 CI 因外网波动超时。
    - 交叉生成并检查目标对象：Linux x64 为 ELF x86-64、Linux arm64 为 ELF AArch64、macOS arm64
      为 Mach-O arm64，均成功编译 `probe-sync.sw`。
+
+2026-08-16 20:16  线程、Task/Future 与 await：
+   - 新增 `std/thread`：`thread_spawn`、join、detach、状态、结果和异常类型；入口限定为
+     `() => int` 闭包，捕获环境进入 GC 外部根表，线程异常转为 FAILED 状态而不跨线程 longjmp。
+   - 新增 `std/task`：Task/Future 句柄、poll、join、`await task`、状态/结果、detach 与协作取消；
+     取消请求会在任务启动前或任务结束前生效，运行中可由 `task_cancelled()` 轮询。
+   - 后端在 while 循环回边插入 GC safepoint；语义层接受 `await Task<int>` 并降级为安全等待调用，
+     同时校验线程/任务入口必须为无参数、返回 int 的闭包。
+   - 新增 `probe-thread-task.sw`，覆盖闭包捕获、主线程 GC 压力、线程异常隔离、join/detach、
+     Task/Future、await 与取消；连续本机运行 8 次和 release 运行均为 PASS。
+   - 已知边界：块闭包内含循环的控制流降级仍在完善，首版线程入口请把循环放在普通函数中调用；
+     完整 async 函数状态机、泛型任务结果、native 阻塞调用 scope 与抢占式取消留待后续。
+   - 验证：cargo fmt、cargo test（58 项）、release 构建、102 个离线 examples 回归均通过；
+     `probe-thread-task.sw` 交叉生成 Linux x64 ELF、Linux arm64 ELF、macOS arm64 Mach-O 对象成功。

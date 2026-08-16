@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cranelift_codegen::ir::{
-    AbiParam, Block, InstBuilder, MemFlagsData, Signature, StackSlot, StackSlotData, StackSlotKind,
-    UserFuncName, Value,
+    AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Signature, StackSlot, StackSlotData,
+    StackSlotKind, UserFuncName, Value,
     condcodes::{FloatCC, IntCC},
     types,
 };
@@ -375,6 +375,8 @@ impl Generator {
         let safepoint_ref = self
             .module
             .declare_func_in_func(safepoint_id, &mut ctx.func);
+        refs.func_refs
+            .insert("sw_gc_safepoint".to_owned(), safepoint_ref);
 
         let mut func_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
@@ -397,6 +399,7 @@ impl Generator {
         let mut lower = LowerCtx {
             builder,
             refs,
+            safepoint_ref,
             slots: Vec::new(),
             temp_slots: Vec::new(),
             loops: Vec::new(),
@@ -1253,6 +1256,16 @@ fn extern_c_symbol(name: &str) -> &str {
         "channel_len" => "sw_channel_len",
         "channel_close" => "sw_channel_close",
         "sync_runtime_self_test" => "sw_sync_runtime_self_test",
+        "thread_spawn" | "task_spawn" => "sw_task_spawn",
+        "thread_join" | "task_join" => "sw_task_join",
+        "thread_detach" | "task_detach" => "sw_task_detach",
+        "thread_state" | "task_state" => "sw_task_state",
+        "thread_result" | "task_result" => "sw_task_result",
+        "thread_exception_type" | "task_exception_type" => "sw_task_exception_type",
+        "task_poll" => "sw_task_poll",
+        "task_await" => "sw_task_await",
+        "task_cancel" => "sw_task_cancel",
+        "task_cancelled" => "sw_task_cancelled",
         "ini_parse" => "ini_parse",
         "ini_save" => "ini_save",
         "random_string" => "random_string",
@@ -1674,6 +1687,7 @@ fn interface_slot_bases(types: &TypeTable) -> (HashMap<u32, usize>, usize) {
 struct LowerCtx<'a, 'f> {
     builder: FunctionBuilder<'f>,
     refs: RefTable,
+    safepoint_ref: FuncRef,
     /// 局部变量槽（索引与 MIR 局部索引一致）。
     slots: Vec<StackSlot>,
     /// 表达式求值用的临时槽（与局部槽分离，避免错位）。
@@ -1791,6 +1805,8 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 let exit = self.builder.create_block();
                 self.builder.ins().jump(header, &[]);
                 self.builder.switch_to_block(header);
+                // 回到循环头也必须停驻：纯计算循环也要响应停世界 GC。
+                self.builder.ins().call(self.safepoint_ref, &[]);
                 let cond = self.expr(cond)?;
                 let zero = self.builder.ins().iconst(types::I64, 0);
                 let is_true = self.builder.ins().icmp(IntCC::NotEqual, cond, zero);

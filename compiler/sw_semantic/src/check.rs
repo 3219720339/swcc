@@ -2961,8 +2961,12 @@ impl<'s> Checker<'s> {
                         ty
                     }
                     UnaryOp::Await => {
-                        self.error("v0.1 语义阶段暂不支持 await", inner.span);
-                        ty
+                        if !ty.is_integer() {
+                            self.error("`await` 目前只接受 Task<int> 句柄", inner.span);
+                            Type::Error
+                        } else {
+                            Type::Int
+                        }
                     }
                 }
             }
@@ -3455,7 +3459,23 @@ impl<'s> Checker<'s> {
                     LambdaBody::Expr(expr) => self.check_expr(expr),
                     LambdaBody::Block(block) => {
                         self.check_block(block);
-                        Type::Void
+                        // 块闭包的 ABI 必须保留显式 return 类型；此前一律记为
+                        // void，会让 `() => int { ... return n; }` 作为线程入口时
+                        // 以错误调用约定执行。
+                        block
+                            .statements
+                            .iter()
+                            .rev()
+                            .find_map(|statement| match &statement.kind {
+                                StmtKind::Return(Some(value)) => self
+                                    .state
+                                    .result
+                                    .expr_types
+                                    .get(&(value.span.start, value.span.end))
+                                    .cloned(),
+                                _ => None,
+                            })
+                            .unwrap_or(Type::Void)
                     }
                 };
                 self.scopes.pop();
@@ -3952,6 +3972,16 @@ impl<'s> Checker<'s> {
                 if let Some((symbol_id, sig)) =
                     self.pick_overload(&candidates, &args_ty, span, true)
                 {
+                    if matches!(ident.name.as_str(), "thread_spawn" | "task_spawn") {
+                        match args_ty.first() {
+                            Some(Type::Function { params, ret })
+                                if params.is_empty() && ret.is_integer() => {}
+                            _ => self.error(
+                                "`thread_spawn`/`task_spawn` 只接受 `() => int` 闭包",
+                                args.first().map(|arg| arg.span).unwrap_or(span),
+                            ),
+                        }
+                    }
                     self.state
                         .result
                         .ident_symbols
@@ -7635,8 +7665,28 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     UnaryOp::Pos => MirUnary::Pos,
                     UnaryOp::BitNot => MirUnary::BitNot,
                     UnaryOp::Await => {
-                        self.error("await 降级暂不支持", expr.span);
-                        MirUnary::Not
+                        let task = self.lower_expr(inner);
+                        return MirExpr::Call {
+                            callee: MirCallee::Extern {
+                                name: "task_await".to_owned(),
+                                sig: FunctionSig {
+                                    module: self.lowerer.state.id,
+                                    name: "task_await".to_owned(),
+                                    generics: Vec::new(),
+                                    bounds: HashMap::new(),
+                                    params: vec![ParamSig {
+                                        name: "task".to_owned(),
+                                        ty: Type::Int,
+                                        has_default: false,
+                                        rest: false,
+                                    }],
+                                    ret: Type::Int,
+                                    extern_c: true,
+                                    span: expr.span,
+                                },
+                            },
+                            args: vec![task],
+                        };
                     }
                     UnaryOp::Inc | UnaryOp::Dec => unreachable!(),
                 };
