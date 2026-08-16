@@ -2292,3 +2292,7 @@ Sw 编译器（swcc）开发进度
    - `cargo test --workspace`（59 项）、`probe-audio.sw` 和 Linux x64/arm64 交叉生成通过。
      macOS arm64 无版本三元组在本机 clang 下因既有 TLS 参数失败；指定
      `aarch64-apple-darwin20` 可编译运行时对象，后续统一 macOS target 版本参数。
+
+2026-08-16 22:00  音频内核提交与分发验证：
+   - 提交 `b25919d` 已推送 GitHub `main` 与码云 `main`；Windows PowerShell SDK 打包和
+     SDK 脱离源码目录的 MP3 播放探针均通过。
