@@ -81,10 +81,10 @@ export extern c function rename(old_path: string, new_path: string): int;
 /// 复制文件；返回复制的字节数，失败返回 -1。
 export extern c function copy_file(src: string, dst: string): int;
 
-/// 递归收集 path 下所有文件（完整路径，含子目录）。
+/// 递归收集 path 下所有文件（完整路径，含子目录）；不进入符号链接目录。
 export extern c function walk_files(path: string): string[];
 
-/// 递归收集 path 下所有目录（完整路径，含子目录）。
+/// 递归收集 path 下所有目录（完整路径，含子目录）；不进入符号链接目录。
 export extern c function walk_dirs(path: string): string[];
 
 /// 读取整个文件为 u8[]（紧凑字节布局）；文件不存在返回空数组。
@@ -110,10 +110,10 @@ export extern c function chmod(path: string, mode: int): int;
 /// 创建空文件（已存在则更新时间戳）；成功返回 0，失败返回 -1。
 export extern c function touch(path: string): int;
 
-/// 递归复制目录（含子目录与文件，不含符号链接）；成功返回 0，失败返回 -1。
+/// 递归复制目录（含子目录与文件）；发现任意符号链接即失败，防止越过源目录边界。
 export extern c function copy_dir(src: string, dst: string): int;
 
-/// 递归删除文件或目录（危险：不可恢复）；成功返回 0，失败返回 -1。
+/// 递归删除文件或目录（危险：不可恢复）；符号链接只删除链接本身，不进入目标。
 export extern c function remove_all(path: string): int;
 
 /// 通配匹配文件路径，支持 * 与 ?（作用于文件名部分）；

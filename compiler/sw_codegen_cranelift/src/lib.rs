@@ -547,8 +547,20 @@ fn visit_target(
 ) -> Result<(), CodegenError> {
     match target {
         MirTarget::Local(_) | MirTarget::Global(_) => Ok(()),
-        MirTarget::Field { object, .. } | MirTarget::Index { object, .. } => {
-            visit_expr(object, generator, mir, exports, ctx, refs)
+        MirTarget::Field { object, .. } => visit_expr(object, generator, mir, exports, ctx, refs),
+        MirTarget::Index { object, index, .. } => {
+            let bounds_check = generator.declare_import(
+                "sw_array_check_bounds",
+                &bounds_check_signature(generator.module.isa()),
+            )?;
+            refs.func_refs.insert(
+                "sw_array_check_bounds".to_owned(),
+                generator
+                    .module
+                    .declare_func_in_func(bounds_check, &mut ctx.func),
+            );
+            visit_expr(object, generator, mir, exports, ctx, refs)?;
+            visit_expr(index, generator, mir, exports, ctx, refs)
         }
     }
 }
@@ -655,9 +667,22 @@ fn visit_expr(
         MirExpr::Unary { expr: inner, .. }
         | MirExpr::Cast { expr: inner, .. }
         | MirExpr::Len { object: inner, .. }
-        | MirExpr::Field { object: inner, .. }
-        | MirExpr::Index { object: inner, .. } => {
+        | MirExpr::Field { object: inner, .. } => {
             visit_expr(inner, generator, mir, exports, ctx, refs)?;
+        }
+        MirExpr::Index { object, index, .. } => {
+            let bounds_check = generator.declare_import(
+                "sw_array_check_bounds",
+                &bounds_check_signature(generator.module.isa()),
+            )?;
+            refs.func_refs.insert(
+                "sw_array_check_bounds".to_owned(),
+                generator
+                    .module
+                    .declare_func_in_func(bounds_check, &mut ctx.func),
+            );
+            visit_expr(object, generator, mir, exports, ctx, refs)?;
+            visit_expr(index, generator, mir, exports, ctx, refs)?;
         }
         MirExpr::Binary { left, right, .. } => {
             visit_expr(left, generator, mir, exports, ctx, refs)?;
@@ -1937,8 +1962,13 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
         Ok(())
     }
 
-    /// 数组元素地址 = data 指针 + index * 步长（u8 为 1、struct 为其内联大小、其余 8）。
+    /// 检查后计算数组元素地址，阻止负数和越界下标落入原生内存。
     fn index_address(&mut self, object: Value, index: Value, elem_size: usize) -> Value {
+        let _ = self.call_import(
+            "sw_array_check_bounds",
+            bounds_check_signature(self.module.isa()),
+            &[object, index],
+        );
         let data = self
             .builder
             .ins()
@@ -3549,6 +3579,13 @@ fn array_set_signature(isa: &dyn cranelift_codegen::isa::TargetIsa) -> Signature
     sig.params.push(AbiParam::new(types::I64));
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I64));
+    sig
+}
+
+fn bounds_check_signature(isa: &dyn cranelift_codegen::isa::TargetIsa) -> Signature {
+    let mut sig = Signature::new(isa.default_call_conv());
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
     sig
 }
 

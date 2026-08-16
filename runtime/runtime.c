@@ -1286,6 +1286,9 @@ sw_array* list_dir(sw_string* path) {
 }
 #endif
 
+// 定义在路径工具区；前置声明供递归目录函数使用。
+int64_t sw_is_symlink(sw_string* path);
+
 static void sw_walk_impl(
     sw_string* base,
     int64_t want_dirs,
@@ -1297,6 +1300,21 @@ static void sw_walk_impl(
     for (int64_t i = 0; i < entries->len; i++) {
         sw_string* name = (sw_string*)((int64_t*)entries->data)[i];
         sw_string* full = path_join(base, name);
+        // 遍历不跟随链接，避免目录链接形成循环或越过指定根目录。
+        if (sw_is_symlink(full)) {
+            if (!want_dirs) {
+                if (*slot >= *capacity) {
+                    *capacity = *capacity * 2 + 1;
+                    sw_array* bigger = sw_array_new(8, *capacity);
+                    for (int64_t j = 0; j < *slot; j++) {
+                        ((int64_t*)bigger->data)[j] = ((int64_t*)(*array)->data)[j];
+                    }
+                    *array = bigger;
+                }
+                ((int64_t*)(*array)->data)[(*slot)++] = (int64_t)full;
+            }
+            continue;
+        }
         if (is_dir(full)) {
             if (want_dirs) {
                 if (*slot >= *capacity) {
@@ -2901,6 +2919,17 @@ sw_array* sw_array_new(int64_t elem_size, int64_t count) {
     return array;
 }
 
+// 编译器在每个数组读写前调用。数组下标必须在 [0, len) 内，否则退出而非
+// 继续计算非法地址。该检查覆盖 int[]/float[]/string[]/u8[]/struct[]。
+void sw_array_check_bounds(sw_array* array, int64_t index) {
+    if (array != NULL && index >= 0 && index < array->len) {
+        return;
+    }
+    const char* message = "Sw 运行时错误：数组下标越界\n";
+    fwrite(message, 1, strlen(message), stderr);
+    exit(3);
+}
+
 void sw_array_set(sw_array* array, int64_t index, int64_t value) {
     ((int64_t*)array->data)[index] = value;
 }
@@ -3432,18 +3461,15 @@ static char** sw_build_argv(sw_string* cmd, sw_array* args) {
 
 #if defined(_WIN32)
 
-// 把 argv 拼成 CreateProcessA 的命令行：含空格/制表/引号的参数用双引号包裹，内部引号双写。
+// 把 argv 拼成 CreateProcessA 的命令行。Windows 的解析规则要求：引号前的
+// 反斜杠翻倍、引号本身再加一个反斜杠；闭合引号前的尾随反斜杠也必须翻倍。
 static char* sw_build_cmdline(sw_string* cmd, sw_array* args) {
-    int64_t total = cmd->len + 4;
-    for (int64_t i = 0; i < args->len; i++) {
-        sw_string* item = (sw_string*)((int64_t*)args->data)[i];
-        int64_t extra = 0;
-        for (int64_t j = 0; j < item->len; j++) {
-            if (item->data[j] == '"') {
-                extra++;
-            }
-        }
-        total += item->len + extra + 4;
+    // 每个输入字符最坏扩展为两个反斜杠再加引号，另留分隔符和 NUL。
+    int64_t total = 1;
+    for (int64_t i = 0; i < args->len + 1; i++) {
+        sw_string* item =
+            i == 0 ? cmd : (sw_string*)((int64_t*)args->data)[i - 1];
+        total += item->len * 2 + 3;
     }
     char* buffer = (char*)sw_gc_alloc((uint64_t)total + 1);
     int64_t out = 0;
@@ -3463,15 +3489,37 @@ static char* sw_build_cmdline(sw_string* cmd, sw_array* args) {
         if (need_quote) {
             buffer[out++] = '"';
         }
+        int64_t slashes = 0;
         for (int64_t j = 0; j < part->len; j++) {
             char ch = part->data[j];
+            if (ch == '\\') {
+                slashes++;
+                continue;
+            }
             if (ch == '"') {
+                for (int64_t k = 0; k < slashes * 2 + 1; k++) {
+                    buffer[out++] = '\\';
+                }
                 buffer[out++] = '"';
+                slashes = 0;
+                continue;
+            }
+            while (slashes > 0) {
+                buffer[out++] = '\\';
+                slashes--;
             }
             buffer[out++] = ch;
         }
         if (need_quote) {
+            while (slashes-- > 0) {
+                buffer[out++] = '\\';
+                buffer[out++] = '\\';
+            }
             buffer[out++] = '"';
+        } else {
+            while (slashes-- > 0) {
+                buffer[out++] = '\\';
+            }
         }
     }
     buffer[out] = 0;
@@ -3527,6 +3575,33 @@ extern int TerminateProcess(void* handle, unsigned int code);
 extern int CloseHandle(void* handle);
 extern int ReadFile(void* handle, void* buffer, unsigned int bytes, unsigned int* read, void* overlapped);
 extern int WriteFile(void* handle, const void* buffer, unsigned int bytes, unsigned int* written, void* overlapped);
+extern void* CreateThread(
+    void* attributes, unsigned long stack_size, unsigned long (*start)(void*), void* parameter,
+    unsigned long flags, unsigned long* thread_id
+);
+
+typedef struct {
+    void* handle;
+    const char* data;
+    int64_t len;
+} sw_pipe_writer;
+
+static unsigned long sw_write_pipe_thread(void* parameter) {
+    sw_pipe_writer* writer = (sw_pipe_writer*)parameter;
+    int64_t offset = 0;
+    while (offset < writer->len) {
+        unsigned int written = 0;
+        unsigned int remaining = (unsigned int)(writer->len - offset);
+        if (!WriteFile(writer->handle, writer->data + offset, remaining, &written, NULL)
+            || written == 0) {
+            break;
+        }
+        offset += (int64_t)written;
+    }
+    CloseHandle(writer->handle);
+    free(writer);
+    return 0;
+}
 
 int64_t sw_spawn(sw_string* cmd, sw_array* args) {
     char* cmdline = sw_build_cmdline(cmd, args);
@@ -3621,11 +3696,21 @@ static sw_string* sw_run_impl(sw_string* cmd, sw_array* args, sw_string* input) 
         return sw_string_from_literal("", 0);
     }
     CloseHandle(info.h_thread);
+    void* writer_thread = NULL;
     if (has_input) {
-        unsigned int written = 0;
-        WriteFile(in_write, input->data, (unsigned int)input->len, &written, NULL);
+        sw_pipe_writer* writer = (sw_pipe_writer*)malloc(sizeof(sw_pipe_writer));
+        if (writer != NULL) {
+            writer->handle = in_write;
+            writer->data = input->data;
+            writer->len = input->len;
+            writer_thread = CreateThread(NULL, 0, sw_write_pipe_thread, writer, 0, NULL);
+            if (writer_thread == NULL) {
+                free(writer);
+            }
+        }
     }
-    if (in_write != NULL) {
+    if (writer_thread == NULL && in_write != NULL) {
+        // 无法创建线程时关闭输入，避免回退到会与 stdout 互锁的同步写入。
         CloseHandle(in_write);
     }
     char chunk[4096];
@@ -3645,6 +3730,10 @@ static sw_string* sw_run_impl(sw_string* cmd, sw_array* args, sw_string* input) 
         length += (int64_t)got;
     }
     CloseHandle(out_read);
+    if (writer_thread != NULL) {
+        WaitForSingleObject(writer_thread, 0xFFFFFFFFu);
+        CloseHandle(writer_thread);
+    }
     WaitForSingleObject(info.h_process, 0xFFFFFFFFu);
     CloseHandle(info.h_process);
     sw_string* result = sw_string_from_literal(buffer, length);
@@ -3767,10 +3856,23 @@ static sw_string* sw_run_impl(sw_string* cmd, sw_array* args, sw_string* input) 
         _exit(127);
     }
     close(out_pipe[1]);
+    int writer_pid = 0;
     if (has_input) {
         close(in_pipe[0]);
-        if (input->len > 0) {
-            (void)write(in_pipe[1], input->data, (unsigned long)input->len);
+        writer_pid = fork();
+        if (writer_pid == 0) {
+            int64_t offset = 0;
+            while (offset < input->len) {
+                long written = write(
+                    in_pipe[1], input->data + offset, (unsigned long)(input->len - offset)
+                );
+                if (written <= 0) {
+                    break;
+                }
+                offset += written;
+            }
+            close(in_pipe[1]);
+            _exit(0);
         }
         close(in_pipe[1]);
     }
@@ -3791,6 +3893,9 @@ static sw_string* sw_run_impl(sw_string* cmd, sw_array* args, sw_string* input) 
         length += got;
     }
     close(out_pipe[0]);
+    if (writer_pid > 0) {
+        waitpid(writer_pid, NULL, 0);
+    }
     int status = 0;
     waitpid(pid, &status, 0);
     sw_string* result = sw_string_from_literal(buffer, length);
@@ -5010,7 +5115,7 @@ int64_t sw_is_writable(sw_string* path) {
 }
 
 int64_t sw_copy_dir(sw_string* src, sw_string* dst) {
-    if (!is_dir(src)) {
+    if (sw_is_symlink(src) || !is_dir(src)) {
         return -1;
     }
     if (sw_mkdir(dst) != 0 && !is_dir(dst)) {
@@ -5021,6 +5126,9 @@ int64_t sw_copy_dir(sw_string* src, sw_string* dst) {
         sw_string* name = (sw_string*)((int64_t*)entries->data)[i];
         sw_string* full_src = path_join(src, name);
         sw_string* full_dst = path_join(dst, name);
+        if (sw_is_symlink(full_src)) {
+            return -1;
+        }
         if (is_dir(full_src)) {
             if (sw_copy_dir(full_src, full_dst) != 0) {
                 return -1;
@@ -5035,6 +5143,10 @@ int64_t sw_copy_dir(sw_string* src, sw_string* dst) {
 }
 
 int64_t sw_remove_all(sw_string* path) {
+    // 链接本身可以删除，但绝不递归进入其目标目录。
+    if (sw_is_symlink(path)) {
+        return sw_remove(path);
+    }
     if (is_dir(path)) {
         sw_array* entries = list_dir(path);
         for (int64_t i = 0; i < entries->len; i++) {

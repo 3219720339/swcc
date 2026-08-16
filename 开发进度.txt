@@ -3,6 +3,29 @@ Sw 编译器（swcc）开发进度
 
 更新：2026-08-16（main）
 
+2026-08-16 17:35  跨平台运行时安全与系统库可靠性批：
+   - 数组下标安全：Cranelift 对 int/float/string/u8/struct 数组的读写统一插入
+     sw_array_check_bounds，拒绝负数和超过 len 的下标并以 exit(3) 终止；补齐
+     赋值目标下标表达式的引用预扫描；新增 probe-bounds（预期退出码 3）。
+   - Windows 进程：CreateProcessA 命令行改按 Windows 反斜杠/引号解析规则编码，
+     参数含空格、引号、尾随反斜杠不会被错误拆分。
+   - 进程管道：run_with_input 改为并发写 stdin 且持续读 stdout/stderr（Windows
+     写入线程、POSIX 写入子进程），避免大输入/输出子进程的双向管道死锁。
+   - 文件系统：walk_files/walk_dirs 不跟随符号链接；copy_dir 遇链接失败；remove_all
+     只删除链接本身不进入目标，并同步 std/fs 契约。
+   - 验证：cargo fmt --all、cargo test --workspace（56 项）通过；release probe-bounds
+     正确 exit(3)，probe-process 通过。examples 全量回归仅 probe-batch11 因 httpbin.org
+     外网会话超时，非本批路径；其余已执行探针通过。
+
+2026-08-16 17:20  运行时与标准库安全审查：
+   - 严重：Cranelift 数组下标降级只计算 data + index * stride，未检查 index 的
+     非负性和小于数组 len；数组读写可越界并造成原生内存读写/崩溃，下一批必须优先修复。
+   - 高：std/os 的 run_with_input 在读取 stdout 前同步写完整 stdin；双向输出较大
+     的子进程会填满管道并死锁。Windows 参数引号规则也未按 CommandLineToArgvW
+     的反斜杠规则实现，含引号或尾随反斜杠的参数会被错误解析。
+   - 建议下一批以运行时安全与可靠性为先，完成数组/字符串边界检查、进程管道并发读写、
+     递归文件操作的符号链接策略与错误模型，再补语言表达能力和系统库接口。
+
 2026-08-16 17:17  项目结构学习与工作区验证：
    - 已确认整体链路：sw_frontend（词法/语法/AST）→ sw_semantic（名称解析、类型检查、MIR）→
      sw_codegen_cranelift（目标对象生成）→ swc（CLI/LSP/链接），runtime/runtime.c 提供 GC、异常、
