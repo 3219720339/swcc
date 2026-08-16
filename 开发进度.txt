@@ -2330,3 +2330,12 @@ Sw 编译器（swcc）开发进度
    - 新增当前项目 `.swcache` 清理命令；默认交互确认，输入非 `y/yes` 不删除，脚本可用
      `swc clean --yes`。只处理项目缓存目录，不触碰源码、输出文件和其他临时目录。
    - `cargo fmt --all -- --check` 与 release 编译通过；取消清理路径已本机验证。
+
+2026-08-16 22:47  音频队列、诊断与元数据：
+   - 播放器扩展 4 项待播放队列，`audio_queue` 入队后在 `audio_state` 轮询到 EOF 时由控制线程
+     安全切换；回调线程不重建解码器。补充错误码、播放设备数量诊断和多句柄队列资源释放。
+   - 新增 `AudioMetadata`：WAV、MP3 ID3v2（含 UTF-16 标题）、FLAC STREAMINFO 基础字段，
+     并修复 Windows UTF-8 中文路径 `read_file_bytes`，MP3 3.5MB 读取与标题解析通过。
+   - 演示新增 MP3 元数据、设备诊断、队列入队、第二句柄独立状态、16 位立体声 44.1kHz WAV。
+   - `cargo test --workspace`（59 项）、Windows 实机案例、Linux x64/arm64 和 macOS arm64
+     目标对象均通过。

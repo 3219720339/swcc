@@ -1217,10 +1217,27 @@ extern long ftell(sw_file_handle* file);
 extern void rewind(sw_file_handle* file);
 extern char* fgets(char* buffer, int size, void* stream);
 
+#if defined(_WIN32)
+extern sw_file_handle* _wfopen(const unsigned short* path, const unsigned short* mode);
+extern int MultiByteToWideChar(unsigned int code_page, unsigned long flags, const char* text, int text_len, unsigned short* wide, int wide_len);
+
+static sw_file_handle* sw_fopen_utf8(sw_string* path, sw_string* mode) {
+    if (path == NULL || mode == NULL || path->len <= 0 || path->len > 32767 || mode->len <= 0 || mode->len > 31) return NULL;
+    unsigned short wide_path[32768]; unsigned short wide_mode[32];
+    int path_len = MultiByteToWideChar(65001, 0, path->data, (int)path->len, wide_path, 32767);
+    int mode_len = MultiByteToWideChar(65001, 0, mode->data, (int)mode->len, wide_mode, 31);
+    if (path_len <= 0 || mode_len <= 0) return NULL;
+    wide_path[path_len] = 0; wide_mode[mode_len] = 0;
+    return _wfopen(wide_path, wide_mode);
+}
+#else
+static sw_file_handle* sw_fopen_utf8(sw_string* path, sw_string* mode) { return fopen(path->data, mode->data); }
+#endif
+
 int64_t sw_open(sw_string* path, sw_string* mode) {
     for (int64_t index = 0; index < SW_MAX_FILES; index++) {
         if (sw_files[index] == NULL) {
-            sw_file_handle* file = fopen(path->data, mode->data);
+            sw_file_handle* file = sw_fopen_utf8(path, mode);
             if (file == NULL) {
                 return -1;
             }
@@ -3303,7 +3320,8 @@ void sw_array_set_u8(sw_array* array, int64_t index, int64_t value) {
 }
 
 sw_array* read_file_bytes(sw_string* path) {
-    sw_file_handle* file = fopen(path->data, "rb");
+    sw_string mode = {"rb", 2};
+    sw_file_handle* file = sw_fopen_utf8(path, &mode);
     if (file == NULL) {
         return sw_array_new(1, 0);
     }

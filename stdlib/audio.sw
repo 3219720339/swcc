@@ -4,11 +4,26 @@
 
 import { read_file_bytes, write_file_bytes } from "std/fs";
 import { bytes_read_u16_le, bytes_read_u32_le } from "std/bytes";
+import { from_utf8_bytes } from "std/string";
+
+export struct AudioMetadata {
+    valid: bool;
+    format: string;
+    channels: int;
+    sample_rate: int;
+    bits_per_sample: int;
+    bitrate_kbps: int;
+    duration_ms: int;
+    title: string;
+    artist: string;
+    album: string;
+}
 
 export const AUDIO_STOPPED = 0;
 export const AUDIO_PLAYING = 1;
 export const AUDIO_PAUSED = 2;
 export const AUDIO_ENDED = 3;
+export const AUDIO_FAILED = 4;
 
 export struct WavInfo {
     valid: bool;
@@ -56,6 +71,98 @@ export function wav_info_bytes(data: u8[]): WavInfo {
 
 export function wav_info(path: string): WavInfo { return wav_info_bytes(read_file_bytes(path)); }
 export function wav_duration_ms(path: string): int { return wav_info(path).duration_ms; }
+
+function metadata_empty(): AudioMetadata {
+    return { valid: false, format: "", channels: 0, sample_rate: 0, bits_per_sample: 0,
+        bitrate_kbps: 0, duration_ms: 0, title: "", artist: "", album: "" };
+}
+
+function metadata_text(data: u8[], at: int, size: int): string {
+    if (at < 0 || size <= 0 || at + size > data.length) { return ""; }
+    const bytes: u8[] = []; let i = 0;
+    while (i < size && data[at + i] != 0) { bytes.push(data[at + i]); i++; }
+    return from_utf8_bytes(bytes);
+}
+
+function utf8_push_codepoint(out: u8[], codepoint: int): void {
+    if (codepoint < 128) { out.push(codepoint as u8); }
+    else if (codepoint < 2048) { out.push((192 | (codepoint / 64)) as u8); out.push((128 | (codepoint & 63)) as u8); }
+    else if (codepoint < 65536) { out.push((224 | (codepoint / 4096)) as u8); out.push((128 | ((codepoint / 64) & 63)) as u8); out.push((128 | (codepoint & 63)) as u8); }
+}
+
+function id3_text(data: u8[], at: int, size: int): string {
+    if (size <= 1) { return ""; }
+    const encoding = data[at] as int; const bytes: u8[] = [];
+    if (encoding == 0 || encoding == 3) { let i = 1; while (i < size && data[at + i] != 0) { bytes.push(data[at + i]); i++; } return from_utf8_bytes(bytes); }
+    const little = encoding == 1 && at + 2 < data.length && data[at + 1] == 255 && data[at + 2] == 254;
+    let i = little ? 3 : (encoding == 1 && at + 2 < data.length && data[at + 1] == 254 && data[at + 2] == 255 ? 3 : 1);
+    while (i + 1 < size) {
+        const first = data[at + i] as int; const second = data[at + i + 1] as int; const codepoint = little ? first | (second << 8) : (first << 8) | second;
+        if (codepoint == 0) { break; }
+        utf8_push_codepoint(bytes, codepoint); i += 2;
+    }
+    return from_utf8_bytes(bytes);
+}
+
+/// 读取 WAV/MP3/FLAC 的基础元数据；未支持或损坏数据返回 valid=false。
+export function audio_metadata_bytes(data: u8[]): AudioMetadata {
+    let result = metadata_empty();
+    const wav = wav_info_bytes(data);
+    if (wav.valid) {
+        result.valid = true; result.format = "wav"; result.channels = wav.channels;
+        result.sample_rate = wav.sample_rate; result.bits_per_sample = wav.bits_per_sample;
+        result.duration_ms = wav.duration_ms; return result;
+    }
+    if (data.length >= 4 && tag_at(data, 0, 102, 76, 97, 67)) {
+        let at = 4;
+        while (at + 4 <= data.length) {
+            const block_type = (data[at] as int) & 127; const size = ((data[at + 1] as int) << 16) | ((data[at + 2] as int) << 8) | (data[at + 3] as int);
+            if (at + 4 + size > data.length) { break; }
+            if (block_type == 0 && size >= 18) {
+                const rate = ((data[at + 14] as int) << 12) | ((data[at + 15] as int) << 4) | ((data[at + 16] as int) >> 4);
+                const channels = (((data[at + 16] as int) >> 1) & 7) + 1;
+                const bits = (((data[at + 16] as int) & 1) << 4) | ((data[at + 17] as int) >> 4) + 1;
+                const total = ((data[at + 17] as int) & 15) * 16777216 + (data[at + 18] as int) * 65536 + (data[at + 19] as int) * 256 + (data[at + 20] as int);
+                result.valid = true; result.format = "flac"; result.channels = channels; result.sample_rate = rate;
+                result.bits_per_sample = bits; result.duration_ms = rate > 0 ? total * 1000 / rate : 0;
+            }
+            const last_block = (data[at] as int) >= 128; at = at + 4 + size; if (last_block) { break; }
+        }
+        return result;
+    }
+    if (data.length >= 4 && tag_at(data, 0, 73, 68, 51, 3)) {
+        result.valid = true; result.format = "mp3"; let offset = 10;
+        const tag_size = ((data[6] as int) & 127) * 2097152 + ((data[7] as int) & 127) * 16384 + ((data[8] as int) & 127) * 128 + ((data[9] as int) & 127);
+        offset = 10 + tag_size;
+        let frame = offset;
+        while (frame + 4 <= data.length && frame < offset + 4096) {
+            if (data[frame] == 255 && (data[frame + 1] as int) >= 224) {
+                const version = ((data[frame + 1] as int) >> 3) & 3; const layer = ((data[frame + 1] as int) >> 1) & 3;
+                const bitrate_index = ((data[frame + 2] as int) >> 4) & 15; const rate_index = ((data[frame + 2] as int) >> 2) & 3;
+                const rates: int[] = [44100, 48000, 32000]; const bitrates: int[] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+                if (layer == 1 && rate_index < 3 && bitrate_index < 16) {
+                    result.sample_rate = version == 3 ? rates[rate_index] : rates[rate_index] / 2;
+                    result.bitrate_kbps = bitrates[bitrate_index]; result.channels = ((data[frame + 3] as int) >> 6) == 3 ? 1 : 2;
+                    result.duration_ms = result.bitrate_kbps > 0 ? (data.length - offset) * 8 * 1000 / (result.bitrate_kbps * 1000) : 0;
+                }
+                break;
+            }
+            frame++;
+        }
+        let at = 10; while (at + 10 <= 10 + tag_size && at + 10 <= data.length) {
+            const frame_id = metadata_text(data, at, 4); const size = ((data[at + 4] as int) << 24) | ((data[at + 5] as int) << 16) | ((data[at + 6] as int) << 8) | (data[at + 7] as int);
+            if (size <= 0 || at + 10 + size > data.length) { break; }
+            if (frame_id == "TIT2") { result.title = id3_text(data, at + 10, size); }
+            if (frame_id == "TPE1") { result.artist = id3_text(data, at + 10, size); }
+            if (frame_id == "TALB") { result.album = id3_text(data, at + 10, size); }
+            at = at + 10 + size;
+        }
+        return result;
+    }
+    return result;
+}
+
+export function audio_metadata(path: string): AudioMetadata { return audio_metadata_bytes(read_file_bytes(path)); }
 
 function put_u32_le(data: u8[], at: int, value: int): void {
     data[at] = (value & 255) as u8; data[at + 1] = ((value >> 8) & 255) as u8;
@@ -205,3 +312,6 @@ export extern c function audio_duration_ms(handle: int): int;
 export extern c function audio_seek(handle: int, position_ms: int): int;
 export extern c function audio_set_volume(handle: int, percent: int): int;
 export extern c function audio_set_speed(handle: int, speed_percent: int): int;
+export extern c function audio_last_error(handle: int): int;
+export extern c function audio_device_count(): int;
+export extern c function audio_queue(handle: int, path: string): int;

@@ -1,10 +1,12 @@
 import { println } from "std/io";
 import { sleep_ms } from "std/time";
 import { platform } from "std/os";
+import { read_file_bytes } from "std/fs";
 import { wav_info_bytes, wav_gain_bytes, wav_speed_bytes, wav_fade_in_bytes, wav_fade_out_bytes, wav_mix_bytes, wav_waveform_peaks,
     audio_open, audio_play, audio_pause, audio_resume, audio_stop, audio_close, audio_seek,
     audio_state, audio_position_ms, audio_duration_ms, audio_set_volume, audio_set_speed,
-    AUDIO_PLAYING, AUDIO_PAUSED } from "std/audio";
+    audio_metadata, audio_last_error, audio_device_count, audio_queue,
+    AUDIO_STOPPED, AUDIO_PLAYING, AUDIO_PAUSED } from "std/audio";
 
 function check(condition: bool, label: string): int {
     if (condition) { println(`[ok] ${label}`); return 1; }
@@ -19,9 +21,17 @@ function play_demo(): int {
     const path = "C:\\Users\\Administrator\\Music\\一颗狼星 - 白嫁衣_L.mp3";
     const handle = audio_open(path);
     if (handle <= 0) {
-        println("[skip] audio device or demo MP3 is unavailable");
+        println(` [skip] audio device or demo MP3 is unavailable, error=${audio_last_error(handle)}`);
         return 1;
     }
+    const metadata = audio_metadata(path);
+    const raw_audio = read_file_bytes(path);
+    println(`metadata: bytes=${raw_audio.length}, format=${metadata.format}, channels=${metadata.channels}, rate=${metadata.sample_rate}, bitrate=${metadata.bitrate_kbps}kbps, title=${metadata.title}`);
+    println(`diagnostics: devices=${audio_device_count()}, last_error=${audio_last_error(handle)}`);
+    println(`queue: add-next=${audio_queue(handle, path)}`);
+    const second = audio_open(path);
+    println(`multi-handle: second=${second}, independent=${second > 0 && audio_state(second) == AUDIO_STOPPED}`);
+    if (second > 0) { audio_close(second); }
     println(`playback: duration=${audio_duration_ms(handle)}ms, start volume=0%, speed=100%`);
     audio_set_volume(handle, 0); audio_set_speed(handle, 100);
     const started = audio_play(handle);
@@ -81,6 +91,13 @@ function main(): int {
     const peaks = wav_waveform_peaks(wav, 2);
     println(`waveform peaks: [${peaks[0]}, ${peaks[1]}]`);
     passed = passed & check(peaks.length == 2 && peaks[0] == 100 && peaks[1] == 99, "wav waveform");
+    const stereo16: u8[] = [];
+    const stereo_header: int[] = [82, 73, 70, 70, 52, 0, 0, 0, 87, 65, 86, 69, 102, 109, 116, 32,
+        16, 0, 0, 0, 1, 0, 2, 0, 68, 172, 0, 0, 0, 0, 0, 0, 4, 0, 16, 0,
+        100, 97, 116, 97, 8, 0, 0, 0, 0, 128, 0, 128, 255, 127, 255, 127];
+    for (const value of stereo_header) { stereo16.push(value as u8); }
+    const stereo_info = wav_info_bytes(stereo16);
+    passed = passed & check(stereo_info.valid && stereo_info.channels == 2 && stereo_info.sample_rate == 44100 && stereo_info.bits_per_sample == 16, "wav 16-bit stereo");
     passed = passed & play_demo();
     println(`final=${passed == 1 ? "PASS" : "FAIL"}`);
     return passed == 1 ? 0 : 1;
