@@ -17,11 +17,36 @@ pub struct AnalysisResult {
     pub type_table: TypeTable,
     /// 模块路径与源码文本（供诊断渲染行列号）。
     pub module_sources: Vec<(PathBuf, String)>,
+    /// 已解析标识符的位置与定义，供 LSP 提供 hover / definition。
+    pub symbol_occurrences: Vec<SymbolOccurrence>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SymbolOccurrence {
+    pub file: PathBuf,
+    pub span: Span,
+    pub name: String,
+    pub definition_file: PathBuf,
+    pub definition_span: Span,
+    pub detail: String,
 }
 
 pub fn analyze(entry: &Path, stdlib_dir: Option<&Path>) -> AnalysisResult {
-    let mut analyzer = Analyzer::new(stdlib_dir);
+    analyze_with_source(entry, stdlib_dir, None)
+}
+
+/// 与 `analyze` 相同，但可用尚未保存的编辑器缓冲区替换入口模块源码。
+pub fn analyze_with_source(
+    entry: &Path,
+    stdlib_dir: Option<&Path>,
+    source_override: Option<String>,
+) -> AnalysisResult {
     let entry_path = normalize_path(entry);
+    let mut overrides = HashMap::new();
+    if let Some(text) = source_override {
+        overrides.insert(entry_path.clone(), text);
+    }
+    let mut analyzer = Analyzer::new(stdlib_dir, overrides);
     if analyzer.load_module(&entry_path, true).is_err() {
         // 加载失败的诊断已记录。
     }
@@ -53,11 +78,13 @@ pub fn analyze(entry: &Path, stdlib_dir: Option<&Path>) -> AnalysisResult {
         .iter()
         .map(|state| (state.path.clone(), state.source_text.clone()))
         .collect();
+    let symbol_occurrences = analyzer.collect_symbol_occurrences();
     AnalysisResult {
         diagnostics: analyzer.diagnostics,
         modules,
         type_table: analyzer.types,
         module_sources,
+        symbol_occurrences,
     }
 }
 
@@ -200,10 +227,11 @@ struct Analyzer {
     next_module_id: u32,
     /// 跨模块共享崩溃定位表（debug_index 全局连续；入口模块导出全量表）。
     debug_table: Vec<(String, String, u32)>,
+    source_overrides: HashMap<PathBuf, String>,
 }
 
 impl Analyzer {
-    fn new(stdlib_dir: Option<&Path>) -> Self {
+    fn new(stdlib_dir: Option<&Path>, source_overrides: HashMap<PathBuf, String>) -> Self {
         Self {
             diagnostics: Diagnostics::new(),
             types: TypeTable::default(),
@@ -218,6 +246,7 @@ impl Analyzer {
             current_path: PathBuf::new(),
             next_module_id: 0,
             debug_table: Vec::new(),
+            source_overrides,
         }
     }
 
@@ -262,16 +291,19 @@ impl Analyzer {
         }
         self.loading.insert(path.to_path_buf());
 
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) => {
-                self.error(
-                    format!("无法读取模块 `{}`：{error}", path.display()),
-                    Span::empty(0),
-                );
-                self.loading.remove(path);
-                return Err(());
-            }
+        let text = match self.source_overrides.get(path).cloned() {
+            Some(text) => text,
+            None => match fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) => {
+                    self.error(
+                        format!("无法读取模块 `{}`：{error}", path.display()),
+                        Span::empty(0),
+                    );
+                    self.loading.remove(path);
+                    return Err(());
+                }
+            },
         };
         self.current_path = path.to_path_buf();
         let source_text = text.clone();
@@ -1688,6 +1720,100 @@ impl Analyzer {
             lowerer.lower_module()
         };
         self.states[module_id.0 as usize].mir = Some(mir);
+    }
+
+    fn collect_symbol_occurrences(&self) -> Vec<SymbolOccurrence> {
+        let mut seen = HashSet::new();
+        let mut occurrences = Vec::new();
+        for state in &self.states {
+            for (&offset, &symbol_id) in &state.result.ident_symbols {
+                if !seen.insert((state.id.0, offset, symbol_id.0)) {
+                    continue;
+                }
+                let Some(span) = identifier_span_at(&state.source_text, offset) else {
+                    continue;
+                };
+                let symbol = &self.symbols[symbol_id.0 as usize];
+                occurrences.push(SymbolOccurrence {
+                    file: state.path.clone(),
+                    span,
+                    name: state.source_text[span.start..span.end].to_string(),
+                    definition_file: self.state(symbol.module).path.clone(),
+                    definition_span: symbol.span,
+                    detail: symbol_detail(symbol, &self.types),
+                });
+            }
+        }
+        occurrences
+    }
+}
+
+fn identifier_span_at(text: &str, start: usize) -> Option<Span> {
+    let rest = text.get(start..)?;
+    let mut end = start;
+    for ch in rest.chars() {
+        if ch == '_' || ch == '$' || ch.is_alphanumeric() {
+            end += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    (end > start).then_some(Span::new(start, end))
+}
+
+fn symbol_detail(symbol: &Symbol, types: &TypeTable) -> String {
+    match &symbol.kind {
+        SymbolKind::Function(sig) => {
+            let params = sig
+                .params
+                .iter()
+                .map(|param| format!("{}: {}", param.name, display_type(&param.ty, types)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "function {}({params}): {}",
+                sig.name,
+                display_type(&sig.ret, types)
+            )
+        }
+        SymbolKind::Global { ty, mutable } | SymbolKind::Local { ty, mutable } => {
+            format!(
+                "{}: {}",
+                if *mutable { "let" } else { "const" },
+                display_type(ty, types)
+            )
+        }
+        SymbolKind::Param { ty } => format!("parameter: {}", display_type(ty, types)),
+        SymbolKind::Type(SymbolType::Struct(id)) => format!("struct {}", types.struct_name(*id)),
+        SymbolKind::Type(SymbolType::Enum(id)) => format!("enum {}", types.enum_name(*id)),
+        SymbolKind::Type(SymbolType::Class(id)) => format!("class {}", types.class_name(*id)),
+        SymbolKind::Type(SymbolType::Interface(id)) => {
+            format!("interface {}", types.interface_name(*id))
+        }
+        SymbolKind::Type(SymbolType::Alias(ty)) => format!("type {}", display_type(ty, types)),
+        SymbolKind::Namespace(_) => "module namespace".to_string(),
+    }
+}
+
+fn display_type(ty: &Type, types: &TypeTable) -> String {
+    match ty {
+        Type::Array(inner) => format!("{}[]", display_type(inner, types)),
+        Type::Nullable(inner) => format!("{}?", display_type(inner, types)),
+        Type::Ptr(inner) => format!("ptr<{}>", display_type(inner, types)),
+        Type::Struct(id) => types.struct_name(*id).to_string(),
+        Type::Enum(id) => types.enum_name(*id).to_string(),
+        Type::Class(id) => types.class_name(*id).to_string(),
+        Type::Interface(id) => types.interface_name(*id).to_string(),
+        Type::Function { params, ret } => format!(
+            "function({}): {}",
+            params
+                .iter()
+                .map(|param| display_type(param, types))
+                .collect::<Vec<_>>()
+                .join(", "),
+            display_type(ret, types)
+        ),
+        _ => ty.display(),
     }
 }
 
@@ -3743,6 +3869,10 @@ impl<'s> Checker<'s> {
                             if let Some((symbol_id, sig)) =
                                 self.pick_overload(&candidates, &args_ty, span, true)
                             {
+                                self.state
+                                    .result
+                                    .ident_symbols
+                                    .insert(name.span.start, symbol_id);
                                 self.state.result.call_targets.insert(
                                     (span.start, span.end),
                                     CallTarget::Function(symbol_id),
@@ -3822,6 +3952,10 @@ impl<'s> Checker<'s> {
                 if let Some((symbol_id, sig)) =
                     self.pick_overload(&candidates, &args_ty, span, true)
                 {
+                    self.state
+                        .result
+                        .ident_symbols
+                        .insert(ident.span.start, symbol_id);
                     self.state
                         .result
                         .call_targets

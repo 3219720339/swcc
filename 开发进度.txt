@@ -2145,3 +2145,16 @@ Sw 编译器（swcc）开发进度
    - 已核对旧限制：examples/probe-generic-enum.sw 已覆盖泛型 enum 的参数/返回值；semantic 已支持
      对象字面量在 return、赋值和函数实参中的目标类型传播。docs/08-能力清单.md 与 docs/项目说明.md
      仍有相应过期描述，实施下一批时一并修正。
+
+2026-08-16 18:48  LSP、格式化器与命令入口补全：
+   - `swc` 无参数不再尝试查找 main.sw，直接显示帮助；新增 `swc fmt <文件.sw>...`，
+     `--check` 仅检查格式且以退出码 1 报告未格式化文件。格式化器保留注释和字符串/模板字面量，
+     统一缩进、空白与换行。
+   - LSP 由手写 JSON 提取改为 serde_json 结构化 JSON-RPC；支持 UTF-16 位置、增量文本变更、
+     打开/关闭文档诊断推送、真实类型 hover 和 definition。语义层新增未保存入口源码覆盖与只读
+     符号位置索引，保证编辑器缓冲区分析不写入临时文件且相对 import 仍按原文件路径解析。
+   - CI 新增 release `swc fmt --check`；新增格式化器、LSP UTF-16/增量修改单测和已格式化 fixture。
+   - 同步修正 docs/08-能力清单.md、docs/项目说明.md 的 LSP/格式化器状态。
+   - 验证：cargo fmt --all -- --check、cargo test --workspace（58 项）、cargo build --release -p swc、
+     release fmt --check、无参数帮助均通过；JSON-RPC 进程级验证通过诊断、hover、definition、
+     增量修改与关闭文档诊断清理。既有 Rust/Cranelift 警告仍待后续专项收口。

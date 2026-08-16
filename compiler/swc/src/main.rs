@@ -10,6 +10,7 @@ use sw_common::{Diagnostics, Severity, Source};
 use sw_frontend::Parser;
 use sw_semantic::{MirModule, Type, analyze};
 
+mod formatter;
 mod lsp;
 
 struct BuildOptions {
@@ -110,6 +111,10 @@ fn load_config(entry: &Path) -> SwConfig {
 fn main() {
     let started = Instant::now();
     let args: Vec<String> = env::args().collect();
+    if args.len() == 1 {
+        print_help();
+        return;
+    }
     if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
         println!("swc {}", env!("CARGO_PKG_VERSION"));
         return;
@@ -129,6 +134,9 @@ fn main() {
     }
     if command == "lsp" {
         std::process::exit(lsp::run_lsp());
+    }
+    if command == "fmt" {
+        std::process::exit(cmd_fmt(&args));
     }
     if !matches!(command, "check" | "build" | "run" | "test") {
         eprintln!("未知命令 `{command}`；可用 `swc help` 查看用法");
@@ -409,6 +417,7 @@ fn print_help() {
     println!("  build              编译并链接生成可执行文件");
     println!("  run                编译、链接并运行");
     println!("  test               编译并运行 @test 测试（退出码=失败数）");
+    println!("  fmt [--check]      格式化源文件；--check 仅检查格式");
     println!("  init [-y]          在当前目录生成默认 swcc.toml（-y 覆盖已存在文件）");
     println!("  lsp                LSP 语言服务器（JSON-RPC over stdio，供编辑器接入）");
     println!("  help               显示本帮助");
@@ -427,6 +436,44 @@ fn print_help() {
     println!("环境变量:");
     println!("  SW_TOOLCHAIN  指向 llvm-mingw 工具链目录");
     println!("  SW_STDLIB     指向标准库目录（默认查找可执行文件旁或当前目录的 stdlib/）");
+}
+
+fn cmd_fmt(args: &[String]) -> i32 {
+    let check_only = args.iter().skip(2).any(|arg| arg == "--check");
+    let paths: Vec<&String> = args
+        .iter()
+        .skip(2)
+        .filter(|arg| arg.as_str() != "--check")
+        .collect();
+    if paths.is_empty() {
+        eprintln!("用法: swc fmt [--check] <文件.sw>...");
+        return 2;
+    }
+    let mut needs_format = false;
+    for path in paths {
+        let path = Path::new(path);
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) => {
+                eprintln!("无法读取 `{}`：{error}", path.display());
+                return 2;
+            }
+        };
+        let formatted = formatter::format_source(&text);
+        if formatted == text {
+            continue;
+        }
+        needs_format = true;
+        if check_only {
+            eprintln!("格式不符合规范：{}", path.display());
+        } else if let Err(error) = fs::write(path, formatted) {
+            eprintln!("无法写入 `{}`：{error}", path.display());
+            return 2;
+        } else {
+            println!("已格式化：{}", path.display());
+        }
+    }
+    if check_only && needs_format { 1 } else { 0 }
 }
 
 /// `swc init [-y]`：在当前目录生成默认 swcc.toml（已存在时不覆盖，除非 -y）。

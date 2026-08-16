@@ -60,6 +60,15 @@ jobs:
       - name: Build release swc
         run: cargo build --release -p swc
 
+      - name: Sw format check
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ./target/release/swc.exe fmt --check compiler/swc/tests/fixtures/formatted.sw
+          else
+            ./target/release/swc fmt --check compiler/swc/tests/fixtures/formatted.sw
+          fi
+
       - name: Smoke (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
