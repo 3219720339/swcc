@@ -1,5 +1,5 @@
 import { println } from "std/io";
-import { wav_info_bytes, wav_gain_bytes, wav_speed_bytes } from "std/audio";
+import { wav_info_bytes, wav_gain_bytes, wav_speed_bytes, wav_fade_in_bytes, wav_fade_out_bytes, wav_mix_bytes, wav_waveform_peaks } from "std/audio";
 
 function check(condition: bool, label: string): int {
     if (condition) { println(`[ok] ${label}`); return 1; }
@@ -20,6 +20,14 @@ function main(): int {
     const speed = wav_speed_bytes(wav, 200);
     const speed_info = wav_info_bytes(speed);
     passed = passed & check(speed_info.valid && speed_info.data_size == 2 && speed.length == 46, "wav offline speed");
+    const fade_in = wav_fade_in_bytes(wav, 1);
+    passed = passed & check(fade_in.length == wav.length && fade_in[44] == 128, "wav fade in");
+    const fade_out = wav_fade_out_bytes(wav, 1);
+    passed = passed & check(fade_out.length == wav.length && fade_out[47] == 128, "wav fade out");
+    const mixed = wav_mix_bytes(wav, wav, 50);
+    passed = passed & check(mixed.length == wav.length && mixed[44] == 0, "wav mix");
+    const peaks = wav_waveform_peaks(wav, 2);
+    passed = passed & check(peaks.length == 2 && peaks[0] == 100 && peaks[1] == 99, "wav waveform");
     println(`final=${passed == 1 ? "PASS" : "FAIL"}`);
     return passed == 1 ? 0 : 1;
 }
