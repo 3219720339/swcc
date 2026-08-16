@@ -2188,3 +2188,6 @@ Sw 编译器（swcc）开发进度
    - 验证：cargo fmt --all -- --check、cargo test --workspace（58 项）、release 构建、
      101 个既有示例回归和 batch14 运行均通过；交叉编译已验证 Linux x64 ELF、Linux arm64 ELF、
      macOS arm64 Mach-O 目标对象。
+
+2026-08-16 19:11  发布同步：
+   - 已将实用标准库提交同步推送至 GitHub 与码云 `main` 分支，GitHub Actions 用于后续跨平台构建验证。
