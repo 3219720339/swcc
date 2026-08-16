@@ -146,6 +146,7 @@ static int64_t audio_next(int64_t handle);
 int64_t audio_state(int64_t handle) { sw_audio_player* player = sw_audio_get(handle); if (!player) return -1; int state = __atomic_load_n(&player->state, __ATOMIC_ACQUIRE); if (state == SW_AUDIO_ENDED && player->queue_count > 0) { audio_next(handle); state = __atomic_load_n(&player->state, __ATOMIC_ACQUIRE); } return state; }
 int64_t audio_position_ms(int64_t handle) { sw_audio_player* player = sw_audio_get(handle); return player ? (int64_t)(__atomic_load_n(&player->position_frames, __ATOMIC_ACQUIRE) * 1000 / 48000) : -1; }
 int64_t audio_duration_ms(int64_t handle) { sw_audio_player* player = sw_audio_get(handle); return player ? (int64_t)(player->length_frames * 1000 / 48000) : -1; }
+int64_t audio_progress_percent(int64_t handle) { sw_audio_player* player = sw_audio_get(handle); if (!player) return -1; ma_uint64 duration = player->length_frames; if (duration == 0) return 0; ma_uint64 position = __atomic_load_n(&player->position_frames, __ATOMIC_ACQUIRE); if (position >= duration) return 100; return (int64_t)(position * 100 / duration); }
 int64_t audio_seek(int64_t handle, int64_t position_ms) {
     sw_audio_player* player = sw_audio_get(handle); if (!player || position_ms < 0) return -1;
     ma_uint64 target = (ma_uint64)position_ms * 48000 / 1000;
@@ -174,6 +175,7 @@ int64_t audio_close(int64_t handle) { (void)handle; return -1; }
 int64_t audio_state(int64_t handle) { (void)handle; return -1; }
 int64_t audio_position_ms(int64_t handle) { (void)handle; return -1; }
 int64_t audio_duration_ms(int64_t handle) { (void)handle; return -1; }
+int64_t audio_progress_percent(int64_t handle) { (void)handle; return -1; }
 int64_t audio_seek(int64_t handle, int64_t position_ms) { (void)handle; (void)position_ms; return -1; }
 int64_t audio_set_volume(int64_t handle, int64_t percent) { (void)handle; (void)percent; return -1; }
 int64_t audio_set_speed(int64_t handle, int64_t speed) { (void)handle; (void)speed; return -1; }

@@ -2339,3 +2339,11 @@ Sw 编译器（swcc）开发进度
    - 演示新增 MP3 元数据、设备诊断、队列入队、第二句柄独立状态、16 位立体声 44.1kHz WAV。
    - `cargo test --workspace`（59 项）、Windows 实机案例、Linux x64/arm64 和 macOS arm64
      目标对象均通过。
+
+2026-08-16 22:54  音频播放进度查询与轮询演示：
+   - 新增 `audio_progress_percent(handle)`，与已有状态、当前位置、总时长 API 一致，非法句柄返回 -1，
+     空时长返回 0，播放结束钳位到 100%。Linux/macOS 无音频后端桩同步导出该符号。
+   - `examples/probe-audio.sw` 增加 3 次每秒进度轮询，输出状态、当前位置、总时长和百分比；本机实测
+     位置约 1000/2010/3020ms、百分比 0/0/1%，暂停位置冻结、恢复和跳转通过，最终 `PASS`。
+   - `cargo fmt --all -- --check`、`cargo test --workspace`（59 项）及 Linux x64、Linux arm64、
+     macOS arm64 目标对象生成通过。

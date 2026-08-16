@@ -309,6 +309,7 @@ export extern c function audio_close(handle: int): int;
 export extern c function audio_state(handle: int): int;
 export extern c function audio_position_ms(handle: int): int;
 export extern c function audio_duration_ms(handle: int): int;
+export extern c function audio_progress_percent(handle: int): int;
 export extern c function audio_seek(handle: int, position_ms: int): int;
 export extern c function audio_set_volume(handle: int, percent: int): int;
 export extern c function audio_set_speed(handle: int, speed_percent: int): int;

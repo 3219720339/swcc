@@ -4,7 +4,7 @@ import { platform } from "std/os";
 import { read_file_bytes } from "std/fs";
 import { wav_info_bytes, wav_gain_bytes, wav_speed_bytes, wav_fade_in_bytes, wav_fade_out_bytes, wav_mix_bytes, wav_waveform_peaks,
     audio_open, audio_play, audio_pause, audio_resume, audio_stop, audio_close, audio_seek,
-    audio_state, audio_position_ms, audio_duration_ms, audio_set_volume, audio_set_speed,
+    audio_state, audio_position_ms, audio_duration_ms, audio_progress_percent, audio_set_volume, audio_set_speed,
     audio_metadata, audio_last_error, audio_device_count, audio_queue,
     AUDIO_STOPPED, AUDIO_PLAYING, AUDIO_PAUSED } from "std/audio";
 
@@ -32,9 +32,15 @@ function play_demo(): int {
     const second = audio_open(path);
     println(`multi-handle: second=${second}, independent=${second > 0 && audio_state(second) == AUDIO_STOPPED}`);
     if (second > 0) { audio_close(second); }
-    println(`playback: duration=${audio_duration_ms(handle)}ms, start volume=0%, speed=100%`);
+    println(`playback: duration=${audio_duration_ms(handle)}ms, start volume=0%, speed=100%, progress=${audio_progress_percent(handle)}%`);
     audio_set_volume(handle, 0); audio_set_speed(handle, 100);
     const started = audio_play(handle);
+    let progress_tick = 0;
+    while (progress_tick < 3) {
+        sleep_ms(1000);
+        println(`progress poll: state=${audio_state(handle)}, position=${audio_position_ms(handle)}ms, duration=${audio_duration_ms(handle)}ms, percent=${audio_progress_percent(handle)}%`);
+        progress_tick++;
+    }
     // Audible fade-in: the runtime volume is changed while the device plays.
     sleep_ms(1000); audio_set_volume(handle, 25); println("playback effect: fade-in 25%");
     sleep_ms(1000); audio_set_volume(handle, 50); println("playback effect: fade-in 50%");
