@@ -22,9 +22,18 @@ function play_demo(): int {
         println("[skip] audio device or demo MP3 is unavailable");
         return 1;
     }
-    println(`playback: duration=${audio_duration_ms(handle)}ms, volume=${audio_set_volume(handle, 100)}, speed=${audio_set_speed(handle, 100)}`);
+    println(`playback: duration=${audio_duration_ms(handle)}ms, start volume=0%, speed=100%`);
+    audio_set_volume(handle, 0); audio_set_speed(handle, 100);
     const started = audio_play(handle);
-    sleep_ms(3000);
+    // Audible fade-in: the runtime volume is changed while the device plays.
+    sleep_ms(1000); audio_set_volume(handle, 25); println("playback effect: fade-in 25%");
+    sleep_ms(1000); audio_set_volume(handle, 50); println("playback effect: fade-in 50%");
+    sleep_ms(1000); audio_set_volume(handle, 75); println("playback effect: fade-in 75%");
+    sleep_ms(1000); audio_set_volume(handle, 100); println("playback effect: fade-in 100%");
+    // Audible real-time speed changes.
+    audio_set_speed(handle, 50); println("playback effect: speed 0.5x"); sleep_ms(3000);
+    audio_set_speed(handle, 200); println("playback effect: speed 2x"); sleep_ms(3000);
+    audio_set_speed(handle, 100); println("playback effect: speed 1x");
     const before_pause = audio_position_ms(handle);
     const paused = audio_pause(handle);
     println(`playback: started=${started}, position=${before_pause}ms, pause=${paused}, state=${audio_state(handle)}`);
@@ -33,8 +42,11 @@ function play_demo(): int {
     const resumed = audio_resume(handle);
     const seeked = audio_seek(handle, 30000);
     println(`playback: frozen=${frozen}ms, resume=${resumed}, seek=${seeked}, state=${audio_state(handle)}`);
-    // Keep the process alive long enough to hear the resumed and seeked audio.
-    sleep_ms(10000);
+    // Audible fade-out before closing.
+    sleep_ms(3000); audio_set_volume(handle, 75); println("playback effect: fade-out 75%");
+    sleep_ms(700); audio_set_volume(handle, 50); println("playback effect: fade-out 50%");
+    sleep_ms(700); audio_set_volume(handle, 25); println("playback effect: fade-out 25%");
+    sleep_ms(700); audio_set_volume(handle, 0); println("playback effect: fade-out 0%");
     const final_state = audio_state(handle);
     audio_stop(handle); audio_close(handle);
     return check(paused == 0 && resumed == 0 && seeked == 0 && final_state >= AUDIO_PLAYING && frozen == before_pause, "playback controls");
@@ -50,6 +62,7 @@ function main(): int {
     const info = wav_info_bytes(wav);
     let passed = check(info.valid && info.channels == 1 && info.sample_rate == 8000 && info.bits_per_sample == 8 && info.data_size == 4, "wav metadata");
     const gain = wav_gain_bytes(wav, 50);
+    println(`volume: gain=50%, sample[0]=${gain[44]}, sample[2]=${gain[46]}`);
     passed = passed & check(gain.length == wav.length && gain[44] == 64 && gain[46] == 191, "wav gain");
     const speed = wav_speed_bytes(wav, 200);
     const speed_info = wav_info_bytes(speed);
@@ -57,8 +70,10 @@ function main(): int {
     println(`linear speed: 0.5x=${half_speed.length} bytes, 2x=${speed.length} bytes`);
     passed = passed & check(speed_info.valid && speed_info.data_size == 2 && speed.length == 46, "wav offline speed");
     const fade_in = wav_fade_in_bytes(wav, 1);
+    println(`fade in: duration=1ms, first sample=${fade_in[44]}`);
     passed = passed & check(fade_in.length == wav.length && fade_in[44] == 128, "wav fade in");
     const fade_out = wav_fade_out_bytes(wav, 1);
+    println(`fade out: duration=1ms, last sample=${fade_out[47]}`);
     passed = passed & check(fade_out.length == wav.length && fade_out[47] == 128, "wav fade out");
     const mixed = wav_mix_bytes(wav, wav, 50);
     println(`pcm mix: overlay=50%, bytes=${mixed.length}`);
