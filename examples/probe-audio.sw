@@ -6,9 +6,10 @@ import { wav_info_bytes, wav_gain_bytes, wav_speed_bytes, wav_fade_in_bytes, wav
     audio_open, audio_play, audio_pause, audio_resume, audio_stop, audio_close, audio_seek,
     audio_state, audio_position_ms, audio_duration_ms, audio_progress_percent, audio_format_duration_ms,
     audio_set_volume, audio_set_speed,
-    audio_metadata, audio_last_error, audio_device_count, audio_device_name, audio_set_default_device,
-    audio_queue, audio_event_poll, audio_event_position_ms,
-    AUDIO_STOPPED, AUDIO_PLAYING, AUDIO_PAUSED } from "std/audio";
+    audio_metadata, audio_last_error, audio_device_count, audio_device_name, audio_set_default_device, audio_set_device,
+    audio_queue, audio_queue_count, audio_queue_insert, audio_queue_remove, audio_set_repeat_mode, audio_set_shuffle,
+    audio_set_crossfade_ms, audio_event_poll, audio_event_position_ms,
+    AUDIO_STOPPED, AUDIO_PLAYING, AUDIO_PAUSED, AUDIO_EVENT_TRACK_CHANGED, AUDIO_REPEAT_ALL } from "std/audio";
 
 function check(condition: bool, label: string): int {
     if (condition) { println(`[ok] ${label}`); return 1; }
@@ -33,7 +34,12 @@ function play_demo(): int {
     println(`diagnostics: devices=${devices}, first=${devices > 0 ? audio_device_name(0) : ""}, last_error=${audio_last_error(handle)}, event=${audio_event_poll(handle)}`);
     println(`duration format: ${audio_format_duration_ms(audio_duration_ms(handle))}`);
     audio_set_default_device(-1);
-    println(`queue: add-next=${audio_queue(handle, path)}`);
+    const device_changed = devices > 0 ? audio_set_device(handle, 0) : 0;
+    const queued = audio_queue(handle, path);
+    const inserted = audio_queue_insert(handle, 0, path);
+    const removed = audio_queue_remove(handle, 1);
+    println(`playlist: add=${queued}, insert=${inserted}, remove=${removed}, pending=${audio_queue_count(handle)}, device-switch=${device_changed}`);
+    audio_set_repeat_mode(handle, AUDIO_REPEAT_ALL); audio_set_shuffle(handle, 0); audio_set_crossfade_ms(handle, 1000);
     const second = audio_open(path);
     println(`multi-handle: second=${second}, independent=${second > 0 && audio_state(second) == AUDIO_STOPPED}`);
     if (second > 0) { audio_close(second); }
@@ -67,11 +73,14 @@ function play_demo(): int {
     sleep_ms(3000); audio_set_volume(handle, 75); println("playback effect: fade-out 75%");
     sleep_ms(700); audio_set_volume(handle, 50); println("playback effect: fade-out 50%");
     sleep_ms(700); audio_set_volume(handle, 25); println("playback effect: fade-out 25%");
-    sleep_ms(700); audio_set_volume(handle, 0); println("playback effect: fade-out 0%");
+    sleep_ms(700); audio_set_volume(handle, 100); println("playlist effect: crossfade 1s at track end");
+    const duration = audio_duration_ms(handle);
+    audio_seek(handle, duration - 1500); sleep_ms(2800);
     const final_state = audio_state(handle);
-    println(`event poll: code=${audio_event_poll(handle)}, position=${audio_event_position_ms(handle)}ms`);
+    let track_changed = false; let event = audio_event_poll(handle);
+    while (event != 0) { if (event == AUDIO_EVENT_TRACK_CHANGED) { track_changed = true; } println(`event poll: code=${event}, position=${audio_event_position_ms(handle)}ms`); event = audio_event_poll(handle); }
     audio_stop(handle); audio_close(handle);
-    return check(paused == 0 && resumed == 0 && seeked == 0 && final_state >= AUDIO_PLAYING && frozen == before_pause, "playback controls");
+    return check(paused == 0 && resumed == 0 && seeked == 0 && final_state >= AUDIO_PLAYING && frozen == before_pause && track_changed, "playlist controls and crossfade");
 }
 
 function main(): int {

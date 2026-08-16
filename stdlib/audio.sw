@@ -381,8 +381,28 @@ export extern c function audio_device_count(): int;
 export extern c function audio_device_name(index: int): string;
 /// 设置后续打开句柄使用的默认播放设备索引。
 export extern c function audio_set_default_device(index: int): int;
+/// 运行中切换该句柄的输出设备。
+export extern c function audio_set_device(handle: int, index: int): int;
 /// 将待播放文件加入队列，播放结束后自动切换。
 export extern c function audio_queue(handle: int, path: string): int;
+/// 返回待播放队列长度，不包含当前曲目。
+export extern c function audio_queue_count(handle: int): int;
+/// 清空待播放队列，不影响当前曲目。
+export extern c function audio_queue_clear(handle: int): int;
+/// 移除待播放队列中指定索引的曲目。
+export extern c function audio_queue_remove(handle: int, index: int): int;
+/// 将曲目插入待播放队列的指定索引。
+export extern c function audio_queue_insert(handle: int, index: int, path: string): int;
+/// 立即切换到下一首；队列为空时返回 -1。
+export extern c function audio_next_track(handle: int): int;
+/// 返回上一首；没有历史曲目时返回 -1。
+export extern c function audio_previous_track(handle: int): int;
+/// 设置循环模式：AUDIO_REPEAT_OFF、AUDIO_REPEAT_ALL 或 AUDIO_REPEAT_ONE。
+export extern c function audio_set_repeat_mode(handle: int, mode: int): int;
+/// 启用或关闭下一首随机选择。
+export extern c function audio_set_shuffle(handle: int, enabled: int): int;
+/// 设置自动切歌交叉淡化时长（0..30000 毫秒）。
+export extern c function audio_set_crossfade_ms(handle: int, duration_ms: int): int;
 /// 轮询一个播放器事件；无事件返回 0。
 export extern c function audio_event_poll(handle: int): int;
 /// 返回最近一次取出的事件发生位置（毫秒）。
@@ -396,3 +416,12 @@ export const AUDIO_EVENT_ENDED = 1;
 export const AUDIO_EVENT_ERROR = 2;
 /// 事件队列：输出设备丢失或无法启动。
 export const AUDIO_EVENT_DEVICE_LOST = 3;
+/// 事件队列：当前曲目已切换。
+export const AUDIO_EVENT_TRACK_CHANGED = 4;
+
+/// 不循环播放。
+export const AUDIO_REPEAT_OFF = 0;
+/// 队列循环播放。
+export const AUDIO_REPEAT_ALL = 1;
+/// 当前曲目循环播放。
+export const AUDIO_REPEAT_ONE = 2;
