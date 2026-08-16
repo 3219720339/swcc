@@ -10,7 +10,9 @@
 // # 注释、空行；[section] 下的键存为 "section.key"。
 // ===========================================================================
 
-import { map_get, map_set } from "std/map";
+import { map_get, map_set, map_keys } from "std/map";
+import { read_all, atomic_write } from "std/fs";
+import { escape } from "std/string";
 
 /// 解析 TOML 文本为 map（键 "section.key" 或 "key"，值为 string）。
 export extern c function toml_parse(text: string): ptr<void>;
@@ -39,4 +41,18 @@ export function 取TOML项(cfg: ptr<void>, key: string): string? {
 
 export function 置TOML项(cfg: ptr<void>, key: string, value: string): int {
     return toml_set(cfg, key, value);
+}
+
+/// 读取 TOML 文件；不存在/空文件返回空 map。
+export function toml_read_file(path: string): ptr<void> {
+    return toml_parse(read_all(path));
+}
+
+/// 将扁平 string map 原子写入 TOML。键保持原样（可含 section.key），值统一双引号转义。
+export function toml_write_file(path: string, cfg: ptr<void>): int {
+    let text = "";
+    for (const key of map_keys(cfg)) {
+        text = text + key + " = \"" + escape(map_get(cfg, key) ?? "") + "\"\n";
+    }
+    return atomic_write(path, text);
 }

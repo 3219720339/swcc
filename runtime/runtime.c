@@ -12793,6 +12793,193 @@ sw_string* temp_file_path(sw_string* prefix) {
     return sw_string_from_literal(out, used);
 }
 
+// 操作系统安全随机字节：Windows 用 UCRT rand_s，POSIX 用 /dev/urandom。
+// 随机源不可用时返回空数组，不降级为伪随机数。
+sw_array* sw_random_bytes(int64_t length) {
+    if (length <= 0 || length > 1048576) {
+        return sw_array_new(1, 0);
+    }
+    sw_array* bytes = sw_array_new(1, length);
+    if (bytes == NULL || bytes->data == NULL) {
+        return sw_array_new(1, 0);
+    }
+#if defined(_WIN32)
+    extern int rand_s(unsigned int* random_value);
+    unsigned char* data = (unsigned char*)bytes->data;
+    for (int64_t i = 0; i < length; i++) {
+        unsigned int value = 0;
+        if (rand_s(&value) != 0) {
+            return sw_array_new(1, 0);
+        }
+        data[i] = (unsigned char)(value & 0xFFu);
+    }
+#else
+    sw_file_handle* random_file = fopen("/dev/urandom", "rb");
+    if (random_file == NULL || fread(bytes->data, 1, (uint64_t)length, random_file) != (uint64_t)length) {
+        if (random_file != NULL) {
+            fclose(random_file);
+        }
+        return sw_array_new(1, 0);
+    }
+    fclose(random_file);
+#endif
+    return bytes;
+}
+
+// std/log 的进程级阈值；由语言层 API 访问，避免模块级可变全局的链接问题。
+static int64_t sw_log_threshold = 20;
+
+void sw_log_set_level(int64_t level) {
+    sw_log_threshold = level;
+}
+
+int64_t sw_log_level(void) {
+    return sw_log_threshold;
+}
+
+static sw_string* sw_atomic_temp_name(sw_string* path) {
+    sw_string* dir = path_dirname(path);
+    sw_string* base = path_basename(path);
+    sw_array* random = sw_random_bytes(8);
+    if (random == NULL || random->len != 8) {
+        return sw_string_from_literal("", 0);
+    }
+    const char* hex = "0123456789abcdef";
+    int64_t cap = dir->len + base->len + 32;
+    char* text = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    for (int64_t i = 0; i < dir->len; i++) {
+        text[used++] = dir->data[i];
+    }
+    if (used > 0 && text[used - 1] != '/' && text[used - 1] != '\\') {
+#if defined(_WIN32)
+        text[used++] = '\\';
+#else
+        text[used++] = '/';
+#endif
+    }
+    text[used++] = '.';
+    for (int64_t i = 0; i < base->len; i++) {
+        text[used++] = base->data[i];
+    }
+    const char* suffix = ".swtmp-";
+    for (int i = 0; suffix[i] != 0; i++) {
+        text[used++] = suffix[i];
+    }
+    unsigned char* bytes = (unsigned char*)random->data;
+    for (int i = 0; i < 8; i++) {
+        text[used++] = hex[bytes[i] >> 4];
+        text[used++] = hex[bytes[i] & 15];
+    }
+    text[used] = 0;
+    return sw_string_from_literal(text, used);
+}
+
+static int64_t sw_atomic_replace(sw_string* temporary, sw_string* target) {
+#if defined(_WIN32)
+    extern int MoveFileExA(const char* existing, const char* replacement, unsigned long flags);
+    // MOVEFILE_REPLACE_EXISTING，目标不存在时同样可移动。
+    return MoveFileExA(temporary->data, target->data, 1) ? 0 : -1;
+#else
+    return sw_rename(temporary, target);
+#endif
+}
+
+int64_t atomic_write(sw_string* path, sw_string* text) {
+    if (path == NULL || path->len == 0 || text == NULL) {
+        return -1;
+    }
+    sw_string* temporary = sw_atomic_temp_name(path);
+    if (temporary->len == 0) {
+        return -1;
+    }
+    sw_file_handle* file = fopen(temporary->data, "wb");
+    if (file == NULL) {
+        return -1;
+    }
+    uint64_t written = text->len == 0 ? 0 : fwrite(text->data, 1, (uint64_t)text->len, file);
+    int close_status = fclose(file);
+    if (written != (uint64_t)text->len || close_status != 0 || sw_atomic_replace(temporary, path) != 0) {
+        sw_remove(temporary);
+        return -1;
+    }
+    return (int64_t)written;
+}
+
+int64_t atomic_write_bytes(sw_string* path, sw_array* bytes) {
+    if (path == NULL || path->len == 0 || bytes == NULL) {
+        return -1;
+    }
+    sw_string* temporary = sw_atomic_temp_name(path);
+    if (temporary->len == 0) {
+        return -1;
+    }
+    sw_file_handle* file = fopen(temporary->data, "wb");
+    if (file == NULL) {
+        return -1;
+    }
+    uint64_t written = bytes->len == 0 ? 0 : fwrite(bytes->data, 1, (uint64_t)bytes->len, file);
+    int close_status = fclose(file);
+    if (written != (uint64_t)bytes->len || close_status != 0 || sw_atomic_replace(temporary, path) != 0) {
+        sw_remove(temporary);
+        return -1;
+    }
+    return (int64_t)written;
+}
+
+// 安全创建空临时文件。Windows API 与 POSIX mkstemp 都保证独占创建。
+sw_string* temp_file_create(sw_string* prefix) {
+    sw_string* dir = sw_temp_dir();
+    if (dir == NULL || dir->len == 0) {
+        return sw_string_from_literal("", 0);
+    }
+#if defined(_WIN32)
+    extern unsigned int GetTempFileNameA(const char* path, const char* prefix, unsigned int unique, char* buffer);
+    char folder[1024];
+    char short_prefix[4] = {'s', 'w', 'c', 0};
+    if (dir->len >= (int64_t)sizeof(folder)) {
+        return sw_string_from_literal("", 0);
+    }
+    memcpy(folder, dir->data, (uint64_t)dir->len);
+    folder[dir->len] = 0;
+    for (int i = 0; prefix != NULL && i < 3 && i < prefix->len; i++) {
+        short_prefix[i] = prefix->data[i];
+    }
+    char path[1024];
+    if (GetTempFileNameA(folder, short_prefix, 0, path) == 0) {
+        return sw_string_from_literal("", 0);
+    }
+    return sw_string_from_literal(path, (int64_t)strlen(path));
+#else
+    extern int mkstemp(char* template_name);
+    extern int close(int file_descriptor);
+    int64_t cap = dir->len + (prefix == NULL ? 3 : prefix->len) + 16;
+    char* path = (char*)sw_gc_alloc((uint64_t)cap);
+    int64_t used = 0;
+    memcpy(path, dir->data, (uint64_t)dir->len);
+    used = dir->len;
+    if (used > 0 && path[used - 1] != '/') {
+        path[used++] = '/';
+    }
+    if (prefix != NULL && prefix->len > 0) {
+        memcpy(path + used, prefix->data, (uint64_t)prefix->len);
+        used += prefix->len;
+    } else {
+        memcpy(path + used, "swc", 3);
+        used += 3;
+    }
+    memcpy(path + used, "XXXXXX", 6);
+    used += 6;
+    path[used] = 0;
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    close(fd);
+    return sw_string_from_literal(path, (int64_t)strlen(path));
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // 第一批：INI 解析 / 随机字符串 / JSON 美化 / 数组实用
 // ---------------------------------------------------------------------------

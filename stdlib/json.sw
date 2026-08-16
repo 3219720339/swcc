@@ -14,6 +14,7 @@
 // ===========================================================================
 
 import { split } from "std/string";
+import { read_all, atomic_write } from "std/fs";
 
 /// 解析 JSON 文本；语法错误返回 null。结果由 GC 管理，无需手动释放。
 export extern c function json_parse(text: string): ptr<void>;
@@ -181,4 +182,19 @@ export function 取JSON对象长度(value: ptr<void>): int {
 
 export function JSON合并(a: ptr<void>, b: ptr<void>): ptr<void> {
     return json_merge(a, b);
+}
+
+/// 读取并解析 JSON 文件；不存在或无效文件返回 null。
+export function json_read_file(path: string): ptr<void> {
+    return json_parse(read_all(path));
+}
+
+/// 原子写入紧凑 JSON；成功返回写入字节数，失败返回 -1。
+export function json_write_file(path: string, value: ptr<void>): int {
+    return atomic_write(path, json_stringify(value));
+}
+
+/// 原子写入缩进 JSON；适合人工维护的配置文件。
+export function json_write_file_pretty(path: string, value: ptr<void>): int {
+    return atomic_write(path, json_stringify_pretty(value));
 }

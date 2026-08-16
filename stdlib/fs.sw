@@ -160,6 +160,49 @@ export extern c function write_lines(path: string, lines: string[]): int;
 /// 生成临时文件路径：<系统临时目录>/<prefix><时间戳>.tmp（不创建文件）。
 export extern c function temp_file_path(prefix: string): string;
 
+/// 安全创建空临时文件并返回完整路径；失败返回空串。调用者负责写入/关闭后的清理。
+export extern c function temp_file_create(prefix: string): string;
+
+/// 原子覆盖写入文本：在目标目录创建临时文件、完整写入后替换目标。
+/// 成功返回写入字节数，失败返回 -1；不会留下部分目标文件。
+export extern c function atomic_write(path: string, text: string): int;
+
+/// 原子覆盖写入字节。
+export extern c function atomic_write_bytes(path: string, bytes: u8[]): int;
+
+export const FILE_MISSING = 0;
+export const FILE_REGULAR = 1;
+export const FILE_DIRECTORY = 2;
+export const FILE_SYMLINK = 3;
+
+/// 跨平台文件元数据。mode 在 Windows 为近似权限值。
+export struct FileInfo {
+    exists: bool;
+    kind: int;
+    size: int;
+    modified: int;
+    mode: int;
+    symlink: bool;
+}
+
+/// 读取文件元数据；不存在时 kind=FILE_MISSING、size/modified=-1。
+export function stat(path: string): FileInfo {
+    const found = exists(path) == 1;
+    const link = found && is_symlink(path);
+    const kind = !found ? FILE_MISSING : (link ? FILE_SYMLINK : (is_dir(path) == 1 ? FILE_DIRECTORY : FILE_REGULAR));
+    return {
+        exists: found,
+        kind,
+        size: kind == FILE_REGULAR ? file_size_path(path) : -1,
+        modified: found ? file_mtime(path) : -1,
+        mode: found ? file_mode(path) : 0,
+        symlink: link,
+    };
+}
+
+/// 规范绝对路径（清理 . / ..）；当前不跟随符号链接，适合配置/缓存键。
+export function path_canonicalize(path: string): string { return path_normalize(path_absolute(path)); }
+
 // ---------------------------------------------------------------------------
 // 中文函数名（转发到英文实现，火山风格命名）
 // ---------------------------------------------------------------------------

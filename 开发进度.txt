@@ -2176,3 +2176,15 @@ Sw 编译器（swcc）开发进度
      dotenv 加载、环境变量 + 文件配置的覆盖规则，优先支持命令行服务与运维脚本。
    - 暂缓：HTTP server、文件监听、gzip/zip/tar、async 网络。它们都需要长期句柄、并发或较大
      第三方实现，单线程 GC/异常运行时下风险高；待字节流与资源管理接口稳定后再做。
+
+2026-08-16 19:08  实用标准库与文件可靠性补全：
+   - 新增 `std/cli`：子命令、位置参数、长短参数、`--key=value`、默认值、重复参数和帮助文本。
+   - 新增 `std/bytes`、`std/crypto`：字节编码/切片/比较、大小端读写、系统安全随机字节、
+     常量时间比较与安全 token。
+   - 新增 `std/log`、`std/config`：分级 stderr/JSON 日志、dotenv、JSON/TOML 配置和环境覆盖。
+   - 扩展 `std/fs`、`std/json`、`std/toml`：FileInfo/stat、规范路径、安全临时文件、文本/字节原子写、
+     JSON/TOML 文件读写。运行时实现 Windows 与 POSIX 路径。
+   - 修正跨模块 MIR 全局索引复用；新增 probe-batch14 覆盖上述 API。
+   - 验证：cargo fmt --all -- --check、cargo test --workspace（58 项）、release 构建、
+     101 个既有示例回归和 batch14 运行均通过；交叉编译已验证 Linux x64 ELF、Linux arm64 ELF、
+     macOS arm64 Mach-O 目标对象。

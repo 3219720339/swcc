@@ -5440,6 +5440,8 @@ impl<'m, 's> MirLowerer<'m, 's> {
     }
 
     fn lower_module(&mut self) -> MirModule {
+        // 全局索引是当前 MirModule 的局部索引；模块之间不能复用。
+        self.global_index_by_symbol.clear();
         let mut module_mir = MirModule {
             module_id: self.state.id.0,
             functions: Vec::new(),

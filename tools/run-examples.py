@@ -107,6 +107,7 @@ EXPECTED = {
     "probe-batch11.sw": 0,
     "probe-batch12.sw": 0,
     "probe-batch13.sw": 0,
+    "probe-batch14.sw": 0,
     "probe-shortcircuit.sw": 0,
     "probe-generic-enum.sw": 0,
     "probe-narrow.sw": 0,
@@ -117,6 +118,7 @@ EXPECTED = {
 # 需要额外命令行参数的探针：name -> [参数...]
 ARGS = {
     "probe-flags.sw": ["--verbose", "--port=8080", "--host", "127.0.0.1", "--mode", "fast", "-v"],
+    "probe-batch14.sw": ["build", "input.sw", "--tag=one", "--tag", "two", "-vd", "--port", "9090"],
 }
 
 # 需要从 stdin 管道输入的探针：name -> 输入内容（input/input_int 等交互函数）
