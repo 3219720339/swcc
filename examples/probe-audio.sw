@@ -1,9 +1,43 @@
 import { println } from "std/io";
-import { wav_info_bytes, wav_gain_bytes, wav_speed_bytes, wav_fade_in_bytes, wav_fade_out_bytes, wav_mix_bytes, wav_waveform_peaks } from "std/audio";
+import { sleep_ms } from "std/time";
+import { platform } from "std/os";
+import { wav_info_bytes, wav_gain_bytes, wav_speed_bytes, wav_fade_in_bytes, wav_fade_out_bytes, wav_mix_bytes, wav_waveform_peaks,
+    audio_open, audio_play, audio_pause, audio_resume, audio_stop, audio_close, audio_seek,
+    audio_state, audio_position_ms, audio_duration_ms, audio_set_volume, audio_set_speed,
+    AUDIO_PLAYING, AUDIO_PAUSED } from "std/audio";
 
 function check(condition: bool, label: string): int {
     if (condition) { println(`[ok] ${label}`); return 1; }
     println(`[FAIL] ${label}`); return 0;
+}
+
+function play_demo(): int {
+    if (platform() != "windows") {
+        println("[skip] playback demo requires the native Windows audio backend");
+        return 1;
+    }
+    const path = "C:\\Users\\Administrator\\Music\\一颗狼星 - 白嫁衣_L.mp3";
+    const handle = audio_open(path);
+    if (handle <= 0) {
+        println("[skip] audio device or demo MP3 is unavailable");
+        return 1;
+    }
+    println(`playback: duration=${audio_duration_ms(handle)}ms, volume=${audio_set_volume(handle, 100)}, speed=${audio_set_speed(handle, 100)}`);
+    const started = audio_play(handle);
+    sleep_ms(3000);
+    const before_pause = audio_position_ms(handle);
+    const paused = audio_pause(handle);
+    println(`playback: started=${started}, position=${before_pause}ms, pause=${paused}, state=${audio_state(handle)}`);
+    sleep_ms(1000);
+    const frozen = audio_position_ms(handle);
+    const resumed = audio_resume(handle);
+    const seeked = audio_seek(handle, 30000);
+    println(`playback: frozen=${frozen}ms, resume=${resumed}, seek=${seeked}, state=${audio_state(handle)}`);
+    // Keep the process alive long enough to hear the resumed and seeked audio.
+    sleep_ms(10000);
+    const final_state = audio_state(handle);
+    audio_stop(handle); audio_close(handle);
+    return check(paused == 0 && resumed == 0 && seeked == 0 && final_state >= AUDIO_PLAYING && frozen == before_pause, "playback controls");
 }
 
 function main(): int {
@@ -32,6 +66,7 @@ function main(): int {
     const peaks = wav_waveform_peaks(wav, 2);
     println(`waveform peaks: [${peaks[0]}, ${peaks[1]}]`);
     passed = passed & check(peaks.length == 2 && peaks[0] == 100 && peaks[1] == 99, "wav waveform");
+    passed = passed & play_demo();
     println(`final=${passed == 1 ? "PASS" : "FAIL"}`);
     return passed == 1 ? 0 : 1;
 }
