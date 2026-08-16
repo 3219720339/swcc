@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -137,6 +138,9 @@ fn main() {
     }
     if command == "fmt" {
         std::process::exit(cmd_fmt(&args));
+    }
+    if command == "clean" {
+        std::process::exit(cmd_clean(&args));
     }
     if !matches!(command, "check" | "build" | "run" | "test") {
         eprintln!("未知命令 `{command}`；可用 `swc help` 查看用法");
@@ -426,6 +430,7 @@ fn print_help() {
     println!("  run                编译、链接并运行");
     println!("  test               编译并运行 @test 测试（退出码=失败数）");
     println!("  fmt [--check]      格式化源文件；--check 仅检查格式");
+    println!("  clean [--yes]       清理当前项目 .swcache 编译缓存");
     println!("  init [-y]          在当前目录生成默认 swcc.toml（-y 覆盖已存在文件）");
     println!("  lsp                LSP 语言服务器（JSON-RPC over stdio，供编辑器接入）");
     println!("  help               显示本帮助");
@@ -482,6 +487,36 @@ fn cmd_fmt(args: &[String]) -> i32 {
         }
     }
     if check_only && needs_format { 1 } else { 0 }
+}
+
+/// 清理当前项目编译缓存。默认需要交互确认，`--yes` 用于脚本/CI。
+fn cmd_clean(args: &[String]) -> i32 {
+    let cache = Path::new(".swcache");
+    if !cache.exists() {
+        println!("没有需要清理的缓存：{}", cache.display());
+        return 0;
+    }
+    let confirmed = args.iter().any(|arg| arg == "--yes" || arg == "-y") || {
+        print!("将删除当前项目缓存目录 {}，继续吗？[y/N] ", cache.display());
+        let _ = io::stdout().flush();
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer).is_ok()
+            && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    };
+    if !confirmed {
+        println!("已取消，缓存未删除。");
+        return 0;
+    }
+    match fs::remove_dir_all(cache) {
+        Ok(()) => {
+            println!("已清理编译缓存：{}", cache.display());
+            0
+        }
+        Err(error) => {
+            eprintln!("清理缓存失败 `{}`：{error}", cache.display());
+            1
+        }
+    }
 }
 
 /// `swc init [-y]`：在当前目录生成默认 swcc.toml（已存在时不覆盖，除非 -y）。
