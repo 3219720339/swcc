@@ -2131,3 +2131,17 @@ Sw 编译器（swcc）开发进度
    - FnLower 增加词法 defer 栈、循环清理边界和含 defer 函数的隐式异常边界。
    - 正常作用域退出、return、break、continue、try/catch/finally 与跨函数异常传播均按 LIFO 执行。
    - 新增 examples/probe-defer.sw 并登记 tools/run-examples.py；本机编译运行通过。
+
+2026-08-16 18:33  下一批方向分析（GitHub Actions 三平台通过后）：
+   - 基础语法、进程、文件、文本、时间已形成较完整能力面，下一批不再优先堆叠零散标准库函数。
+   - 优先级 1：完成开发者体验。现有 `swc lsp` 已能做全文同步诊断和基础 hover，但声明了
+     definitionProvider 而未处理 textDocument/definition，且手写 JSON 解析依赖字段结构；应改用
+     可靠 JSON 解析并补齐定义跳转、真实类型 hover、增量变更和关闭文档的诊断清理。
+   - 优先级 2：实现 `swc fmt` 与 `--check`，接入 CI；AST/lexer/parser 已具备，收益高且跨平台风险低。
+   - 优先级 3：可靠性收口。清理 Rust 未使用项与 Cranelift 弃用 API，补充数组边界、进程参数、
+     符号链接、日期校验的负例回归，并为 parser/semantic 增加属性或 fuzz 测试。
+   - 语言层候选：全局变量运行时初始化与模块初始化顺序；并发/async 放到后续版本，因其会同时
+     改动 GC、异常帧和跨平台运行时，当前风险较高。
+   - 已核对旧限制：examples/probe-generic-enum.sw 已覆盖泛型 enum 的参数/返回值；semantic 已支持
+     对象字面量在 return、赋值和函数实参中的目标类型传播。docs/08-能力清单.md 与 docs/项目说明.md
+     仍有相应过期描述，实施下一批时一并修正。
