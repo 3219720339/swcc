@@ -1,7 +1,16 @@
 Sw 编译器（swcc）开发进度
 ==========================
 
-更新：2026-08-14（main）
+更新：2026-08-16（main）
+
+2026-08-16 17:17  项目结构学习与工作区验证：
+   - 已确认整体链路：sw_frontend（词法/语法/AST）→ sw_semantic（名称解析、类型检查、MIR）→
+     sw_codegen_cranelift（目标对象生成）→ swc（CLI/LSP/链接），runtime/runtime.c 提供 GC、异常、
+     I/O、字符串/容器等运行时 ABI，stdlib/ 提供 Sw 标准库。
+   - 已确认支持 Windows/Linux/macOS 的 x86_64/aarch64 目标；Linux 支持 musl 静态链接，Windows
+     aarch64 COFF 重定位仍为已知限制；examples 与 tools/run-examples.py 构成端到端回归入口。
+   - 已执行 cargo test --workspace：代码生成 9、词法 13、语法 12、语义 22，共 56 项测试全部通过。
+   - 工作区存在用户已有的未跟踪探针、临时目录和构建产物，本次未删除或修改。
 
 2026-08-15 22:10  修复 macOS probe-gc-memory 仍超时：降低探针规模。
    - 根因：30 万异常+30 万字符串+10 万 map（约 90 万次分配）在慢的 CI
