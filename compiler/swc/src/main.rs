@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use sw_codegen_cranelift::compile_module_for_target;
 use sw_common::{Diagnostics, Severity, Source};
@@ -291,7 +291,15 @@ fn main() {
 
     // ---- 代码生成（Cranelift，按目标 triple） ----
     eprintln!("正在生成目标代码...");
-    let cache_dir = PathBuf::from(".swcache").join("obj");
+    // 每次构建使用独立目录。旧实现固定写入 `mod_N.o`，两个 swc 进程同时
+    // 编译时会在链接前互相覆盖目标文件，造成错链或未定义符号。
+    let build_nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let cache_dir = PathBuf::from(".swcache")
+        .join("obj")
+        .join(format!("build-{}-{build_nonce}", std::process::id()));
     if let Err(error) = fs::create_dir_all(&cache_dir) {
         eprintln!("无法创建缓存目录：{error}");
         std::process::exit(2);

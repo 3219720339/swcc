@@ -2251,3 +2251,19 @@ Sw 编译器（swcc）开发进度
      完整 async 函数状态机、泛型任务结果、native 阻塞调用 scope 与抢占式取消留待后续。
    - 验证：cargo fmt、cargo test（58 项）、release 构建、102 个离线 examples 回归均通过；
      `probe-thread-task.sw` 交叉生成 Linux x64 ELF、Linux arm64 ELF、macOS arm64 Mach-O 对象成功。
+
+2026-08-16 20:42  块闭包循环控制流修复：
+   - 修复块闭包捕获收集：闭包内部的循环局部变量不再误占外部捕获槽位；上层闭包环境值可继续
+     传递给嵌套闭包。隐藏函数复用已检查的闭包返回签名，确保线程入口 ABI 一致。
+   - Cranelift while 降级在循环体和循环头完成后封闭 CFG，并避免终止分支重复生成回边；
+     `break`、`continue`、嵌套循环和捕获变量均有覆盖。
+   - `swc` 每次构建改用进程和时间戳独立的 `.swcache` 子目录，修复并发编译时 `mod_N` 对象
+     互相覆盖导致的错链/未定义符号。
+   - 新增 `closure-loop.sw` 语义回归，并强化 `probe-thread-task.sw` 为捕获变量 + 40000 次
+     循环的真实线程入口探针；移除 `std/thread` 和文档中的旧限制说明。
+
+2026-08-16 20:42  块闭包循环修复验证：
+   - `cargo fmt --all -- --check`、`cargo test --workspace`（59 项）和 release `swc` 构建通过。
+   - `probe-thread-task.sw` 连续本机运行 8 次均为 PASS；离线 examples 回归 102 个文件全部通过。
+   - 交叉生成并校验 Linux x64 ELF、Linux arm64 ELF、macOS arm64 Mach-O 对象；两个并发 `swc build`
+     使用不同输出文件均成功，确认构建缓存隔离生效。

@@ -1815,7 +1815,13 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 self.loops.push((header, exit));
                 self.stmts(body)?;
                 self.loops.pop();
-                self.builder.ins().jump(header, &[]);
+                if !self.last_terminated {
+                    self.builder.ins().jump(header, &[]);
+                }
+                // header 只在入口跳转与循环回边都生成后才能封闭。隐藏闭包函数
+                // 过去遗漏这个收口，含 while 的块闭包会生成不稳定控制流并崩溃。
+                self.builder.seal_block(body_block);
+                self.builder.seal_block(header);
                 self.builder.switch_to_block(exit);
                 self.builder.seal_block(exit);
                 self.last_terminated = false;

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use sw_semantic::analyze;
+use sw_semantic::{Type, analyze};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -26,6 +26,22 @@ fn checks_basic_program_and_generates_mir() {
         .expect("存在 main");
     assert!(main.locals.len() >= 1);
     assert!(!main.body.is_empty());
+}
+
+#[test]
+fn preserves_outer_captures_in_block_closures_with_loops() {
+    let result = analyze(&fixture("closure-loop.sw"), None);
+    assert!(
+        !result.diagnostics.has_errors(),
+        "{:?}",
+        result.diagnostics.items
+    );
+    let hidden = result.modules[0]
+        .functions
+        .iter()
+        .find(|function| function.name.starts_with("sw_closure_"))
+        .expect("存在闭包隐藏函数");
+    assert_eq!(hidden.ret, Type::Int);
 }
 
 #[test]

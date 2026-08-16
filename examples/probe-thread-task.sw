@@ -45,10 +45,13 @@ async function await_captured(value: int): int {
 }
 function main(): int {
     let passed = 1;
-    const prefix = "captured-";
-    const captured = 37;
+    const captured = 6;
     const worker = thread_spawn(() => {
-        return captured + prefix.length;
+        let i = 0;
+        while (i < 40000) {
+            i++;
+        }
+        return i + captured;
     });
     let pressure = "gc";
     let pressure_i = 0;
@@ -57,7 +60,7 @@ function main(): int {
         pressure_i++;
     }
     passed = passed & check(worker > 0 && thread_join(worker, - 1) == 0, "thread join after captured closure and gc");
-    passed = passed & check(thread_state(worker) == THREAD_COMPLETED && thread_result(worker) == 46, "thread result and state");
+    passed = passed & check(thread_state(worker) == THREAD_COMPLETED && thread_result(worker) == 40006, "thread captured loop result and state");
     const failed = thread_spawn(() => {
         throw "worker failure"; return 0;
     });

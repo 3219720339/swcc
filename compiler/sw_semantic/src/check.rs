@@ -8672,13 +8672,16 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             }
             ExprKind::Lambda { params, body } => {
                 let lambda_type = self.expr_type(expr);
-                let (lambda_params, lambda_ret) = match lambda_type {
+                let (lambda_params, inferred_ret) = match lambda_type {
                     Type::Function { params, ret } => (params, *ret),
                     other => {
                         self.error(format!("闭包类型未知：{}", other.display()), expr.span);
                         return MirExpr::Null;
                     }
                 };
+                // 类型检查阶段已为块闭包从显式 return 推导返回类型。隐藏函数必须
+                // 复用这个签名，保证闭包调用和任务入口的 ABI 一致。
+                let lambda_ret = inferred_ret;
                 let param_names: Vec<String> =
                     params.iter().map(|param| param.name.name.clone()).collect();
                 let mut captures = Vec::new();
@@ -8779,7 +8782,12 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
 
                 let capture_values: Vec<MirExpr> = captures
                     .iter()
-                    .filter_map(|(name, _)| self.lookup_local(name).map(MirExpr::Local))
+                    .filter_map(|(name, symbol)| {
+                        self.captures
+                            .get(symbol)
+                            .map(|slot| MirExpr::EnvGet { slot: *slot })
+                            .or_else(|| self.lookup_local(name).map(MirExpr::Local))
+                    })
                     .collect();
                 MirExpr::ClosureNew {
                     name: hidden_name,
@@ -8810,7 +8818,12 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     self.lowerer.symbol(symbol).kind,
                     SymbolKind::Local { .. } | SymbolKind::Param { .. }
                 );
-                if is_local && seen.insert(symbol.0) {
+                // 只捕获父函数实际可访问的值。此前这里仅依据 SymbolKind 判断，
+                // 会把块闭包内部的 `let i` 也加入 captures；构造环境时该 i 在父
+                // 作用域不存在又被跳过，后续真实捕获的槽位整体错位。
+                let available_from_parent = self.captures.contains_key(&symbol.0)
+                    || self.lookup_local(&ident.name).is_some();
+                if is_local && available_from_parent && seen.insert(symbol.0) {
                     out.push((ident.name.clone(), symbol.0));
                 }
             }

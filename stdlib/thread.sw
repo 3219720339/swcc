@@ -2,7 +2,6 @@
 //
 // 当前线程入口只接受 `() => int` 闭包。捕获环境由运行时根保护到任务结束，
 // 未捕获异常会转为 FAILED 状态，不会跨线程传播 longjmp。
-// 块闭包内含循环的控制流降级仍在完善，首版线程入口请把循环放在普通函数中调用。
 export const THREAD_RUNNING = 1;
 export const THREAD_COMPLETED = 2;
 export const THREAD_FAILED = 3;
