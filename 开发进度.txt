@@ -2193,7 +2193,8 @@ Sw 编译器（swcc）开发进度
    - 已将实用标准库提交同步推送至 GitHub 与码云 `main` 分支，GitHub Actions 用于后续跨平台构建验证。
 
 2026-08-16 19:23  下一批复杂能力路线分析：
-   - 优先实现同步服务端链路：`std/net` 补 listener/accept/timeout/close，`std/http` 增加请求、响应、
+   - 已复核：`std/net` 已具备 TCP listener/accept/timeout/close、UDP、解析、keepalive 和完整发送；
+     `std/http` 已具备阻塞客户端及 keep-alive。下一批直接在其上实现同步 HTTP 服务端的请求、响应、
      路由、JSON 与安全静态文件服务；限制请求体与路径穿越，先不引入 async。
    - 后续实现工程依赖管理：`swc add/fetch`、`swcc.lock`、GitHub/码云 Git 依赖、校验与本地缓存，
      以可复现构建为目标。
