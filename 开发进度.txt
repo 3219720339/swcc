@@ -2158,3 +2158,21 @@ Sw 编译器（swcc）开发进度
    - 验证：cargo fmt --all -- --check、cargo test --workspace（58 项）、cargo build --release -p swc、
      release fmt --check、无参数帮助均通过；JSON-RPC 进程级验证通过诊断、hover、definition、
      增量修改与关闭文档诊断清理。既有 Rust/Cranelift 警告仍待后续专项收口。
+
+2026-08-16 18:53  实用标准库方向分析（参考 Node.js / Rust std）：
+   - 当前 stdlib 已覆盖文本、时间、文件、路径、环境变量、进程、JSON、HTTP 客户端、正则、
+     哈希、Base64、随机 UUID/token 等大量底层函数；下一批不应重复增加零散同类 API。
+   - 优先级 1：新增 `std/cli`。在已有 flag_has/flag_value 上构建位置参数、短/长参数别名、
+     `--key=value`、重复参数、默认值、类型转换、子命令与自动 help。CLI 工具是 Sw 最直接的使用场景，
+     可主要用纯 Sw 实现，跨平台风险最低。
+   - 优先级 2：补齐文件可靠性层。提供 `FileInfo/stat`（类型、大小、mtime、权限、链接）、
+     `canonicalize`、原子写入（临时文件 + rename）、安全临时文件创建、读写 JSON/TOML 的高层包装。
+     现有 fs 具备原子操作所需的 mkdir_p/temp_file_path/rename/read/write 基础；这批能直接服务配置、
+     缓存、日志和构建工具。
+   - 优先级 3：新增 `std/bytes` 与 `std/crypto`。以 `u8[]` 为中心补 hex/base64 的字节版、
+     字节比较/拼接/切片、大小端整数读写、随机字节、常量时间比较；现有 string 编码和 SHA/HMAC
+     可复用，但二进制协议、文件校验和安全 token 仍缺通用入口。
+   - 优先级 4：新增 `std/log` 与 `std/config`。提供带级别/时间/颜色的 stderr 日志、JSON 行日志、
+     dotenv 加载、环境变量 + 文件配置的覆盖规则，优先支持命令行服务与运维脚本。
+   - 暂缓：HTTP server、文件监听、gzip/zip/tar、async 网络。它们都需要长期句柄、并发或较大
+     第三方实现，单线程 GC/异常运行时下风险高；待字节流与资源管理接口稳定后再做。
