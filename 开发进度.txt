@@ -2,6 +2,30 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 04:10  修复 Bug #2（catch 无注解 e 不可用）+ Bug #3（lambda 返回类型注解）：
+   - Bug #2 `catch (e)` 无类型注解时 e 完全不可用（中严重度，文档违背）：
+     docs/06 承诺"catch (e) 不写类型捕获所有异常"，但 check.rs 无注解时
+     e 类型为 Type::Unknown，模板插值/比较/属性访问全部报错。
+     修复：检查端（check_stmt）与降级端（FnLower）无注解 catch 变量类型
+     统一兜底为 Type::Str（throw 只支持 string/class，string 是最常用
+     可操作类型）；降级端原为 Type::Error 一并修正。`catch (e: string)`
+     与 `catch (e: SomeClass)` 显式注解行为不变。
+   - Bug #3 带返回类型注解的 lambda 无法编译（中严重度，文档违背）：
+     docs/02:73 与 docs/00:30 的示例 `(x: int): int => x * 2` 编译报
+     "分组表达式缺少 )"——EBNF 缺 lambda 返回类型。
+     修复：ExprKind::Lambda 增加 ret: Option<TypeRef>；parser 两处
+     （无参/有参分支）在 `)` 后解析可选 `: 返回类型`；语义层检查端校验
+     推断返回类型与声明兼容（不匹配报"lambda 返回类型不匹配"）并优先用
+     声明类型（ABI 以声明为准）。
+   - 新增探针 probe-lambda.sw（8 项：表达式体/块体/多参/string 返回/
+     一元负号/无注解回归/闭包捕获+注解）；probe-exceptions.sw 扩展
+     无注解 catch 断言；parser 单测 parses_lambdas_and_new 扩展。
+     注册 run-examples.py（112 项）。
+   - 文档：docs/08-能力清单.md（lambda 返回类型注解）、docs/06-错误处理.md
+     （catch 无注解 e 按 string 推断）。
+   - 验证：cargo fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 112 examples 回归通过。
+
 2026-08-17 03:10  修复 Bug #4（静态字段初值）+ Bug #1（as 宽度转换截断）：
    - Bug #4 静态字段带初始值行为错误/崩溃（高严重度）：
      a) 根因 1：静态字段生成的 MirGlobal 恒为 init: None，声明时的初始化

@@ -454,6 +454,8 @@ pub enum ExprKind {
     },
     Lambda {
         params: Vec<LambdaParam>,
+        /// 可选的返回类型注解 `(x: int): int => ...`。
+        ret: Option<TypeRef>,
         body: LambdaBody,
     },
 }

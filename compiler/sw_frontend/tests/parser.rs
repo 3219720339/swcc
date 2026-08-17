@@ -209,6 +209,9 @@ fn parses_lambdas_and_new() {
             const double = (x: int) => x * 2;
             const add = (a, b) => a + b;
             const point = new Point(1, 2);
+            // 带返回类型注解的 lambda（bug #3 修复）
+            const typed = (x: int): int => x * 2;
+            const block_typed = (): int => { return 5; };
             return add(1, 2);
         }
         "#,
@@ -217,7 +220,7 @@ fn parses_lambdas_and_new() {
     let ItemKind::Function(function) = &module.items[0].kind else {
         panic!("预期函数");
     };
-    assert_eq!(function.body.as_ref().unwrap().statements.len(), 4);
+    assert_eq!(function.body.as_ref().unwrap().statements.len(), 6);
 }
 
 #[test]

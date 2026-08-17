@@ -2016,13 +2016,19 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         if self.at(&TokenKind::RParen) {
             self.advance();
+            // 可选返回类型注解 `(): int => ...`
+            let ret = if self.eat(&TokenKind::Colon) {
+                self.try_type()
+            } else {
+                None
+            };
             if !self.at(&TokenKind::FatArrow) {
                 return Ok(None);
             }
             self.advance();
             let body = self.parse_lambda_body()?;
             return Ok(Some(Expr {
-                kind: ExprKind::Lambda { params, body },
+                kind: ExprKind::Lambda { params, ret, body },
                 span: Span::new(start, self.peek().span.start),
             }));
         }
@@ -2044,19 +2050,24 @@ impl<'a> Parser<'a> {
             }
             if self.at(&TokenKind::RParen) {
                 self.advance();
-                break;
+                // 可选返回类型注解 `(x: int): int => ...`
+                let ret = if self.eat(&TokenKind::Colon) {
+                    self.try_type()
+                } else {
+                    None
+                };
+                if !self.at(&TokenKind::FatArrow) {
+                    return Ok(None);
+                }
+                self.advance();
+                let body = self.parse_lambda_body()?;
+                return Ok(Some(Expr {
+                    kind: ExprKind::Lambda { params, ret, body },
+                    span: Span::new(start, self.peek().span.start),
+                }));
             }
             return Ok(None);
         }
-        if !self.at(&TokenKind::FatArrow) {
-            return Ok(None);
-        }
-        self.advance();
-        let body = self.parse_lambda_body()?;
-        Ok(Some(Expr {
-            kind: ExprKind::Lambda { params, body },
-            span: Span::new(start, self.peek().span.start),
-        }))
     }
 
     fn try_ident(&mut self) -> Option<Ident> {

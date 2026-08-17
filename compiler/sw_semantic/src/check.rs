@@ -2616,11 +2616,15 @@ impl<'s> Checker<'s> {
             } => {
                 self.check_block(body);
                 for catch in catches {
+                    // catch 变量类型：带注解按注解类型；无注解（`catch (e)`）
+                    // 文档承诺"捕获所有异常"，兜底为 string（throw 只支持
+                    // string/class，string 是最常见的可操作兜底）。此前无注解
+                    // 用 Type::Unknown 导致 e 完全不可用（bug #2）。
                     let catch_ty = catch
                         .ty
                         .as_ref()
                         .map(|ty| self.lower_type(ty))
-                        .unwrap_or(Type::Unknown);
+                        .unwrap_or(Type::Str);
                     let id = self.alloc_local();
                     self.symbols[id.0 as usize].kind = SymbolKind::Local {
                         ty: catch_ty,
@@ -3452,7 +3456,7 @@ impl<'s> Checker<'s> {
                 }
                 Type::Str
             }
-            ExprKind::Lambda { params, body } => {
+            ExprKind::Lambda { params, ret, body } => {
                 let mut param_types = Vec::new();
                 self.scopes.push(HashMap::new());
                 for param in params {
@@ -3471,7 +3475,7 @@ impl<'s> Checker<'s> {
                         .insert(param.name.name.clone(), id);
                     param_types.push(ty);
                 }
-                let ret = match body {
+                let inferred = match body {
                     LambdaBody::Expr(expr) => self.check_expr(expr),
                     LambdaBody::Block(block) => {
                         self.check_block(block);
@@ -3495,9 +3499,32 @@ impl<'s> Checker<'s> {
                     }
                 };
                 self.scopes.pop();
+                // 显式返回类型注解 `(x: int): int => ...`：校验与推断类型兼容，
+                // 并优先用声明的返回类型（ABI 以声明为准）。
+                let ret_ty = match ret {
+                    Some(ty_ref) => {
+                        let declared = self.lower_type(ty_ref);
+                        if inferred != Type::Void
+                            && inferred != Type::Unknown
+                            && inferred != Type::Error
+                            && !self.is_assignable(&inferred, &declared)
+                        {
+                            self.error(
+                                format!(
+                                    "lambda 返回类型不匹配：推断为 {}，声明为 {}",
+                                    inferred.display(),
+                                    declared.display()
+                                ),
+                                ty_ref.span,
+                            );
+                        }
+                        declared
+                    }
+                    None => inferred,
+                };
                 Type::Function {
                     params: param_types,
-                    ret: Box::new(ret),
+                    ret: Box::new(ret_ty),
                 }
             }
         }
@@ -6912,7 +6939,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         .ty
                         .as_ref()
                         .map(|ty| self.lowerer.lower_type_for_mir(ty))
-                        .unwrap_or(Type::Error);
+                        .unwrap_or(Type::Str);
                     let catch_local = self.declare_local(&catch.name.name, catch_ty, false);
                     self.name_scopes
                         .last_mut()
@@ -8717,7 +8744,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
                 result
             }
-            ExprKind::Lambda { params, body } => {
+            ExprKind::Lambda { params, body, .. } => {
                 let lambda_type = self.expr_type(expr);
                 let (lambda_params, inferred_ret) = match lambda_type {
                     Type::Function { params, ret } => (params, *ret),
