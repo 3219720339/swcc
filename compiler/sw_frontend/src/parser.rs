@@ -521,16 +521,57 @@ impl<'a> Parser<'a> {
 
     fn parse_type(&mut self) -> Result<TypeRef, ()> {
         let start = self.peek().span.start;
-        let mut segments = Vec::new();
-        loop {
-            let name = self.expect_ident("类型名")?;
-            let generics = self.parse_type_generics()?;
-            segments.push(TypeSegment { name, generics });
-            if !self.eat(&TokenKind::Dot) {
-                break;
+        // 函数类型/括号分组：`(T1, T2) => R`、`() => R`、`(T)`、`((T) => R)[]`。
+        let mut function = None;
+        let mut grouped: Option<(Vec<TypeSegment>, Option<FunctionTypeRef>, Vec<TypeSuffix>)> =
+            None;
+        if self.at(&TokenKind::LParen) {
+            self.advance();
+            let empty = self.at(&TokenKind::RParen);
+            let mut params = Vec::new();
+            if !empty {
+                loop {
+                    params.push(self.parse_type()?);
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(&TokenKind::RParen, "类型缺少 `)`")?;
+            if self.at(&TokenKind::FatArrow) {
+                self.advance();
+                let ret = self.parse_type()?;
+                function = Some(FunctionTypeRef {
+                    params,
+                    ret: Box::new(ret),
+                });
+            } else if !empty && params.len() == 1 {
+                // 括号分组：`(T)` / `((T) => R)[]`——整体是内层类型，后缀在下方解析。
+                let inner = params.into_iter().next().unwrap();
+                grouped = Some((inner.segments, inner.function, inner.suffixes));
+            } else {
+                let span = self.peek().span;
+                self.error("`(T1, T2)` 后缺少 `=>`（函数类型）", span);
+                return Err(());
             }
         }
+        // 函数类型不解析 segments；括号分组沿用内层 segments。
+        let mut segments = Vec::new();
         let mut suffixes = Vec::new();
+        if let Some((inner_segments, inner_function, inner_suffixes)) = grouped {
+            segments = inner_segments;
+            function = inner_function;
+            suffixes = inner_suffixes;
+        } else if function.is_none() {
+            loop {
+                let name = self.expect_ident("类型名")?;
+                let generics = self.parse_type_generics()?;
+                segments.push(TypeSegment { name, generics });
+                if !self.eat(&TokenKind::Dot) {
+                    break;
+                }
+            }
+        }
         loop {
             if self.at(&TokenKind::LBracket) && matches!(self.peek_n(2).kind, TokenKind::RBracket) {
                 self.advance();
@@ -545,6 +586,7 @@ impl<'a> Parser<'a> {
         Ok(TypeRef {
             segments,
             suffixes,
+            function,
             span: Span::new(start, self.peek().span.start),
         })
     }

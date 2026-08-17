@@ -269,7 +269,15 @@ pub struct TypeRef {
     pub segments: Vec<TypeSegment>,
     /// 后缀按书写顺序保存：`int[]?` 为 [Array, Nullable]。
     pub suffixes: Vec<TypeSuffix>,
+    /// 函数类型：`(T1, T2) => R` / `() => R`（非空时 segments 为空）。
+    pub function: Option<FunctionTypeRef>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct FunctionTypeRef {
+    pub params: Vec<TypeRef>,
+    pub ret: Box<TypeRef>,
 }
 
 #[derive(Clone, Debug)]

@@ -2,6 +2,27 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 12:10  函数一等值闭环（回调）：函数类型注解 + 具名函数作值 + 回调存储：
+   - 背景：此前只有编译器特判的数组方法收闭包（map/filter/...）与
+     thread/task 任务；`f: (int) => int` 注解语法不存在（parse_type 只认
+     标识符+泛型+数组/可空），具名函数当值报"无法降级标识符"，自定义
+     高阶函数/回调字段全不可用。
+   - A 函数类型注解：parse_type 支持 `(T1, T2) => R` / `() => R` /
+     `(T)` 括号分组 / `((T) => R)[]` 后缀（函数数组）；TypeResolver.lower
+     映射 Type::Function 并应用后缀。
+   - B 具名函数作值：lower_expr Ident 分支识别 Function 符号，合成无捕获
+     适配器闭包（hidden 函数 `sw_closure_*` 转发调用，env 为空）；泛型/
+     extern 函数明确报错。`apply(double, 5)`、`nums.map(double)`、
+     `const f = double; f(21)` 均可用。
+   - C 回调调用落地：check_call Member 分支先解析函数类型字段
+     （`obj.cb(x)`/`this.cb(x)`，struct/class 通用）；catch-all 支持
+     函数类型表达式调用（`fns[0](x)`）；MIR 闭包调用的 closure_ty 泛化
+     到任意函数类型表达式。
+   - 新增探针 probe-callback.sw（12 项），注册 run-examples.py（121 项）。
+   - 文档：docs/08-能力清单.md（函数一等值/回调闭环、能力矩阵）、开发进度.txt。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 121 examples 回归通过。
+ 
 2026-08-17 11:20  数组 JS 方法 + 可空插值 + 类型转换优先级：
    - 数组方法（JS 标准名）：
      a) indexOf/includes：编译器内联线性查找（新 MirExpr::ArraySearch，

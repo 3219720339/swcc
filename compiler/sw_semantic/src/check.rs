@@ -1973,6 +1973,27 @@ impl<'a> TypeResolver<'a> {
     }
 
     fn lower(&mut self, ty: &TypeRef, generics: &[String]) -> Type {
+        // 函数类型：`(T1, T2) => R` / `() => R`（参数只写类型，不写名字）。
+        // 后缀同样适用：`((int) => int)[]` → 函数数组。
+        if let Some(function) = &ty.function {
+            let params = function
+                .params
+                .iter()
+                .map(|param| self.lower(param, generics))
+                .collect::<Vec<Type>>();
+            let ret = self.lower(&function.ret, generics);
+            let mut result = Type::Function {
+                params,
+                ret: Box::new(ret),
+            };
+            for suffix in &ty.suffixes {
+                result = match suffix {
+                    TypeSuffix::Array => Type::Array(Box::new(result)),
+                    TypeSuffix::Nullable => Type::Nullable(Box::new(result)),
+                };
+            }
+            return result;
+        }
         let builtin = |name: &str| -> Option<Type> {
             Some(match name {
                 "void" => Type::Void,
@@ -4244,6 +4265,58 @@ impl<'s> Checker<'s> {
                 name,
                 optional,
             } => {
+                // 函数类型字段调用（回调存储）：`obj.cb(x)` / `this.cb(x)`。
+                // 在静态/实例方法查找之前解析字段：字段类型是 Function 时按闭包调用。
+                let object_ty = self.check_expr(object);
+                let field_fn_ty = match object_ty.without_nullable() {
+                    Type::Struct(id) => self.types.structs[*id as usize]
+                        .fields
+                        .iter()
+                        .find(|field| field.name == name.name)
+                        .map(|field| field.ty.clone()),
+                    Type::Class(id) => {
+                        self.types
+                            .find_class_field(*id, &name.name)
+                            .map(|(class_id, index)| {
+                                self.types.classes[class_id as usize].fields[index]
+                                    .ty
+                                    .clone()
+                            })
+                    }
+                    _ => None,
+                }
+                .filter(|ty| matches!(ty.without_nullable(), Type::Function { .. }));
+                if let Some(Type::Function { params, ret }) =
+                    field_fn_ty.as_ref().map(|t| t.without_nullable())
+                {
+                    let ret = (**ret).clone();
+                    if args_ty.len() != params.len() {
+                        self.error(
+                            format!(
+                                "闭包字段 `{}` 调用参数数量不匹配：需要 {} 个，实际 {} 个",
+                                name.name,
+                                params.len(),
+                                args_ty.len()
+                            ),
+                            span,
+                        );
+                        return Type::Error;
+                    }
+                    for (arg_ty, param_ty) in args_ty.iter().zip(params.iter()) {
+                        if !self.is_assignable(arg_ty, param_ty) {
+                            self.error(
+                                format!(
+                                    "闭包字段 `{}` 参数类型不匹配：{} 不能赋给 {}",
+                                    name.name,
+                                    arg_ty.display(),
+                                    param_ty.display()
+                                ),
+                                span,
+                            );
+                        }
+                    }
+                    return self.record_call_result(span, ret);
+                }
                 // 类静态方法调用：ClassName.staticMethod(args)
                 if let ExprKind::Ident(type_ident) = &object.kind {
                     if let Some(SymbolId(id)) = self.lookup(&type_ident.name) {
@@ -4861,6 +4934,36 @@ impl<'s> Checker<'s> {
                 self.record_call_result(span, result)
             }
             _ => {
+                // 函数类型表达式调用（数组元素/分组等）：`fns[0](x)`。
+                let callee_ty = self.check_expr(callee);
+                let callee_inner = callee_ty.without_nullable().clone();
+                if let Type::Function { params, ret } = callee_inner {
+                    let ret = *ret;
+                    if args_ty.len() != params.len() {
+                        self.error(
+                            format!(
+                                "闭包调用参数数量不匹配：需要 {} 个，实际 {} 个",
+                                params.len(),
+                                args_ty.len()
+                            ),
+                            span,
+                        );
+                        return Type::Error;
+                    }
+                    for (arg_ty, param_ty) in args_ty.iter().zip(params.iter()) {
+                        if !self.is_assignable(arg_ty, param_ty) {
+                            self.error(
+                                format!(
+                                    "闭包参数类型不匹配：{} 不能赋给 {}",
+                                    arg_ty.display(),
+                                    param_ty.display()
+                                ),
+                                span,
+                            );
+                        }
+                    }
+                    return self.record_call_result(span, ret);
+                }
                 self.error("调用目标必须是函数名或方法", callee.span);
                 Type::Error
             }
@@ -8278,6 +8381,19 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     if let Some(global) = self.global_by_symbol.get(&symbol.0) {
                         return MirExpr::Global(*global as u32);
                     }
+                    // 具名函数作为值（回调/高阶函数实参）：合成无捕获适配器闭包。
+                    if let SymbolKind::Function(sig) = &self.lowerer.symbol(symbol).kind {
+                        if sig.extern_c {
+                            self.error("extern c 函数不能作为值传递", expr.span);
+                            return MirExpr::Int(0);
+                        }
+                        if !sig.generics.is_empty() {
+                            self.error("泛型函数不能作为值传递（请用闭包）", expr.span);
+                            return MirExpr::Int(0);
+                        }
+                        let sig = sig.clone();
+                        return self.function_as_closure(&sig, expr.span);
+                    }
                 }
                 self.error("无法降级标识符", expr.span);
                 MirExpr::Int(0)
@@ -8498,7 +8614,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             None => Type::Error,
                         }
                     }
-                    _ => Type::Error,
+                    // 函数类型字段/数组元素等：`obj.cb(x)` / `fns[0](x)`。
+                    _ => self.expr_type(callee),
                 };
                 if let Type::Function {
                     params: fn_params,
@@ -9660,6 +9777,90 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     sig: hidden_sig,
                 }
             }
+        }
+    }
+
+    /// 具名（非泛型、非 extern）函数作为值：合成无捕获适配器闭包。
+    /// 适配器签名带 $env（闭包调用约定），函数体直接转发到具名函数。
+    fn function_as_closure(&mut self, sig: &FunctionSig, span: Span) -> MirExpr {
+        let fn_name = stable_function_name(
+            sig,
+            self.lowerer
+                .module_stems
+                .get(&sig.module.0)
+                .map(String::as_str)
+                .unwrap_or("mod"),
+        );
+        let hidden_name = format!("sw_closure_{}_{}", self.lowerer.state.id.0, span.start);
+        let env_ty = Type::Ptr(Box::new(Type::I8));
+        let mut params = vec![MirParam {
+            name: "$env".to_owned(),
+            ty: env_ty.clone(),
+        }];
+        for (index, param) in sig.params.iter().enumerate() {
+            params.push(MirParam {
+                name: format!("arg{index}"),
+                ty: param.ty.clone(),
+            });
+        }
+        let call_args: Vec<MirExpr> = (1..=sig.params.len())
+            .map(|index| MirExpr::Local(index))
+            .collect();
+        let body = vec![MirStmt::new(MirStmtKind::Return(Some(MirExpr::Call {
+            callee: MirCallee::Function {
+                module: sig.module.0,
+                name: fn_name,
+                sig: sig.clone(),
+            },
+            args: call_args,
+        })))];
+        let locals = params
+            .iter()
+            .map(|param| MirLocal {
+                name: param.name.clone(),
+                ty: param.ty.clone(),
+                mutable: false,
+            })
+            .collect();
+        self.lowerer.hidden_functions.push(MirFunction {
+            name: hidden_name.clone(),
+            user_name: String::new(),
+            exported: false,
+            params,
+            ret: sig.ret.clone(),
+            locals,
+            body,
+            extern_c: false,
+            debug_index: u32::MAX,
+            source_line: 0,
+        });
+        let mut closure_sig = FunctionSig {
+            module: self.lowerer.state.id,
+            name: hidden_name.clone(),
+            generics: Vec::new(),
+            bounds: HashMap::new(),
+            params: vec![ParamSig {
+                name: "$env".to_owned(),
+                ty: env_ty,
+                has_default: false,
+                rest: false,
+            }],
+            ret: sig.ret.clone(),
+            extern_c: false,
+            span,
+        };
+        for param in &sig.params {
+            closure_sig.params.push(ParamSig {
+                name: param.name.clone(),
+                ty: param.ty.clone(),
+                has_default: param.has_default,
+                rest: param.rest,
+            });
+        }
+        MirExpr::ClosureNew {
+            name: hidden_name,
+            captures: Vec::new(),
+            sig: closure_sig,
         }
     }
 

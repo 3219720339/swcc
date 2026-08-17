@@ -132,6 +132,7 @@ EXPECTED = {
     "probe-cross-virtual.sw": 0,
     "probe-jsbasic.sw": 0,
     "probe-jsarrays.sw": 0,
+    "probe-callback.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]
