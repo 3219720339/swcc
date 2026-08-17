@@ -34,6 +34,7 @@ pub enum Keyword {
     Default,
     Defer,
     Destructor,
+    Do,
     Else,
     Enum,
     Export,
@@ -76,7 +77,6 @@ pub enum Keyword {
     UnsupportedUndefined,
     UnsupportedTypeof,
     UnsupportedInstanceof,
-    UnsupportedDo,
 }
 
 impl Keyword {
@@ -112,6 +112,7 @@ impl Keyword {
             "match" => Keyword::Match,
             "new" => Keyword::New,
             "null" => Keyword::Null,
+            "do" => Keyword::Do,
             "of" => Keyword::Of,
             "override" => Keyword::Override,
             "private" => Keyword::Private,
@@ -135,7 +136,6 @@ impl Keyword {
             "undefined" => Keyword::UnsupportedUndefined,
             "typeof" => Keyword::UnsupportedTypeof,
             "instanceof" => Keyword::UnsupportedInstanceof,
-            "do" => Keyword::UnsupportedDo,
             _ => return None,
         })
     }
@@ -191,11 +191,11 @@ impl Keyword {
             Keyword::Using => "using",
             Keyword::Virtual => "virtual",
             Keyword::While => "while",
+            Keyword::Do => "do",
             Keyword::UnsupportedVar => "var",
             Keyword::UnsupportedUndefined => "undefined",
             Keyword::UnsupportedTypeof => "typeof",
             Keyword::UnsupportedInstanceof => "instanceof",
-            Keyword::UnsupportedDo => "do",
         }
     }
 }

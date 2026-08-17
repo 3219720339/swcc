@@ -2502,6 +2502,18 @@ impl<'s> Checker<'s> {
                 self.loop_depth -= 1;
                 self.pop_narrowing(then_narrow, false);
             }
+            StmtKind::DoWhile { body, cond } => {
+                self.loop_depth += 1;
+                self.check_stmt(body);
+                self.loop_depth -= 1;
+                let ty = self.check_expr(cond);
+                if ty != Type::Bool {
+                    self.error(
+                        format!("do-while 条件必须是 bool，实际为 {}", ty.display()),
+                        cond.span,
+                    );
+                }
+            }
             StmtKind::For {
                 init,
                 cond,
@@ -3092,6 +3104,19 @@ impl<'s> Checker<'s> {
                     if target_ty != Type::Bool || !self.is_assignable(&value_ty, &target_ty) {
                         self.error(
                             format!("`&&=`/`||=` 需要 bool 目标，实际为 {}", target_ty.display()),
+                            target.span,
+                        );
+                    }
+                } else if *op == AssignOp::Coalesce {
+                    // `a ??= b`：目标可空且右侧可赋给其内部类型（与 `??` 二元规则一致）。
+                    if !matches!(target_ty, Type::Nullable(_))
+                        || !self.is_assignable(&value_ty, target_ty.without_nullable())
+                    {
+                        self.error(
+                            format!(
+                                "`??=` 左侧必须是可空类型，且右侧可赋给其内部类型（{}）",
+                                target_ty.display()
+                            ),
                             target.span,
                         );
                     }
@@ -3699,7 +3724,10 @@ impl<'s> Checker<'s> {
                 }
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                if left_ty.is_numeric() && left_ty == right_ty {
+                // 字符串按字典序比较（JS 语义），其余要求同类型数值。
+                if (left_ty == Type::Str && right_ty == Type::Str)
+                    || (left_ty.is_numeric() && left_ty == right_ty)
+                {
                     Type::Bool
                 } else {
                     self.binary_type_error(op, &left_ty, &right_ty, span);
@@ -4456,7 +4484,12 @@ impl<'s> Checker<'s> {
                     }
                     Type::Str => {
                         if let Some((runtime_name, param_tys, ret)) = string_method(&name.name) {
-                            if args_ty.len() != param_tys.len() {
+                            // JS 风格 slice(start) 可省略 end（MIR 降级补 i64::MAX）。
+                            let arity_ok = args_ty.len() == param_tys.len()
+                                || (name.name == "slice"
+                                    && param_tys.len() == 2
+                                    && args_ty.len() == 1);
+                            if !arity_ok {
                                 self.error(
                                     format!(
                                         "方法 `{}` 需要 {} 个参数，实际 {} 个",
@@ -5112,6 +5145,7 @@ fn stmt_contains_defer(statement: &Stmt) -> bool {
                 || else_.as_ref().is_some_and(|stmt| stmt_contains_defer(stmt))
         }
         StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. }
         | StmtKind::For { body, .. }
         | StmtKind::ForEach { body, .. } => stmt_contains_defer(body),
         StmtKind::Switch { cases, default, .. } => {
@@ -5575,6 +5609,22 @@ fn optional_fallback(ty: &Type) -> MirExpr {
 fn string_method(method: &str) -> Option<(String, Vec<Type>, Type)> {
     Some(match method {
         "to_upper" | "to_lower" | "trim" => (method.to_owned(), vec![], Type::Str),
+        // JS 标准方法名别名（转发到同语义运行时函数）。
+        "toUpperCase" => ("to_upper".to_owned(), vec![], Type::Str),
+        "toLowerCase" => ("to_lower".to_owned(), vec![], Type::Str),
+        "startsWith" => ("starts_with".to_owned(), vec![Type::Str], Type::Bool),
+        "endsWith" => ("ends_with".to_owned(), vec![Type::Str], Type::Bool),
+        "includes" => ("contains".to_owned(), vec![Type::Str], Type::Bool),
+        "indexOf" => ("index_of".to_owned(), vec![Type::Str], Type::Int),
+        "slice" => ("slice".to_owned(), vec![Type::Int, Type::Int], Type::Str),
+        "padStart" => ("pad_left".to_owned(), vec![Type::Int, Type::Str], Type::Str),
+        "padEnd" => (
+            "pad_right".to_owned(),
+            vec![Type::Int, Type::Str],
+            Type::Str,
+        ),
+        "charAt" => ("char_at".to_owned(), vec![Type::Int], Type::Str),
+        "charCodeAt" => ("char_code".to_owned(), vec![Type::Int], Type::Int),
         "trim_left" | "trim_right" => (method.to_owned(), vec![], Type::Str),
         "ends_with" => ("ends_with".to_owned(), vec![Type::Str], Type::Bool),
         "lines" | "split_whitespace" | "chars" => {
@@ -7019,6 +7069,36 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 self.loop_defer_depths.pop();
                 output.push(MirStmt::new(MirStmtKind::While { cond, body }));
             }
+            StmtKind::DoWhile { body, cond } => {
+                // do-while 降级为带首轮标志的 while：`let first = true; while (first ||
+                // cond) { first = false; body; }`。continue 跳回循环头会重新求值
+                // `first || cond`（首轮后即 cond），语义与 do-while 一致；
+                // break 走 while 的 exit 块。
+                let cond = self.lower_expr(cond);
+                let first_local = self.declare_local("$dofirst", Type::Bool, true);
+                let first_expr = MirExpr::Local(first_local);
+                let cleanup_depth = self.defer_scopes.len();
+                self.loop_defer_depths.push(cleanup_depth);
+                let mut body_stmts = Vec::new();
+                body_stmts.push(MirStmt::new(MirStmtKind::Assign {
+                    target: MirTarget::Local(first_local),
+                    value: MirExpr::Bool(false),
+                }));
+                body_stmts.extend(self.lower_stmts(&[body.as_ref().clone()]));
+                self.loop_defer_depths.pop();
+                output.push(MirStmt::new(MirStmtKind::VarDecl {
+                    local: first_local,
+                    init: Some(MirExpr::Bool(true)),
+                }));
+                output.push(MirStmt::new(MirStmtKind::While {
+                    cond: MirExpr::Binary {
+                        op: MirBinary::Or,
+                        left: Box::new(first_expr),
+                        right: Box::new(cond),
+                    },
+                    body: body_stmts,
+                }));
+            }
             StmtKind::For {
                 init,
                 cond,
@@ -7133,6 +7213,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 cases,
                 default,
             } => {
+                // 字符串 case 必须按内容比较（string_eq intrinsic），
+                // 裸 MirBinary::Eq 是指针比较，switch 会静默走 default。
+                let string_switch = self.expr_type(value) == Type::Str;
                 let value = self.lower_expr(value);
                 let mut chain = default
                     .as_ref()
@@ -7141,10 +7224,19 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 for case in cases.iter().rev() {
                     let case_value = self.lower_expr(&case.value);
                     let body = self.lower_switch_case_body(&case.body);
-                    let cond = MirExpr::Binary {
-                        op: MirBinary::Eq,
-                        left: Box::new(value.clone()),
-                        right: Box::new(case_value),
+                    let cond = if string_switch {
+                        MirExpr::Call {
+                            callee: MirCallee::Intrinsic {
+                                name: "string_eq".to_owned(),
+                            },
+                            args: vec![value.clone(), case_value],
+                        }
+                    } else {
+                        MirExpr::Binary {
+                            op: MirBinary::Eq,
+                            left: Box::new(value.clone()),
+                            right: Box::new(case_value),
+                        }
                     };
                     chain = vec![MirStmt::new(MirStmtKind::If {
                         cond,
@@ -8197,6 +8289,24 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         args: vec![self.lower_expr(left), self.lower_expr(right)],
                     };
                 }
+                // 字符串大小比较（字典序，JS 语义）：string_lt/le/gt/ge。
+                if self.expr_type(left) == Type::Str {
+                    let name = match op {
+                        BinaryOp::Lt => "string_lt",
+                        BinaryOp::Le => "string_le",
+                        BinaryOp::Gt => "string_gt",
+                        BinaryOp::Ge => "string_ge",
+                        _ => "unused",
+                    };
+                    if name != "unused" {
+                        return MirExpr::Call {
+                            callee: MirCallee::Intrinsic {
+                                name: name.to_owned(),
+                            },
+                            args: vec![self.lower_expr(left), self.lower_expr(right)],
+                        };
+                    }
+                }
                 MirExpr::Binary {
                     op: mir_binary(op),
                     left: Box::new(self.lower_expr(left)),
@@ -8673,6 +8783,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                 args.insert(0, self.lower_expr(object));
                             }
                             _ => {}
+                        }
+                        // JS 风格 slice(start)：省略 end 时补 i64::MAX（C 端钳制到末尾）。
+                        if runtime_name == "slice" && args.len() == 2 {
+                            args.push(MirExpr::Int(i64::MAX));
                         }
                         MirCallee::Extern {
                             name: runtime_name,
@@ -9421,6 +9535,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             StmtKind::While { cond, body } => {
                 self.collect_captures_expr(cond, lambda_params, out, seen);
                 self.collect_captures_stmt(body, lambda_params, out, seen);
+            }
+            StmtKind::DoWhile { body, cond } => {
+                self.collect_captures_stmt(body, lambda_params, out, seen);
+                self.collect_captures_expr(cond, lambda_params, out, seen);
             }
             StmtKind::For {
                 init,

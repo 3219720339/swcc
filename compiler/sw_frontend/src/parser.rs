@@ -169,7 +169,6 @@ impl<'a> Parser<'a> {
                         | Keyword::UnsupportedUndefined
                         | Keyword::UnsupportedTypeof
                         | Keyword::UnsupportedInstanceof
-                        | Keyword::UnsupportedDo
                 ) =>
             {
                 let keyword = *keyword;
@@ -615,6 +614,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Keyword(Keyword::If) => self.parse_if().ok()?,
             TokenKind::Keyword(Keyword::While) => self.parse_while().ok()?,
+            TokenKind::Keyword(Keyword::Do) => self.parse_do_while().ok()?,
             TokenKind::Keyword(Keyword::For) => self.parse_for().ok()?,
             TokenKind::Keyword(Keyword::Switch) => self.parse_switch().ok()?,
             TokenKind::Keyword(Keyword::Match) => self.parse_match().ok()?,
@@ -664,7 +664,6 @@ impl<'a> Parser<'a> {
                         | Keyword::UnsupportedUndefined
                         | Keyword::UnsupportedTypeof
                         | Keyword::UnsupportedInstanceof
-                        | Keyword::UnsupportedDo
                 ) =>
             {
                 let keyword = *keyword;
@@ -794,6 +793,24 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::RParen, "while 条件缺少 `)`")?;
         let body = Box::new(self.parse_statement().ok_or(())?);
         Ok(StmtKind::While { cond, body })
+    }
+
+    /// do { body } while (cond);
+    fn parse_do_while(&mut self) -> Result<StmtKind, ()> {
+        self.advance(); // do
+        let body = Box::new(self.parse_statement().ok_or(())?);
+        if !self.at_keyword(Keyword::While) {
+            let span = self.peek().span;
+            self.error("do 语句缺少 `while (条件)` 结尾", span);
+            return Err(());
+        }
+        self.advance(); // while
+        self.expect(&TokenKind::LParen, "do-while 条件缺少 `(`")?;
+        let cond = self.parse_expression()?;
+        self.expect(&TokenKind::RParen, "do-while 条件缺少 `)`")?;
+        self.expect(&TokenKind::Semicolon, "do-while 语句缺少 `;`")
+            .ok();
+        Ok(StmtKind::DoWhile { body, cond })
     }
 
     fn parse_for(&mut self) -> Result<StmtKind, ()> {
@@ -2150,7 +2167,6 @@ fn unsupported_hint(keyword: Keyword) -> &'static str {
         Keyword::UnsupportedUndefined => "空值请使用 `null`",
         Keyword::UnsupportedTypeof => "Sw 是静态类型语言，不需要运行时类型检查",
         Keyword::UnsupportedInstanceof => "类型判断请使用类型系统与显式转换",
-        Keyword::UnsupportedDo => "请使用 `while`",
         _ => "不支持",
     }
 }

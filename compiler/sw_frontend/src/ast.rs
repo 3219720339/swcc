@@ -309,6 +309,10 @@ pub enum StmtKind {
         cond: Expr,
         body: Box<Stmt>,
     },
+    DoWhile {
+        body: Box<Stmt>,
+        cond: Expr,
+    },
     For {
         init: Option<ForInit>,
         cond: Option<Expr>,

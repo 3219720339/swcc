@@ -2,6 +2,33 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 10:30  JS/TS 基础语法批次：switch 字符串 bug、??=、do-while、
+   字符串方法 JS 别名、字符串比较：
+   - 背景：探测发现 switch 字符串 case 静默走 default（降级为 if-else 链时
+     用裸 MirBinary::Eq 指针比较，绕过 string_eq 内容比较）；`??=` 报
+     "复合赋值需要数值目标"；`do` 是保留"不支持"关键字；JS 标准字符串
+     方法名（toLowerCase 等）与方法缺失；`"abc" < "abd"` 类型不匹配。
+   - switch 修复：switch 降级按值类型为 Str 时改发 string_eq intrinsic 调用。
+   - `??`/`??=`：`a ?? 5` 结果已收窄为非空（探针复核确认，此前误判为 bug）；
+     补 `??=` 校验分支（目标可空且右侧可赋给其内部类型），MIR 降级原有
+     Coalesce 路径直接生效。
+   - do-while：词法/语法/AST/语义/MIR 全链路（token.rs UnsupportedDo → Do；
+     StmtKind::DoWhile；parse_do_while；check_stmt 循环深度与 bool 条件；
+     collect_captures/defer 收集；MIR 降级为带首轮标志的 while，continue
+     语义与 do-while 一致）。break/continue 均可。
+   - 字符串方法 JS 别名（11 个）：toUpperCase/toLowerCase/startsWith/
+     endsWith/includes/indexOf/slice/padStart/padEnd/charAt/charCodeAt
+     （string_method 表转发到同语义运行时函数）；slice 支持省略 end
+     （MIR 补 i64::MAX，C 端钳制）与负索引；runtime.c 新增 slice/char_at/
+     string_compare 及 string_lt/le/gt/ge；stdlib/string.sw 补 slice extern。
+   - 字符串大小比较：check_binary 放行 Str 字典序比较，MIR 降级
+     string_lt/le/gt/ge intrinsic，codegen 映射 + 签名，runtime memcmp 实现。
+   - 新增探针 probe-jsbasic.sw（26 项），注册 run-examples.py（119 项）。
+   - 文档：docs/08-能力清单.md（do-while/switch 字符串/JS 别名/字符串比较/
+     ??=、能力矩阵）、开发进度.txt。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 119 examples 回归通过。
+ 
 2026-08-17 09:30  类继承虚方法派发 + 静态成员继承（类继承闭环）：
    - 背景：`const a: Animal = new Dog("d"); a.speak()` 输出基类实现 "?"
      （类方法调用点静态绑定，仅接口接收者走 vtable）；`Animal[] = [Dog, Cat]`

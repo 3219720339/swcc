@@ -1765,6 +1765,35 @@ int64_t string_ne(sw_string* a, sw_string* b) {
     return string_eq(a, b) ? 0 : 1;
 }
 
+/// 字节字典序比较：-1/0/1。
+int64_t string_compare(sw_string* a, sw_string* b) {
+    int64_t min_len = a->len < b->len ? a->len : b->len;
+    int64_t cmp = min_len > 0 ? memcmp(a->data, b->data, (uint64_t)min_len) : 0;
+    if (cmp != 0) {
+        return cmp < 0 ? -1 : 1;
+    }
+    if (a->len == b->len) {
+        return 0;
+    }
+    return a->len < b->len ? -1 : 1;
+}
+
+int64_t string_lt(sw_string* a, sw_string* b) {
+    return string_compare(a, b) < 0 ? 1 : 0;
+}
+
+int64_t string_le(sw_string* a, sw_string* b) {
+    return string_compare(a, b) <= 0 ? 1 : 0;
+}
+
+int64_t string_gt(sw_string* a, sw_string* b) {
+    return string_compare(a, b) > 0 ? 1 : 0;
+}
+
+int64_t string_ge(sw_string* a, sw_string* b) {
+    return string_compare(a, b) >= 0 ? 1 : 0;
+}
+
 int64_t index_of(sw_string* text, sw_string* needle) {
     if (needle->len == 0) {
         return 0;
@@ -2369,6 +2398,63 @@ sw_string* utf8_substring(sw_string* text, int64_t start, int64_t count) {
         taken++;
     }
     return sw_string_from_literal(text->data + offset, end - offset);
+}
+
+/// JS 风格 slice：按字符序号截取 [start, end)，end 排他；负索引从末尾倒数
+/// （-1 指最后一个字符）；越界钳制；start >= end 或无效返回空串。
+sw_string* slice(sw_string* text, int64_t start, int64_t end) {
+    if (text == NULL) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t total = utf8_len(text);
+    if (start < 0) {
+        start += total;
+    }
+    if (end < 0) {
+        end += total;
+    }
+    if (start < 0) {
+        start = 0;
+    }
+    if (end > total) {
+        end = total;
+    }
+    if (start >= end || start >= total) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t offset = 0;
+    int64_t position = 0;
+    while (offset < text->len && position < start) {
+        offset += sw_utf8_char_length(text->data, offset, text->len);
+        position++;
+    }
+    if (position < start) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t end_offset = offset;
+    while (end_offset < text->len && position < end) {
+        end_offset += sw_utf8_char_length(text->data, end_offset, text->len);
+        position++;
+    }
+    return sw_string_from_literal(text->data + offset, end_offset - offset);
+}
+
+/// JS 风格 charAt：取第 index 个字符为单字符串；越界返回空串（与 JS 一致）。
+sw_string* char_at(sw_string* text, int64_t index) {
+    if (text == NULL || index < 0) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t offset = 0;
+    int64_t position = 0;
+    while (offset < text->len && position < index) {
+        offset += sw_utf8_char_length(text->data, offset, text->len);
+        position++;
+    }
+    if (offset >= text->len) {
+        return sw_string_from_literal("", 0);
+    }
+    int64_t char_len = sw_utf8_char_length(text->data, offset, text->len);
+    return sw_string_from_literal(text->data + offset, char_len);
 }
 
 int64_t utf8_byte_len(sw_string* text) {

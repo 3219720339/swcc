@@ -32,6 +32,9 @@ export extern c function starts_with(text: string, prefix: string): bool;
 /// 截取 [start, start+length) 的字节片段；越界时自动裁剪。
 export extern c function substring(text: string, start: int, length: int): string;
 
+/// JS 风格 slice：按字符序号截取 [start, end)（end 排他）；负索引从末尾倒数。
+export extern c function slice(text: string, start: int, end: int): string;
+
 /// 转大写（仅 ASCII 字母）。
 export extern c function to_upper(text: string): string;
 
