@@ -2848,16 +2848,9 @@ Sw 编译器（swcc）开发进度
    - 本批未执行交叉编译；本机 release 构建、`cargo test --workspace`（67 项）、
      126 个注册 examples 回归、`probe-test` 5 项内嵌测试和 `probe-callbacks2` 均通过。
 
-2026-08-17 23:45  Windows SDK 分发包：
-   - 在全新目录 `dist/package-20260817-234423/` 生成 Windows x64 自包含 SDK，未覆盖或删除 dist 中既有文件。
-   - 产物为 `swc-windows-x64-0.1.2.zip`（37,553,245 字节），同目录生成 `SHA256SUMS`（52 项）；
-     zip SHA-256 为 `a37014c1b6f75b7d1f6c37fec8ab657b3f810f08d8af1ef37f232b3ba30c072e`。
-   - SDK 冒烟通过：清空 SW_TOOLCHAIN/SW_STDLIB/SW_RUNTIME 后，包内 swc 成功编译并运行 hello，
-     并成功编译联网探针 probe-batch11。
-
-2026-08-17 23:48  Windows SDK 重新打包：
-   - 在新的 `dist/package-20260817-234809/` 生成第二份 Windows x64 SDK 与独立 `SHA256SUMS`，
-     未覆盖或删除前一份及任何既有 dist 文件。
-   - 新 zip 为 `swc-windows-x64-0.1.2.zip`（37,553,245 字节），SHA-256 为
-     `0868139fb9c0ac33e7b3a66774675e0b96e32fb8ddb7325c711eca76cfc00323`。
-   - 脱离源码/外部工具链冒烟通过：SDK 内 swc 成功编译并运行 hello。
+2026-08-18 00:52  当前项目学习：
+   - 已复核工作区、编译入口和核心架构：`swc` 命令行负责读取、模块分析、目标文件编排与平台链接；
+     `sw_frontend` 完成词法/语法/AST，`sw_semantic` 负责名称解析、类型检查和 MIR，
+     `sw_codegen_cranelift` 负责按目标 triple 生成机器码，C 运行时与标准库提供运行期能力。
+   - 已确认验证入口为 `cargo test --workspace`、`tools/run-examples.py` 及 `swc test`；
+     当前分支比 origin/main 超前 2 个提交，且工作区已有用户的示例输出和临时文件改动，本次未修改或删除它们。
