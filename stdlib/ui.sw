@@ -18,7 +18,17 @@ export extern c function sw_ui_event_c(handle: ptr<void>): int;
 export extern c function sw_ui_event_d(handle: ptr<void>): int;
 export extern c function sw_ui_get_scale(handle: ptr<void>): int;
 export extern c function sw_ui_set_cursor(handle: ptr<void>, cursor: int): void;
+export extern c function sw_ui_set_title_bar(handle: ptr<void>, height: int): void;
 export extern c function sw_ui_last_error(handle: ptr<void>): int;
+export extern c function sw_ui_present(handle: ptr<void>): int;
+export extern c function sw_ui_canvas_clear(handle: ptr<void>, color: int): void;
+export extern c function sw_ui_canvas_fill_rect(handle: ptr<void>, x: float, y: float, w: float, h: float, color: int): void;
+export extern c function sw_ui_canvas_fill_round_rect(handle: ptr<void>, x: float, y: float, w: float, h: float, r: float, color: int): void;
+export extern c function sw_ui_canvas_stroke_round_rect(handle: ptr<void>, x: float, y: float, w: float, h: float, r: float, stroke_w: float, color: int): void;
+export extern c function sw_ui_canvas_fill_circle(handle: ptr<void>, cx: float, cy: float, r: float, color: int): void;
+export extern c function sw_ui_canvas_fill_linear_gradient(handle: ptr<void>, x: float, y: float, w: float, h: float, x0: float, y0: float, x1: float, y1: float, c0: int, c1: int): void;
+export extern c function sw_ui_canvas_draw_text(handle: ptr<void>, x: float, y: float, size: float, text: string, color: int): void;
+export extern c function sw_ui_canvas_text_width(handle: ptr<void>, size: float, text: string): float;
 
 /// 当前没有待处理事件。
 export const UI_EVENT_NONE = 0;
@@ -58,6 +68,56 @@ export struct UiEvent {
     b: int;
     c: int;
     d: int;
+}
+
+/// 保留绘制命令的 Canvas。坐标使用逻辑像素，运行时自动按当前 DPI 缩放；
+/// 全部方法返回 this 支持链式绘制。命令在 present() 时一次性光栅化并清空。
+export class Canvas {
+    private handle: ptr<void>;
+    internal constructor(handle: ptr<void>) {
+        this.handle = handle;
+    }
+    /// 清空当前帧命令并设置背景颜色（0xAARRGGBB）。
+    public function clear(color: int): Canvas {
+        sw_ui_canvas_clear(this.handle, color);
+        return this;
+    }
+    /// 添加一个实心矩形。
+    public function fill_rect(x: float, y: float, w: float, h: float, color: int): Canvas {
+        sw_ui_canvas_fill_rect(this.handle, x, y, w, h, color);
+        return this;
+    }
+    /// 添加一个圆角实心矩形（r 为圆角半径）。
+    public function fill_round_rect(x: float, y: float, w: float, h: float, r: float, color: int): Canvas {
+        sw_ui_canvas_fill_round_rect(this.handle, x, y, w, h, r, color);
+        return this;
+    }
+    /// 添加一个圆角描边矩形（stroke_w 为线宽）。
+    public function stroke_round_rect(x: float, y: float, w: float, h: float, r: float, stroke_w: float, color: int): Canvas {
+        sw_ui_canvas_stroke_round_rect(this.handle, x, y, w, h, r, stroke_w, color);
+        return this;
+    }
+    /// 添加一个实心圆。
+    public function fill_circle(cx: float, cy: float, r: float, color: int): Canvas {
+        sw_ui_canvas_fill_circle(this.handle, cx, cy, r, color);
+        return this;
+    }
+    /// 添加一个线性渐变矩形（端点坐标与矩形同坐标系，逻辑像素）。
+    public function fill_linear_gradient(x: float, y: float, w: float, h: float,
+                                         x0: float, y0: float, x1: float, y1: float,
+                                         c0: int, c1: int): Canvas {
+        sw_ui_canvas_fill_linear_gradient(this.handle, x, y, w, h, x0, y0, x1, y1, c0, c1);
+        return this;
+    }
+    /// 绘制文本（左上角对齐，size 为逻辑像素高度）。
+    public function draw_text(x: float, y: float, size: float, text: string, color: int): Canvas {
+        sw_ui_canvas_draw_text(this.handle, x, y, size, text, color);
+        return this;
+    }
+    /// 测量文本宽度（逻辑像素）。
+    public function text_width(size: float, text: string): float {
+        return sw_ui_canvas_text_width(this.handle, size, text);
+    }
 }
 
 /// 跨平台窗口与事件宿主。一个 Application 对应一个原生窗口；
@@ -112,6 +172,20 @@ export class Application {
     public function set_cursor(cursor: int): Application {
         sw_ui_set_cursor(this.handle, cursor);
         return this;
+    }
+    /// 设置自定义标题栏拖动区域高度（逻辑像素）；区域内的按下可拖动窗口。
+    /// frameless 窗口默认无系统标题栏，用本方法声明可拖动区域。
+    public function set_title_bar(height: int): Application {
+        sw_ui_set_title_bar(this.handle, height);
+        return this;
+    }
+    /// 取绘制表面；绘制命令可链式调用，最后用 present() 提交。
+    public function canvas(): Canvas {
+        return new Canvas(this.handle);
+    }
+    /// 提交绘制命令到窗口；返回 false 表示渲染后端错误。
+    public function present(): bool {
+        return sw_ui_present(this.handle) == 0;
     }
     /// 当前 DPI 缩放 ×1000（如 125% 显示 → 1250）。
     public function scale(): int {

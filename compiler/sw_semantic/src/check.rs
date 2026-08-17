@@ -3934,6 +3934,60 @@ impl<'s> Checker<'s> {
     }
 
     fn check_member(&mut self, object: &Expr, name: &Ident, optional: bool, span: Span) -> Type {
+        // 命名空间值成员：`ns.constant` / `ns.fn`（命名空间限定类型走类型解析）。
+        if let ExprKind::Ident(ns_ident) = &object.kind {
+            if let Some(SymbolId(id)) = self.lookup(&ns_ident.name) {
+                if let SymbolKind::Namespace(target) = &self.symbols[id as usize].kind {
+                    let target_names = self.module_names.get(target).cloned().unwrap_or_default();
+                    if let Some(symbol_ids) = target_names.get(&name.name) {
+                        for &symbol_id in symbol_ids {
+                            if !self.symbols[symbol_id.0 as usize].exported {
+                                continue;
+                            }
+                            match &self.symbols[symbol_id.0 as usize].kind {
+                                SymbolKind::Global { ty, .. } => {
+                                    self.state
+                                        .result
+                                        .ident_symbols
+                                        .insert(name.span.start, symbol_id);
+                                    // 登记进当前模块 names：跨模块全局提升依赖 names
+                                    //（与命名导入同一路径），否则降级找不到全局条目。
+                                    if !self.state.names.contains_key(&name.name) {
+                                        self.state.names.insert(name.name.clone(), vec![symbol_id]);
+                                    }
+                                    return ty.clone();
+                                }
+                                SymbolKind::Function(sig) if !sig.generics.is_empty() => {
+                                    self.error(
+                                        format!("泛型函数 `{}` 不能作为值使用", name.name),
+                                        name.span,
+                                    );
+                                    return Type::Error;
+                                }
+                                SymbolKind::Function(sig) => {
+                                    self.state
+                                        .result
+                                        .ident_symbols
+                                        .insert(name.span.start, symbol_id);
+                                    return Type::Function {
+                                        params: sig.params.iter().map(|p| p.ty.clone()).collect(),
+                                        ret: Box::new(sig.ret.clone()),
+                                    };
+                                }
+                                _ => {}
+                            }
+                        }
+                        self.error(format!("模块没有导出值 `{}`", name.name), name.span);
+                        return Type::Error;
+                    }
+                    self.error(
+                        format!("命名空间 `{}` 没有成员 `{}`", ns_ident.name, name.name),
+                        name.span,
+                    );
+                    return Type::Error;
+                }
+            }
+        }
         // 类静态字段/方法访问：ClassName.member（类型名作为值解析为 Error）。
         if let ExprKind::Ident(type_ident) = &object.kind {
             if let Some(SymbolId(id)) = self.lookup(&type_ident.name) {
@@ -8785,6 +8839,36 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         acc.unwrap_or(MirExpr::Bool(true))
     }
 
+    fn lower_symbol_ref(&mut self, symbol: SymbolId, span: Span) -> MirExpr {
+        if let Some(slot) = self.captures.get(&symbol.0) {
+            let ty = match &self.lowerer.symbol(symbol).kind {
+                SymbolKind::Local { ty, .. }
+                | SymbolKind::Param { ty }
+                | SymbolKind::Global { ty, .. } => substitute_type(ty, &self.type_args),
+                _ => Type::Error,
+            };
+            return MirExpr::EnvGet { slot: *slot, ty };
+        }
+        if let Some(global) = self.global_by_symbol.get(&symbol.0) {
+            return MirExpr::Global(*global as u32);
+        }
+        // 具名函数作为值（回调/高阶函数实参）：合成无捕获适配器闭包。
+        if let SymbolKind::Function(sig) = &self.lowerer.symbol(symbol).kind {
+            if sig.extern_c {
+                self.error("extern c 函数不能作为值传递", span);
+                return MirExpr::Int(0);
+            }
+            if !sig.generics.is_empty() {
+                self.error("泛型函数不能作为值传递（请用闭包）", span);
+                return MirExpr::Int(0);
+            }
+            let sig = sig.clone();
+            return self.function_as_closure(&sig, span);
+        }
+        self.error("无法降级符号引用", span);
+        MirExpr::Int(0)
+    }
+
     fn lower_expr(&mut self, expr: &Expr) -> MirExpr {
         match &expr.kind {
             ExprKind::Integer { text, suffix } => {
@@ -8815,31 +8899,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     return MirExpr::Local(local);
                 }
                 if let Some(symbol) = self.result().ident_symbols.get(&expr.span.start).copied() {
-                    if let Some(slot) = self.captures.get(&symbol.0) {
-                        let ty = match &self.lowerer.symbol(symbol).kind {
-                            SymbolKind::Local { ty, .. }
-                            | SymbolKind::Param { ty }
-                            | SymbolKind::Global { ty, .. } => substitute_type(ty, &self.type_args),
-                            _ => Type::Error,
-                        };
-                        return MirExpr::EnvGet { slot: *slot, ty };
-                    }
-                    if let Some(global) = self.global_by_symbol.get(&symbol.0) {
-                        return MirExpr::Global(*global as u32);
-                    }
-                    // 具名函数作为值（回调/高阶函数实参）：合成无捕获适配器闭包。
-                    if let SymbolKind::Function(sig) = &self.lowerer.symbol(symbol).kind {
-                        if sig.extern_c {
-                            self.error("extern c 函数不能作为值传递", expr.span);
-                            return MirExpr::Int(0);
-                        }
-                        if !sig.generics.is_empty() {
-                            self.error("泛型函数不能作为值传递（请用闭包）", expr.span);
-                            return MirExpr::Int(0);
-                        }
-                        let sig = sig.clone();
-                        return self.function_as_closure(&sig, expr.span);
-                    }
+                    return self.lower_symbol_ref(symbol, expr.span);
                 }
                 self.error("无法降级标识符", expr.span);
                 MirExpr::Int(0)
@@ -9819,6 +9879,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 name,
                 optional,
             } => {
+                // 命名空间值成员：`ns.constant` / `ns.fn`（检查期已登记 ident_symbols）。
+                if let Some(symbol) = self.result().ident_symbols.get(&name.span.start).copied() {
+                    return self.lower_symbol_ref(symbol, expr.span);
+                }
                 // 类静态字段访问：ClassName.field → 模块级全局。
                 if let Some(StaticMemberTarget::Field(class, index)) = self
                     .result()

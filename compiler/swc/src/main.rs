@@ -396,6 +396,10 @@ fn run() {
                     dll,
                     &result.modules,
                     &config,
+                    result
+                        .module_sources
+                        .iter()
+                        .any(|(path, _)| path.file_name().is_some_and(|name| name == "ui.sw")),
                 ),
                 "linux" => link_linux(&options.target, &objects, &output, dll),
                 "macos" => link_macos(&options.target, &objects, &output, dll, &config),
@@ -776,6 +780,7 @@ fn link_windows(
     dll: bool,
     modules: &[MirModule],
     config: &SwConfig,
+    gui: bool,
 ) {
     let sdk = locate_sdk(target).unwrap_or_else(|| {
         eprintln!("未找到工具链；请设置 SW_TOOLCHAIN 指向 llvm-mingw 目录");
@@ -837,6 +842,12 @@ fn link_windows(
         args.push(def_path.as_os_str().to_os_string());
     } else {
         args.push("--gc-sections".into());
+        // 导入 std/ui 的程序自动使用 GUI 子系统：不分配控制台窗口。
+        // GUI 子系统默认入口为 WinMainCRTStartup，显式指回 mainCRTStartup。
+        if gui {
+            args.push("/subsystem:windows".into());
+            args.push("/entry:mainCRTStartup".into());
+        }
     }
     // 版本信息/图标对 exe 与 dll 都生效（VERSIONINFO 资源）。
     if let Some(resource) = windows_resource_object(target, config, output, dll) {
@@ -1327,6 +1338,11 @@ fn file_hash(path: &Path) -> Option<String> {
         .is_some_and(|name| name == "runtime_audio.c")
     {
         let header = path.join("..").join("vendor/miniaudio/miniaudio.h");
+        bytes.extend(fs::read(header).ok()?);
+    }
+    // runtime_ui.c includes vendored stb_truetype.h（字体光栅化）。
+    if path.file_name().is_some_and(|name| name == "runtime_ui.c") {
+        let header = path.join("..").join("vendor/stb/stb_truetype.h");
         bytes.extend(fs::read(header).ok()?);
     }
     let mut hash: u64 = 0xcbf29ce484222325;

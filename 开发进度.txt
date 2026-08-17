@@ -2848,6 +2848,27 @@ Sw 编译器（swcc）开发进度
    - 本批未执行交叉编译；本机 release 构建、`cargo test --workspace`（67 项）、
      126 个注册 examples 回归、`probe-test` 5 项内嵌测试和 `probe-callbacks2` 均通过。
 
+2026-08-18 03:20  UI P2：绘制 + 控件 + 主题 + 交互体验（照 docs/11-UI设计.md）：
+   - runtime_ui.c 大幅扩展：CPU 光栅化（fill_rect/圆角/描边/圆形/线性渐变，
+     2×2 超采样 AA）+ stb_truetype 文字（vendor/stb 单头，系统字体探测
+     微软雅黑/simhei，中文开箱即用）；命令缓冲（文本拷贝进 C 内存防 GC）；
+     present() 重放 → DIB section 双缓冲 → BitBlt；frameless 窗口
+     （WS_POPUP+WS_THICKFRAME，WM_NCHITTEST 边缘缩放 + set_title_bar 拖动区）；
+     主屏工作区居中；DPI 变化保持逻辑尺寸重算物理尺寸。
+   - stdlib/ui.sw 增 Canvas（clear/fill_rect/fill_round_rect/stroke_round_rect/
+     fill_circle/fill_linear_gradient/draw_text/text_width，全链式）+ present +
+     set_title_bar。
+   - 新增 stdlib/ui_widgets.sw：Panel/Label/Button + theme_light/theme_dark
+     （纯 Sw 数据驱动控件，hover 反馈）；新增 examples/demo-ui.sw（常驻演示：
+     自定义标题栏 + 关闭 X + Esc 退出 + 主题切换，不注册回归）。
+   - 编译器：导入 std/ui 自动 GUI 子系统（/subsystem:windows + 显式
+     /entry:mainCRTStartup，无控制台窗口）；命名空间导入补齐值成员解析
+     （ns.常量/ns.函数，跨模块全局提升路径），`import * as ui` 一次性导入。
+   - 验证：probe-ui 绘制 120 帧无崩溃、demo 截图像素级校验（标题栏/蓝按钮/
+     红 X/白面板颜色全部正确）、cargo test 67 全绿、release 127 examples
+     回归通过、fmt 通过、零警告。
+   - 遗留：X11/Cocoa 后端（P3）、TextField（需 TEXT_INPUT 管线）、
+     GL/NanoVG 升级（当前 CPU 渲染已满足，留作 P4）。
 2026-08-18 02:10  UI P1：窗口 + 事件（Win32，照 docs/11-UI设计.md）：
    - 新增 runtime/runtime_ui.c：平台层（Win32 真实现 + 非 Windows 安全 stub），
      含窗口生命周期、MsgWaitForMultipleObjectsEx 有界 pump（16ms 级）、
