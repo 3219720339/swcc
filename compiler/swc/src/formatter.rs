@@ -34,9 +34,13 @@ pub fn format_source(source: &str) -> String {
     let mut previous: Option<TokenKind> = None;
     let mut previous_text = "";
     let mut line_start = true;
+    // 未配对的三元 `?` 计数：遇到三元中缀 `?` 加一，遇到配对 `:` 减一并
+    // 让 `:` 前后留空格；否则 `:` 按对象字段/类型注解处理（前无空格）。
+    let mut ternary_depth = 0usize;
 
     for (index, token) in tokens.iter().enumerate() {
         let next = tokens.get(index + 1).map(|item| item.kind);
+        let next_text = tokens.get(index + 1).map(|item| item.text);
         match token.kind {
             TokenKind::LineComment => {
                 if !line_start {
@@ -102,8 +106,17 @@ pub fn format_source(source: &str) -> String {
                 }
             }
             TokenKind::Colon => {
-                output.push(':');
-                space(&mut output);
+                if ternary_depth > 0 {
+                    // 三元 `a ? b : c` 的冒号：前后留空格。
+                    space(&mut output);
+                    output.push(':');
+                    space(&mut output);
+                    ternary_depth -= 1;
+                } else {
+                    // 对象字段 / 类型注解 `x: int`：前无空格、后有空格。
+                    output.push(':');
+                    space(&mut output);
+                }
             }
             TokenKind::OpenParen => {
                 if matches!(previous, Some(TokenKind::Word))
@@ -135,9 +148,62 @@ pub fn format_source(source: &str) -> String {
                     || token.text == "~"
                     || token.text == "++"
                     || token.text == "--"
-                    || token.text == "?"
                 {
                     output.push_str(token.text);
+                } else if token.text == "?" {
+                    // `?` 三种语义按下一个 token 区分：
+                    //  1) 三元中缀 `a ? b : c`：`?` 后是表达式开头 → 前后留空格；
+                    //  2) 可空类型后缀 `int?`：`?` 后是 `{`（函数体）或边界 →
+                    //     前无空格，`{` 前需空格；
+                    //  3) TryOp 后缀 `expr?`：`?` 后是 `;`/`)` 等边界 → 前无空格。
+                    let ternary = matches!(
+                        next,
+                        Some(
+                            TokenKind::Word
+                                | TokenKind::String
+                                | TokenKind::OpenParen
+                                | TokenKind::OpenBracket
+                        )
+                    ) || matches!(
+                        next_text,
+                        Some("!" | "~" | "-" | "+")
+                    );
+                    if ternary {
+                        space(&mut output);
+                        output.push('?');
+                        space(&mut output);
+                        ternary_depth += 1;
+                    } else {
+                        output.push('?');
+                        if next == Some(TokenKind::OpenBrace) {
+                            space(&mut output);
+                        }
+                    }
+                } else if token.text == "-" || token.text == "+" {
+                    // 一元 `-`/`+`（前一个 token 是运算符/括号/逗号/冒号等）
+                    // 后紧跟操作数；二元则前后留空格。`(`/`[`/`{` 后的一元
+                    // 不加前空格（`f(-1)`、`[-1]`）。
+                    let unary = previous.map(|kind| {
+                        matches!(
+                            kind,
+                            TokenKind::Operator
+                                | TokenKind::OpenParen
+                                | TokenKind::OpenBracket
+                                | TokenKind::Comma
+                                | TokenKind::Colon
+                                | TokenKind::OpenBrace
+                        )
+                    }).unwrap_or(true);
+                    if unary {
+                        if !matches!(previous, Some(TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace)) {
+                            space(&mut output);
+                        }
+                        output.push_str(token.text);
+                    } else {
+                        space(&mut output);
+                        output.push_str(token.text);
+                        space(&mut output);
+                    }
                 } else {
                     space(&mut output);
                     output.push_str(token.text);
@@ -333,6 +399,38 @@ mod tests {
         assert_eq!(
             format_source("function main():int{let x=1;// hi\nreturn x;}"),
             "function main(): int {\n    let x = 1;\n    // hi\n    return x;\n}\n"
+        );
+    }
+
+    #[test]
+    fn formats_ternary_with_spaces_around_q_and_colon() {
+        assert_eq!(
+            format_source("const x=a>=0.0?0:1;"),
+            "const x = a >= 0.0 ? 0 : 1;\n"
+        );
+    }
+
+    #[test]
+    fn keeps_nullable_type_and_tryop_suffix_tight() {
+        assert_eq!(
+            format_source("function parse(x:int):int?{return x>0?x:null;}\nconst v=parse(5)?;"),
+            "function parse(x: int): int? {\n    return x > 0 ? x : null;\n}\nconst v = parse(5)?;\n"
+        );
+    }
+
+    #[test]
+    fn keeps_unary_minus_tight_in_ternary_and_args() {
+        assert_eq!(
+            format_source("const y=b>0?-1:2;\nconst f=fn_call(-1,+2);"),
+            "const y = b > 0 ? -1 : 2;\nconst f = fn_call(-1, +2);\n"
+        );
+    }
+
+    #[test]
+    fn formats_binary_minus_with_spaces() {
+        assert_eq!(
+            format_source("const sub=a-b;\nconst neg=-a;"),
+            "const sub = a - b;\nconst neg = -a;\n"
         );
     }
 }
