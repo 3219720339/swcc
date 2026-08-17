@@ -122,6 +122,7 @@ EXPECTED = {
     "probe-slice-bounds.sw": 0,
     "probe-args-quote.sw": 0,
     "probe-symlink.sw": 0,
+    "probe-cast.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]

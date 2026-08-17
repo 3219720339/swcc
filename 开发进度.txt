@@ -2,6 +2,36 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 03:10  修复 Bug #4（静态字段初值）+ Bug #1（as 宽度转换截断）：
+   - Bug #4 静态字段带初始值行为错误/崩溃（高严重度）：
+     a) 根因 1：静态字段生成的 MirGlobal 恒为 init: None，声明时的初始化
+        表达式被丢弃 → int 静默返回 0、string 初值运行时崩溃。
+        修复：FieldInfo 增加 default 字段携带初始化表达式；静态字段全局
+        生成移到函数/方法降级之前（此前在类循环里、函数降级之后，main
+        里查 static_field_globals 落空返回 Int(0)），并把 default 用
+        const_mir 降级为 MirGlobal.init。
+     b) 根因 2：expr_type 的 Member 分支不识别静态字段 → float 静态字段
+        在 varargs/模板插值里被当 i64（codegen IR 校验失败）。
+        修复：按 static_member_targets 表查静态字段类型。
+     c) string 静态字段/顶层 string 全局（const S = "hello"）同样崩溃：
+        数据段无法静态表示 sw_string {data,len}（运行时才构造）。
+        修复：const_type 排除字符串/数组字面量 → 编译期明确报错
+        （"初始化式必须是编译期常量"），不再运行时崩溃。
+   - Bug #1 `as` 整数宽度转换不截断（文档违背，中严重度）：
+     `300 as u8` 此前输出 300。修复 codegen MirExpr::Cast：按目标宽度
+     ireduce + sextend/uextend（int→u8 取低 8 位无符号、→i8 有符号、
+     u16/i16/u32/i32 同理；64 位目标恒等；float→int 既有路径不变）。
+     `300 as u8` → 44、`200 as i8` → -56、`(-1) as u8` → 255。
+   - 新增探针：probe-static.sw 扩展 4 项带初值断言（int/float/bool/负数）、
+     probe-cast.sw（9 项截断断言），注册 run-examples.py（111 项）。
+   - 文档：docs/08-能力清单.md（静态字段支持带初值+字符串初值限制）、
+     docs/04-内存模型.md（全局初始化支持标量、字符串/数组初值编译期报错）。
+   - 验证：cargo fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 111 examples 回归通过（probe-audio/slice-u8 等 as u8 密集
+     探针无回归）。
+   - 遗留（记录）：顶层 string 全局/静态 string 字段初始化编译期报错
+     （需运行时全局构造机制才能支持，非本批范围）。
+
 2026-08-17 01:50  修复 swc fmt 泛型尖括号加空格：
    - 缺陷：`Result<T, E>`、`Box<int>` 被格式化成 `Result < T, E >`——
      `<`/`>` 被当比较运算符前后加空格，泛型完全变形。

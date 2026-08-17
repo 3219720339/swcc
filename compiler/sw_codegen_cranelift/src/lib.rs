@@ -2886,7 +2886,40 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 } else if self.builder.func.dfg.value_type(value) == types::F64 {
                     self.builder.ins().fcvt_to_sint(types::I64, value)
                 } else {
-                    value
+                    // 整数宽度转换：按位重新解释（显式截断/扩展）。
+                    // 此前直接返回 value，`300 as u8` 仍是 300（bug #1）；
+                    // 现在按目标宽度截断并按有符号性扩展回 64 位。
+                    // 例：`300 as u8` → 低 8 位 44（无符号扩展）；
+                    //     `200 as i8` → 低 8 位按有符号扩展为 -56。
+                    let (bits, signed) = match to {
+                        Type::I8 => (8, true),
+                        Type::U8 => (8, false),
+                        Type::I16 => (16, true),
+                        Type::U16 => (16, false),
+                        Type::I32 => (32, true),
+                        Type::U32 => (32, false),
+                        Type::I64
+                        | Type::Isize
+                        | Type::Int
+                        | Type::UInt
+                        | Type::Usize
+                        | Type::U64 => {
+                            // 64 位目标：已是统一 64 位表示，无需变换。
+                            return Ok(value);
+                        }
+                        _ => return Ok(value),
+                    };
+                    let narrow_ty = match bits {
+                        8 => types::I8,
+                        16 => types::I16,
+                        _ => types::I32,
+                    };
+                    let narrow = self.builder.ins().ireduce(narrow_ty, value);
+                    if signed {
+                        self.builder.ins().sextend(types::I64, narrow)
+                    } else {
+                        self.builder.ins().uextend(types::I64, narrow)
+                    }
                 }
             }
             MirExpr::Select { cond, then, else_ } => {

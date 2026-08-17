@@ -1171,6 +1171,7 @@ impl Analyzer {
                 ty,
                 mutable: !field.modifiers.contains(&MemberModifier::Final),
                 span: field.span,
+                default: None,
             });
         }
         result
@@ -1220,12 +1221,23 @@ impl Analyzer {
                         ty: ty.clone(),
                         mutable: !field.modifiers.contains(&MemberModifier::Final),
                         span: field.span,
+                        default: field.default.clone(),
                     };
                     if field
                         .modifiers
                         .iter()
                         .any(|m| matches!(m, MemberModifier::Static))
                     {
+                        // 静态字段初值必须是编译期常量标量；字符串/数组字面量
+                        // 无法在数据段静态表示（bug #4 遗留），编译期明确报错。
+                        if let Some(default) = &field.default {
+                            if self.const_type(default).is_none() {
+                                self.error(
+                                    "静态字段初始化式必须是编译期常量（整数/浮点/布尔/字符）",
+                                    default.span,
+                                );
+                            }
+                        }
                         static_fields.push(info);
                     } else {
                         fields.push(info);
@@ -1424,7 +1436,9 @@ impl Analyzer {
         match &expr.kind {
             ExprKind::Integer { .. } => Some(Type::Int),
             ExprKind::Float { .. } => Some(Type::F64),
-            ExprKind::Str(_) => Some(Type::Str),
+            // 字符串/数组字面量不能作全局静态初值：数据段无法静态表示
+            // sw_string { data, len }（data 需指向池内内容，运行时才构造），
+            // codegen 会生成空指针导致运行崩溃（bug #4 遗留）。
             ExprKind::Bool(_) => Some(Type::Bool),
             ExprKind::Char(_) => Some(Type::Char),
             ExprKind::Binary { op, left, right } => {
@@ -5049,6 +5063,7 @@ fn instantiate_class_types(types: &mut TypeTable, class_id: u32, args: &[Type]) 
             ty: substitute(&field.ty),
             mutable: field.mutable,
             span: field.span,
+            default: None,
         })
         .collect();
     let methods = info
@@ -5167,6 +5182,7 @@ fn instantiate_struct_types(types: &mut TypeTable, struct_id: u32, args: &[Type]
             },
             mutable: field.mutable,
             span: field.span,
+            default: None,
         })
         .collect();
     let id = types.structs.len() as u32;
@@ -5525,6 +5541,48 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     .insert(symbol_id.0, index as usize);
             }
         }
+        // static 字段 → 模块级全局变量。必须在函数/方法降级之前生成，
+        // 否则函数体内 `C.V` 查 static_field_globals 落空（此前 bug #4：
+        // 带初值静态字段读到零值、string 初值崩溃）。
+        // 初始化表达式（`static VERSION: int = 3`）降级为常量初值；无初值
+        // 保持 None（codegen 零初始化）。
+        for item in &items {
+            if let ItemKind::Class(class) = &item.kind {
+                let class_id = match self
+                    .state
+                    .names
+                    .get(&class.name.name)
+                    .and_then(|ids| ids.first().copied())
+                    .map(|id| self.symbol(id))
+                    .and_then(|symbol| match &symbol.kind {
+                        SymbolKind::Type(SymbolType::Class(id)) => Some(*id),
+                        _ => None,
+                    }) {
+                    Some(id) => id,
+                    None => continue,
+                };
+                if self.types.classes[class_id as usize].generics.is_empty() {
+                    let class_static_fields =
+                        self.types.classes[class_id as usize].static_fields.clone();
+                    for (index, field) in class_static_fields.iter().enumerate() {
+                        let name = format!("sw_sfield_{class_id}_{index}");
+                        let gindex = module_mir.globals.len() as u32;
+                        let init = field
+                            .default
+                            .as_ref()
+                            .and_then(|default| self.const_mir(default));
+                        module_mir.globals.push(MirGlobal {
+                            name: name.clone(),
+                            ty: field.ty.clone(),
+                            mutable: field.mutable,
+                            init,
+                            module: self.state.id.0,
+                        });
+                        self.static_field_globals.insert(name, gindex);
+                    }
+                }
+            }
+        }
         // 跨模块全局变量：本模块 names 引用的 Global 符号若不属于本模块声明，
         // 生成同名的导入条目（codegen 按 module 字段声明为 Import 外部数据）。
         let names = self.state.names.clone();
@@ -5638,21 +5696,6 @@ impl<'m, 's> MirLowerer<'m, 's> {
                 // 泛型类模板的方法不直接生成，按实例化后的 id 在下方生成。
                 if !self.types.classes[class_id as usize].generics.is_empty() {
                     continue;
-                }
-                // static 字段 → 模块级全局变量。
-                let class_static_fields =
-                    self.types.classes[class_id as usize].static_fields.clone();
-                for (index, field) in class_static_fields.iter().enumerate() {
-                    let name = format!("sw_sfield_{class_id}_{index}");
-                    let gindex = module_mir.globals.len() as u32;
-                    module_mir.globals.push(MirGlobal {
-                        name: name.clone(),
-                        ty: field.ty.clone(),
-                        mutable: field.mutable,
-                        init: None,
-                        module: self.state.id.0,
-                    });
-                    self.static_field_globals.insert(name, gindex);
                 }
                 let mut method_index = 0usize;
                 for member in &class.members {
@@ -9076,6 +9119,26 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     let object_ty = self.expr_type(object);
                     if matches!(object_ty, Type::Str | Type::Array(_)) {
                         return Type::Int;
+                    }
+                }
+                // 类静态字段访问（ClassName.field）：检查阶段已登记
+                // StaticMemberTarget::Field(class_id, index)，按类静态字段表取类型。
+                // 此前缺失导致 float 静态字段在 varargs/模板插值里被当 i64
+                // （IR 校验失败），string 静态字段类型也拿不到（bug #4）。
+                if let Some(StaticMemberTarget::Field(class_id, index)) = self
+                    .result()
+                    .static_member_targets
+                    .get(&expr.span.start)
+                    .copied()
+                {
+                    if let Some(field) = self
+                        .lowerer
+                        .types
+                        .classes
+                        .get(class_id as usize)
+                        .and_then(|info| info.static_fields.get(index))
+                    {
+                        return substitute_type(&field.ty, &self.type_args);
                     }
                 }
                 let object_ty = self.expr_type(object);

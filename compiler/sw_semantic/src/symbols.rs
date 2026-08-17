@@ -3,6 +3,8 @@ use sw_common::Span;
 use crate::types::Type;
 use std::collections::HashMap;
 
+use sw_frontend::ast::Expr;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SymbolId(pub u32);
 
@@ -37,6 +39,9 @@ pub struct FieldInfo {
     pub ty: Type,
     pub mutable: bool,
     pub span: Span,
+    /// 字段声明时的初始化表达式（`static VERSION: int = 3` 的 `3`）。
+    /// 仅静态字段使用（生成类级全局的初值）；实例字段为 None。
+    pub default: Option<Expr>,
 }
 
 #[derive(Clone, Debug)]
