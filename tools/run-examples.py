@@ -127,6 +127,7 @@ EXPECTED = {
     "probe-string-global.sw": 0,
     "probe-struct-array.sw": 0,
     "probe-global-container.sw": 0,
+    "probe-polymorphic.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]

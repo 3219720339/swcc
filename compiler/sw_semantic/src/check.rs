@@ -144,6 +144,9 @@ struct CheckResult {
     field_targets: HashMap<usize, FieldTarget>,
     new_types: HashMap<usize, Type>,
     object_types: HashMap<usize, Type>,
+    /// 表达式起始偏移 → 目标数组类型（带注解声明/字段传播，供多态数组
+    /// 元素兼容性校验，如 `const s: Shape[] = [Circle, Square]`）。
+    array_types: HashMap<usize, Type>,
     /// 表达式起始偏移 → 目标枚举 id（带注解声明传播，供泛型枚举构造推断）。
     enum_targets: HashMap<usize, u32>,
     /// 函数声明起始偏移 → 所属类（方法）。
@@ -2743,14 +2746,20 @@ impl<'s> Checker<'s> {
                                 .insert(expr.span.start, *ret_enum);
                         }
                     }
-                    // 对象字面量按函数返回类型传播目标类型。
-                    if matches!(expr.kind, ExprKind::Object(_)) {
-                        if matches!(self.ret, Type::Struct(_) | Type::Class(_)) {
+                    // 对象字面量按函数返回类型传播目标类型（含数组字面量里
+                    // 的对象元素：`return [{x:1,y:2}]`）。
+                    let ret_for_prop = self.ret.clone();
+                    match (&ret_for_prop.without_nullable(), &expr.kind) {
+                        (Type::Struct(_) | Type::Class(_), ExprKind::Object(_)) => {
                             self.state
                                 .result
                                 .object_types
-                                .insert(expr.span.start, self.ret.clone());
+                                .insert(expr.span.start, ret_for_prop.clone());
                         }
+                        (Type::Array(_), ExprKind::Array(_)) => {
+                            self.register_object_target(expr, &ret_for_prop);
+                        }
+                        _ => {}
                     }
                     let ty = self.check_expr(expr);
                     self.saw_return_value = true;
@@ -3350,6 +3359,34 @@ impl<'s> Checker<'s> {
                         }
                         _ => self.check_expr(item),
                     };
+                    // 数组字面量目标类型（多态数组：`const s: Shape[] = [...]`）：
+                    // 用 is_assignable 校验元素兼容（class → 接口、子类 → 基类），
+                    // 并返回目标数组类型；无目标时按元素严格相等推断。
+                    let target_array = self.state.result.array_types.get(&expr.span.start).cloned();
+                    if let Some(Type::Array(target_elem)) = &target_array {
+                        for item in items {
+                            let item_ty = match &item.kind {
+                                ExprKind::Spread(inner) => {
+                                    match self.check_expr(inner).without_nullable() {
+                                        Type::Array(inner_ty) => (**inner_ty).clone(),
+                                        _ => Type::Error,
+                                    }
+                                }
+                                _ => self.check_expr(item),
+                            };
+                            if !self.is_assignable(&item_ty, target_elem) {
+                                self.error(
+                                    format!(
+                                        "数组元素类型不兼容：{} 不能赋给 {}",
+                                        item_ty.display(),
+                                        target_elem.display()
+                                    ),
+                                    item.span,
+                                );
+                            }
+                        }
+                        return target_array.unwrap();
+                    }
                     match &element {
                         None => element = Some(ty),
                         Some(expected) => {
@@ -4640,6 +4677,11 @@ impl<'s> Checker<'s> {
             }
             ExprKind::Array(items) => {
                 if let Type::Array(elem) = target {
+                    // 登记数组字面量目标类型（多态数组元素兼容性校验用）。
+                    self.state
+                        .result
+                        .array_types
+                        .insert(expr.span.start, target.clone());
                     for item in items {
                         self.register_object_target(item, elem);
                     }

@@ -2,6 +2,28 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 08:10  多态数组（接口数组）+ struct 数组 return 字面量：
+   - 背景：`const shapes: Shape[] = [new Circle(1.0), new Square(2.0)]`
+     此前元素需与目标类型严格相等才能通过，不同 class 实现同一接口
+     无法共存一个数组；`return [{x:1,y:2}, {x:3,y:4}]` 对象字面量元素
+     无目标类型传播会按元素推断成不同 struct 而报错。
+   - 接口多态数组：check.rs 数组字面量校验改用 is_assignable（而非
+     严格相等）兼容元素（class→接口、子类→基类）；CheckResult 新增
+     array_types（span → 目标数组类型），register_object_target 的
+     Array 分支写入，供字面量校验读取并返回目标类型。
+   - struct 数组 return 字面量：return 传播匹配 `(Type::Array(_),
+     ExprKind::Array(_))` 时对元素调 register_object_target，使对象
+     字面量按返回类型构造；逐元素 is_assignable 校验。
+   - 元素类型不兼容（如混入 `42`）编译期报"数组元素类型不兼容"。
+   - 新增探针 probe-polymorphic.sw（8 项：接口数组长度/索引派发/
+     for-of 派发/作函数参数 + struct 数组 return 长度/元素），注册
+     run-examples.py（116 项）。注：探针浮点比较用容差 feq
+     （3.14+4.0 == 7.14 有 IEEE-754 误差）。
+   - 文档：docs/08-能力清单.md 更新（多态数组、struct 数组 return
+     字面量）。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 116 examples 回归通过。
+ 
 2026-08-17 07:20  支持数组/map 全局变量（sw_global_init 扩展）：
    - 背景：const NUMS = [1,2,3] / const CONFIG = map_new() 此前编译期报错
      （配置表场景刚需）。
