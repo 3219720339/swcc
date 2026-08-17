@@ -137,6 +137,7 @@ EXPECTED = {
     "probe-closure-edge.sw": 0,
     "probe-enum-switch.sw": 0,
     "probe-finally.sw": 0,
+    "probe-callbacks2.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]

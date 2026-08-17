@@ -428,6 +428,8 @@ pub enum ExprKind {
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
+        /// 可选调用 `f?.()`：callee 为空时结果为空值。
+        optional: bool,
     },
     Member {
         object: Box<Expr>,

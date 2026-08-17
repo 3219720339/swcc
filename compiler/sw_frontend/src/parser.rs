@@ -1762,6 +1762,7 @@ impl<'a> Parser<'a> {
                         kind: ExprKind::Call {
                             callee: Box::new(expr),
                             args,
+                            optional: false,
                         },
                         span: Span::new(start, self.peek().span.start),
                     };
@@ -1780,7 +1781,18 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::QuestionDot => {
                     self.advance();
-                    if self.at(&TokenKind::LBracket) {
+                    if self.at(&TokenKind::LParen) {
+                        // 可选调用 `f?.()`：callee 为空时结果为空值。
+                        let args = self.parse_arguments()?;
+                        expr = Expr {
+                            kind: ExprKind::Call {
+                                callee: Box::new(expr),
+                                args,
+                                optional: true,
+                            },
+                            span: Span::new(start, self.peek().span.start),
+                        };
+                    } else if self.at(&TokenKind::LBracket) {
                         self.advance();
                         let index = self.parse_expression()?;
                         self.expect(&TokenKind::RBracket, "可选索引缺少 `]`")?;

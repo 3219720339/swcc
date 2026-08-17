@@ -37,7 +37,7 @@ fn dump(expr: &Expr) -> String {
         }
         ExprKind::Unary { op, expr } => format!("({}{})", unop(op), dump(expr)),
         ExprKind::Group(inner) => format!("({})", dump(inner)),
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, .. } => {
             let args: Vec<String> = args.iter().map(dump).collect();
             format!("{}({})", dump(callee), args.join(","))
         }

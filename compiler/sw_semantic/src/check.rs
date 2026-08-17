@@ -217,6 +217,10 @@ enum ArrayMethodKind {
     Unshift,
     /// 删除 [start, start+count) 并返回被删元素新数组，runtime。
     Splice,
+    /// JS 风格切片 slice(start[, end])：返回新数组副本，runtime。
+    Slice,
+    /// 比较器排序 sort_by((a, b) => bool)，原地排序返回数组，runtime。
+    SortBy,
 }
 
 #[derive(Clone, Debug)]
@@ -3210,7 +3214,11 @@ impl<'s> Checker<'s> {
                     Type::Error
                 }
             }
-            ExprKind::Call { callee, args } => self.check_call(callee, args, expr.span),
+            ExprKind::Call {
+                callee,
+                args,
+                optional,
+            } => self.check_call(callee, args, expr.span, *optional),
             ExprKind::Member {
                 object,
                 name,
@@ -3776,11 +3784,24 @@ impl<'s> Checker<'s> {
                 Type::Error
             }
             BinaryOp::Eq | BinaryOp::Ne => {
+                // 可空与基类型可直接比较（如 `fn?.(5) == 6`）：可空标量/引用
+                // 以 0 为空哨兵，裸比较即正确语义（空永远不等于非空值）。
+                // struct 值类型除外（按值拷贝，指针比较会错，保持拒绝）。
+                let unwrapped_left = left_ty.without_nullable();
+                let unwrapped_right = right_ty.without_nullable();
+                let struct_involved = matches!(unwrapped_left, Type::Struct(_))
+                    || matches!(unwrapped_right, Type::Struct(_));
                 if left_ty == right_ty
                     || (left_ty == Type::Null
                         && (right_ty.is_reference() || matches!(right_ty, Type::Nullable(_))))
                     || (right_ty == Type::Null
                         && (left_ty.is_reference() || matches!(left_ty, Type::Nullable(_))))
+                    || (!struct_involved
+                        && matches!(left_ty, Type::Nullable(_))
+                        && self.is_assignable(&right_ty, &unwrapped_left))
+                    || (!struct_involved
+                        && matches!(right_ty, Type::Nullable(_))
+                        && self.is_assignable(&left_ty, &unwrapped_right))
                 {
                     Type::Bool
                 } else {
@@ -4138,7 +4159,7 @@ impl<'s> Checker<'s> {
         }
     }
 
-    fn check_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Type {
+    fn check_call(&mut self, callee: &Expr, args: &[Expr], span: Span, optional: bool) -> Type {
         // 调用实参：`...数组字面量` 展开成多个实参（变量数组展开暂不支持）。
         let args_ty = self.call_args_ty(args);
         // 命名空间函数调用：ns.foo(...)
@@ -4189,7 +4210,13 @@ impl<'s> Checker<'s> {
                     );
                     if is_variable {
                         let symbol_type = self.symbol_type(symbol_id);
-                        if let Type::Function { params, ret } = &symbol_type {
+                        let fn_ty = symbol_type.without_nullable();
+                        if let Type::Function { params, ret } = &fn_ty {
+                            // 可空函数（`((int) => int)?`）必须用 `?.()` 调用。
+                            if matches!(symbol_type, Type::Nullable(_)) && !optional {
+                                self.error("可空函数调用前请先判空或用 `?.()`", span);
+                                return Type::Error;
+                            }
                             self.state
                                 .result
                                 .ident_symbols
@@ -4222,7 +4249,15 @@ impl<'s> Checker<'s> {
                                     );
                                 }
                             }
-                            return self.record_call_result(span, (**ret).clone());
+                            let result = (**ret).clone();
+                            return self.record_call_result(
+                                span,
+                                if optional {
+                                    Type::Nullable(Box::new(result))
+                                } else {
+                                    result
+                                },
+                            );
                         }
                     }
                 }
@@ -4739,6 +4774,8 @@ impl<'s> Checker<'s> {
                                 | ArrayMethodKind::Shift
                                 | ArrayMethodKind::Unshift
                                 | ArrayMethodKind::Splice
+                                | ArrayMethodKind::Slice
+                                | ArrayMethodKind::SortBy
                                 | ArrayMethodKind::Push
                                 | ArrayMethodKind::Pop => Type::Error,
                             }
@@ -4936,6 +4973,58 @@ impl<'s> Checker<'s> {
                                 (span.start, span.end),
                                 CallTarget::ArrayMethod {
                                     method: ArrayMethodKind::Splice,
+                                    elem: (**inner).clone(),
+                                    ret: Type::Array(inner.clone()),
+                                },
+                            );
+                            Type::Array(inner.clone())
+                        } else if name.name == "slice" && (args.len() == 1 || args.len() == 2) {
+                            // JS 风格切片：slice(start[, end])，负索引、end 排他。
+                            if !args_ty.iter().all(|ty| ty.is_integer()) {
+                                self.error("`slice` 参数必须是整数 (start[, end])", span);
+                                return Type::Error;
+                            }
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method: ArrayMethodKind::Slice,
+                                    elem: (**inner).clone(),
+                                    ret: Type::Array(inner.clone()),
+                                },
+                            );
+                            Type::Array(inner.clone())
+                        } else if name.name == "sort_by" && args.len() == 1 {
+                            // 比较器排序：sort_by((a, b) => a < b)，原地排序返回数组。
+                            let Type::Function {
+                                params: fn_params,
+                                ret: fn_ret,
+                            } = &args_ty[0]
+                            else {
+                                self.error(
+                                    "`sort_by` 需要一个函数参数 (a, b) => bool",
+                                    args[0].span,
+                                );
+                                return Type::Error;
+                            };
+                            if fn_params.len() != 2
+                                || !self.is_assignable(inner, &fn_params[0])
+                                || !self.is_assignable(inner, &fn_params[1])
+                                || !self.is_assignable(fn_ret, &Type::Bool)
+                            {
+                                self.error(
+                                    format!(
+                                        "`sort_by` 的函数必须是 (a: {}, b: {}) => bool",
+                                        inner.display(),
+                                        inner.display()
+                                    ),
+                                    args[0].span,
+                                );
+                                return Type::Error;
+                            }
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method: ArrayMethodKind::SortBy,
                                     elem: (**inner).clone(),
                                     ret: Type::Array(inner.clone()),
                                 },
@@ -6715,11 +6804,63 @@ impl<'m, 's> MirLowerer<'m, 's> {
                 ty: Type::Ptr(Box::new(Type::I8)),
                 mutable: false,
             },
+            // 测试报告增强：总开始时间、单项开始时间、单项耗时、通过数、总耗时。
+            MirLocal {
+                name: "$t0".to_owned(),
+                ty: Type::Int,
+                mutable: true,
+            },
+            MirLocal {
+                name: "$tn".to_owned(),
+                ty: Type::Int,
+                mutable: true,
+            },
+            MirLocal {
+                name: "$dur".to_owned(),
+                ty: Type::Int,
+                mutable: true,
+            },
+            MirLocal {
+                name: "$pass".to_owned(),
+                ty: Type::Int,
+                mutable: true,
+            },
+            MirLocal {
+                name: "$t_end".to_owned(),
+                ty: Type::Int,
+                mutable: true,
+            },
         ];
         let mut body = vec![MirStmt::new(MirStmtKind::VarDecl {
             local: 0,
             init: Some(MirExpr::Int(0)),
         })];
+        // 总开始时间（uptime_ms）与通过数初始化。
+        let uptime_sig = || FunctionSig {
+            module: ModuleId(0),
+            name: "uptime_ms".to_owned(),
+            generics: Vec::new(),
+            bounds: HashMap::new(),
+            params: vec![],
+            ret: Type::Int,
+            extern_c: true,
+            span: Span::empty(0),
+        };
+        let uptime = || MirExpr::Call {
+            callee: MirCallee::Extern {
+                name: "uptime_ms".to_owned(),
+                sig: uptime_sig(),
+            },
+            args: vec![],
+        };
+        body.push(MirStmt::new(MirStmtKind::Assign {
+            target: MirTarget::Local(4),
+            value: uptime(),
+        }));
+        body.push(MirStmt::new(MirStmtKind::Assign {
+            target: MirTarget::Local(7),
+            value: MirExpr::Int(0),
+        }));
         let ok_prefix = self.intern_string("[ok] ");
         let fail_prefix = self.intern_string("[FAIL] ");
         let println_sig = || FunctionSig {
@@ -6763,6 +6904,31 @@ impl<'m, 's> MirLowerer<'m, 's> {
                 args: vec![],
             };
             let name_str = self.intern_string(&sig.name);
+            // 单项耗时：`(N ms)` 后缀（int_to_string + 拼接）。
+            let open_paren = self.intern_string(" (");
+            let ms_close = self.intern_string(" ms)");
+            let dur_suffix = |dur: MirExpr| MirExpr::Call {
+                callee: MirCallee::Intrinsic {
+                    name: "string_concat".to_owned(),
+                },
+                args: vec![
+                    MirExpr::Str(open_paren),
+                    MirExpr::Call {
+                        callee: MirCallee::Intrinsic {
+                            name: "string_concat".to_owned(),
+                        },
+                        args: vec![
+                            MirExpr::Call {
+                                callee: MirCallee::Intrinsic {
+                                    name: "int_to_string".to_owned(),
+                                },
+                                args: vec![dur],
+                            },
+                            MirExpr::Str(ms_close),
+                        ],
+                    },
+                ],
+            };
             let ok_print = MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
                 callee: MirCallee::Extern {
                     name: "sw_test_println".to_owned(),
@@ -6772,7 +6938,15 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     callee: MirCallee::Intrinsic {
                         name: "string_concat".to_owned(),
                     },
-                    args: vec![MirExpr::Str(ok_prefix), MirExpr::Str(name_str)],
+                    args: vec![
+                        MirExpr::Call {
+                            callee: MirCallee::Intrinsic {
+                                name: "string_concat".to_owned(),
+                            },
+                            args: vec![MirExpr::Str(ok_prefix), MirExpr::Str(name_str)],
+                        },
+                        dur_suffix(MirExpr::Local(6)),
+                    ],
                 }],
             }));
             let fail_inc = MirStmt::new(MirStmtKind::Assign {
@@ -6792,9 +6966,25 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     callee: MirCallee::Intrinsic {
                         name: "string_concat".to_owned(),
                     },
-                    args: vec![MirExpr::Str(fail_prefix), MirExpr::Str(name_str)],
+                    args: vec![
+                        MirExpr::Call {
+                            callee: MirCallee::Intrinsic {
+                                name: "string_concat".to_owned(),
+                            },
+                            args: vec![MirExpr::Str(fail_prefix), MirExpr::Str(name_str)],
+                        },
+                        dur_suffix(MirExpr::Local(6)),
+                    ],
                 }],
             }));
+            let pass_inc = MirStmt::new(MirStmtKind::Assign {
+                target: MirTarget::Local(7),
+                value: MirExpr::Binary {
+                    op: MirBinary::Add,
+                    left: Box::new(MirExpr::Local(7)),
+                    right: Box::new(MirExpr::Int(1)),
+                },
+            });
             let cond = if ret_void {
                 MirExpr::Bool(false)
             } else {
@@ -6804,8 +6994,12 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     right: Box::new(MirExpr::Int(0)),
                 }
             };
-            // 正常路径：调用测试 + 按返回码判断 + 弹出异常框架。
+            // 正常路径：计时 → 调用测试 → 计算耗时 → 按返回码判断 + 弹出异常框架。
             let mut else_stmts = Vec::new();
+            else_stmts.push(MirStmt::new(MirStmtKind::Assign {
+                target: MirTarget::Local(5),
+                value: uptime(),
+            }));
             if ret_void {
                 else_stmts.push(MirStmt::new(MirStmtKind::Expr(call)));
             } else {
@@ -6814,10 +7008,18 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     init: Some(call),
                 }));
             }
+            else_stmts.push(MirStmt::new(MirStmtKind::Assign {
+                target: MirTarget::Local(6),
+                value: MirExpr::Binary {
+                    op: MirBinary::Sub,
+                    left: Box::new(uptime()),
+                    right: Box::new(MirExpr::Local(5)),
+                },
+            }));
             else_stmts.push(MirStmt::new(MirStmtKind::If {
                 cond,
                 then: vec![fail_inc.clone(), fail_print.clone()],
-                else_: vec![ok_print],
+                else_: vec![pass_inc, ok_print],
             }));
             let frame = MirExpr::Local(2);
             else_stmts.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
@@ -6872,6 +7074,48 @@ impl<'m, 's> MirLowerer<'m, 's> {
                 else_: else_stmts,
             }));
         }
+        // 汇总：`P 通过, F 失败（共 T ms）`。
+        let concat = |a: MirExpr, b: MirExpr| MirExpr::Call {
+            callee: MirCallee::Intrinsic {
+                name: "string_concat".to_owned(),
+            },
+            args: vec![a, b],
+        };
+        let to_str = |v: MirExpr| MirExpr::Call {
+            callee: MirCallee::Intrinsic {
+                name: "int_to_string".to_owned(),
+            },
+            args: vec![v],
+        };
+        body.push(MirStmt::new(MirStmtKind::Assign {
+            target: MirTarget::Local(8),
+            value: uptime(),
+        }));
+        let total_ms = MirExpr::Binary {
+            op: MirBinary::Sub,
+            left: Box::new(MirExpr::Local(8)),
+            right: Box::new(MirExpr::Local(4)),
+        };
+        let summary = concat(
+            concat(
+                to_str(MirExpr::Local(7)),
+                MirExpr::Str(self.intern_string(" 通过, ")),
+            ),
+            concat(
+                concat(
+                    to_str(MirExpr::Local(0)),
+                    MirExpr::Str(self.intern_string(" 失败（共 ")),
+                ),
+                concat(to_str(total_ms), MirExpr::Str(self.intern_string(" ms）"))),
+            ),
+        );
+        body.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
+            callee: MirCallee::Extern {
+                name: "sw_test_println".to_owned(),
+                sig: println_sig(),
+            },
+            args: vec![summary],
+        })));
         body.push(MirStmt::new(MirStmtKind::Return(Some(MirExpr::Local(0)))));
         Some(MirFunction {
             name: "sw_user_main".to_owned(),
@@ -8813,9 +9057,13 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 then: Box::new(self.lower_expr(then)),
                 else_: Box::new(self.lower_expr(else_)),
             },
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call {
+                callee,
+                args,
+                optional,
+            } => {
                 let optional_receiver =
-                    matches!(&callee.kind, ExprKind::Member { optional: true, .. });
+                    *optional || matches!(&callee.kind, ExprKind::Member { optional: true, .. });
                 // 闭包调用：callee 是 lambda，或 callee 是函数类型的局部/参数/全局
                 let closure_ty = match &callee.kind {
                     ExprKind::Lambda { .. } => self.expr_type(callee),
@@ -8844,7 +9092,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 if let Type::Function {
                     params: fn_params,
                     ret: fn_ret,
-                } = &closure_ty
+                } = &closure_ty.without_nullable()
                 {
                     let mut values = vec![self.lower_expr(callee)];
                     for arg in args {
@@ -8873,10 +9121,32 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             rest: false,
                         });
                     }
-                    return MirExpr::Call {
+                    let call = MirExpr::Call {
                         callee: MirCallee::Closure { sig },
                         args: values,
                     };
+                    // 可选调用 `f?.()`：callee（args[0] 闭包对象）为空时返回空值。
+                    if optional_receiver {
+                        if let MirExpr::Call {
+                            args: call_args, ..
+                        } = &call
+                        {
+                            if let Some(receiver) = call_args.first().cloned() {
+                                let cond = MirExpr::Binary {
+                                    op: MirBinary::Ne,
+                                    left: Box::new(receiver),
+                                    right: Box::new(MirExpr::Int(0)),
+                                };
+                                let fallback = optional_fallback(&self.expr_type(expr));
+                                return MirExpr::Select {
+                                    cond: Box::new(cond),
+                                    then: Box::new(call),
+                                    else_: Box::new(fallback),
+                                };
+                            }
+                        }
+                    }
+                    return call;
                 }
                 let target = self
                     .result()
@@ -9051,6 +9321,143 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             args: call_args,
                         };
                     }
+                    if *method == ArrayMethodKind::Slice {
+                        // JS 风格切片：slice(start[, end])，负索引换算为 len+arg。
+                        let array = object;
+                        let len = MirExpr::Len {
+                            object: Box::new(array.clone()),
+                            string: false,
+                        };
+                        let wrap = |arg: MirExpr| MirExpr::Select {
+                            cond: Box::new(MirExpr::Binary {
+                                op: MirBinary::Lt,
+                                left: Box::new(arg.clone()),
+                                right: Box::new(MirExpr::Int(0)),
+                            }),
+                            then: Box::new(MirExpr::Binary {
+                                op: MirBinary::Add,
+                                left: Box::new(len.clone()),
+                                right: Box::new(arg.clone()),
+                            }),
+                            else_: Box::new(arg),
+                        };
+                        let start = wrap(args.first().cloned().unwrap_or(MirExpr::Int(0)));
+                        let end = args
+                            .get(1)
+                            .cloned()
+                            .map(wrap)
+                            .unwrap_or(MirExpr::Int(i64::MAX));
+                        let elem_size = if matches!(elem, Type::U8) {
+                            1
+                        } else if let Type::Struct(_) = elem {
+                            self.lowerer.semantic_struct_size(elem)
+                        } else {
+                            8
+                        };
+                        let mut sig = FunctionSig {
+                            module: self.lowerer.state.id,
+                            name: "sw_array_slice".to_owned(),
+                            generics: Vec::new(),
+                            bounds: HashMap::new(),
+                            params: vec![
+                                ParamSig {
+                                    name: "self".to_owned(),
+                                    ty: Type::Array(Box::new(elem.clone())),
+                                    has_default: false,
+                                    rest: false,
+                                },
+                                ParamSig {
+                                    name: "start".to_owned(),
+                                    ty: Type::Int,
+                                    has_default: false,
+                                    rest: false,
+                                },
+                                ParamSig {
+                                    name: "end".to_owned(),
+                                    ty: Type::Int,
+                                    has_default: false,
+                                    rest: false,
+                                },
+                                ParamSig {
+                                    name: "elem_size".to_owned(),
+                                    ty: Type::Int,
+                                    has_default: false,
+                                    rest: false,
+                                },
+                            ],
+                            ret: Type::Array(Box::new(elem.clone())),
+                            extern_c: true,
+                            span: expr.span,
+                        };
+                        sig.ret = Type::Array(Box::new(elem.clone()));
+                        return MirExpr::Call {
+                            callee: MirCallee::Extern {
+                                name: "sw_array_slice".to_owned(),
+                                sig,
+                            },
+                            args: vec![array, start, end, MirExpr::Int(elem_size as i64)],
+                        };
+                    }
+                    if *method == ArrayMethodKind::SortBy {
+                        // 比较器排序：sw_array_sort_by(array, elem_size, struct_flag, closure)。
+                        let closure = args.first().cloned().unwrap_or(MirExpr::Int(0));
+                        let elem_size = if matches!(elem, Type::U8) {
+                            1
+                        } else if let Type::Struct(_) = elem {
+                            self.lowerer.semantic_struct_size(elem)
+                        } else {
+                            8
+                        };
+                        let struct_elem = i64::from(matches!(elem, Type::Struct(_)));
+                        let mut sig = FunctionSig {
+                            module: self.lowerer.state.id,
+                            name: "sw_array_sort_by".to_owned(),
+                            generics: Vec::new(),
+                            bounds: HashMap::new(),
+                            params: vec![
+                                ParamSig {
+                                    name: "self".to_owned(),
+                                    ty: Type::Array(Box::new(elem.clone())),
+                                    has_default: false,
+                                    rest: false,
+                                },
+                                ParamSig {
+                                    name: "elem_size".to_owned(),
+                                    ty: Type::Int,
+                                    has_default: false,
+                                    rest: false,
+                                },
+                                ParamSig {
+                                    name: "struct_elem".to_owned(),
+                                    ty: Type::Int,
+                                    has_default: false,
+                                    rest: false,
+                                },
+                                ParamSig {
+                                    name: "closure".to_owned(),
+                                    ty: Type::Ptr(Box::new(Type::I8)),
+                                    has_default: false,
+                                    rest: false,
+                                },
+                            ],
+                            ret: Type::Array(Box::new(elem.clone())),
+                            extern_c: true,
+                            span: expr.span,
+                        };
+                        sig.ret = Type::Array(Box::new(elem.clone()));
+                        return MirExpr::Call {
+                            callee: MirCallee::Extern {
+                                name: "sw_array_sort_by".to_owned(),
+                                sig,
+                            },
+                            args: vec![
+                                object,
+                                MirExpr::Int(elem_size as i64),
+                                MirExpr::Int(struct_elem),
+                                closure,
+                            ],
+                        };
+                    }
                     if matches!(method, ArrayMethodKind::IndexOf | ArrayMethodKind::Includes) {
                         // 编译器内联线性查找：i 从 0 起，元素与 needle 相等即停。
                         let is_string = matches!(elem, Type::Str);
@@ -9188,7 +9595,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         | ArrayMethodKind::Pop
                         | ArrayMethodKind::Shift
                         | ArrayMethodKind::Unshift
-                        | ArrayMethodKind::Splice => unreachable!(),
+                        | ArrayMethodKind::Splice
+                        | ArrayMethodKind::Slice
+                        | ArrayMethodKind::SortBy => unreachable!(),
                     };
                 }
                 let callee = match target {
@@ -9471,6 +9880,27 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         },
                     }
                 } else {
+                    // 方法引用作闭包：`obj.method`（绑定 this 到捕获对象）。
+                    let object_ty = self.expr_type(object);
+                    if let Type::Class(class_id) = object_ty.without_nullable() {
+                        if let Some((method_class, method_index)) =
+                            self.lowerer.types.find_class_method(*class_id, &name.name)
+                        {
+                            let method = &self.lowerer.types.classes[method_class as usize].methods
+                                [method_index];
+                            let method_sig = method.sig.clone();
+                            let method_name = method.name.clone();
+                            return self.method_as_closure(
+                                object,
+                                *class_id,
+                                method_class,
+                                method_index,
+                                &method_name,
+                                &method_sig,
+                                expr.span,
+                            );
+                        }
+                    }
                     // 枚举成员访问 Color.Red
                     let object_ty = self.expr_type(object);
                     if let Type::Enum(enum_id) = object_ty {
@@ -10108,6 +10538,99 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         }
     }
 
+    /// 方法引用作闭包：`obj.method` 合成绑定闭包——捕获对象（this），
+    /// 隐藏适配器函数转发到方法（args[0] = 捕获对象）。
+    fn method_as_closure(
+        &mut self,
+        object: &Expr,
+        class_id: u32,
+        method_class: u32,
+        method_index: usize,
+        method_name: &str,
+        sig: &FunctionSig,
+        span: Span,
+    ) -> MirExpr {
+        let fn_name = format!("sw_m_{method_class}_{method_index}_{method_name}");
+        let seq = self.lowerer.closure_counter;
+        self.lowerer.closure_counter += 1;
+        let hidden_name = format!(
+            "sw_closure_{}_{}_{}",
+            self.lowerer.state.id.0, span.start, seq
+        );
+        let env_ty = Type::Ptr(Box::new(Type::I8));
+        let mut params = vec![MirParam {
+            name: "$env".to_owned(),
+            ty: env_ty.clone(),
+        }];
+        for (index, param) in sig.params.iter().enumerate() {
+            params.push(MirParam {
+                name: format!("arg{index}"),
+                ty: param.ty.clone(),
+            });
+        }
+        let mut call_args = vec![MirExpr::EnvGet {
+            slot: 0,
+            ty: Type::Class(class_id),
+        }];
+        call_args.extend((1..=sig.params.len()).map(|index| MirExpr::Local(index)));
+        let body = vec![MirStmt::new(MirStmtKind::Return(Some(MirExpr::Call {
+            callee: MirCallee::Method {
+                class: method_class,
+                name: fn_name,
+                sig: sig.clone(),
+            },
+            args: call_args,
+        })))];
+        let locals = params
+            .iter()
+            .map(|param| MirLocal {
+                name: param.name.clone(),
+                ty: param.ty.clone(),
+                mutable: false,
+            })
+            .collect();
+        self.lowerer.hidden_functions.push(MirFunction {
+            name: hidden_name.clone(),
+            user_name: String::new(),
+            exported: false,
+            params,
+            ret: sig.ret.clone(),
+            locals,
+            body,
+            extern_c: false,
+            debug_index: u32::MAX,
+            source_line: 0,
+        });
+        let mut closure_sig = FunctionSig {
+            module: self.lowerer.state.id,
+            name: hidden_name.clone(),
+            generics: Vec::new(),
+            bounds: HashMap::new(),
+            params: vec![ParamSig {
+                name: "$env".to_owned(),
+                ty: env_ty,
+                has_default: false,
+                rest: false,
+            }],
+            ret: sig.ret.clone(),
+            extern_c: false,
+            span,
+        };
+        for param in &sig.params {
+            closure_sig.params.push(ParamSig {
+                name: param.name.clone(),
+                ty: param.ty.clone(),
+                has_default: param.has_default,
+                rest: param.rest,
+            });
+        }
+        MirExpr::ClosureNew {
+            name: hidden_name,
+            captures: vec![self.lower_expr(object)],
+            sig: closure_sig,
+        }
+    }
+
     fn collect_captures_expr(
         &self,
         expr: &Expr,
@@ -10156,7 +10679,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 self.collect_captures_expr(then, lambda_params, out, seen);
                 self.collect_captures_expr(else_, lambda_params, out, seen);
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, .. } => {
                 self.collect_captures_expr(callee, lambda_params, out, seen);
                 for arg in args {
                     self.collect_captures_expr(arg, lambda_params, out, seen);

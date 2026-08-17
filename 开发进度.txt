@@ -2,6 +2,33 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 16:40  功能批次 5：数组 slice/sort_by、swc test 报告增强、
+   方法引用作闭包、可选调用 f?.()：
+   - arr.slice(start[, end])：复制子数组（end 排他、负索引从末尾倒数、
+     越界钳制、不改变原数组），int/float/string/struct 元素均可；运行时
+     sw_array_slice + 编译器负索引转正（+length）。
+   - arr.sort_by((a, b) => bool)：按比较器返回排序后的新数组（升/降序，
+     int/float/string/struct 元素均可）；运行时 sw_array_sort_by 插入排序，
+     比较器经闭包对象调用，struct 元素按 elem_size 拷贝（置于 sw_closure
+     typedef 之后避免未声明错误）。
+   - swc test 报告增强：每项测试输出 `[ok]/[FAIL]` 后附耗时 `(N ms)`，
+     结尾输出汇总 `P 通过, F 失败（共 T ms）`（build_test_main 用 uptime_ms
+     计时，逐项 + 汇总）。
+   - 方法引用作闭包：`const inc = c.inc;`（obj.method 无调用时生成绑定
+     this 的闭包：捕获对象 + 合成适配器 sw_m_{class}_{idx}_{name}，
+     method_as_closure），可反复调用、可传入高阶函数 apply(c.inc)、
+     闭包数组字段等；类字段与方法同名时按成员访问解析。
+   - 可选调用 f?.()：函数可空时 `?.()` 才合法（直接调用编译期报错提示
+     判空或用 ??.），调用前判空：空返回空值（可空标量 0/浮点 0.0/引用
+     null），非空正常调用（闭包调用与普通调用两条路径都包 Select）；
+     结果可参与比较/合并：`f?.(5) == 6`、`(f?.(5) ?? 0) == 0`。
+   - 可空与基类型可直接 ==/!=（int? == int、f?.(5) == 6 等）：可空标量/
+     引用以 0 为空哨兵，裸比较即正确语义（空永远不等于非空值，JS 语义）；
+     struct 值类型除外（按值拷贝，指针比较会错，保持拒绝）。
+   - 新增探针 probe-callbacks2.sw（13 项），注册 run-examples.py（126 项）。
+   - 验证：fmt --check 通过、cargo test 67 项全绿、release 126 examples
+     回归通过。
+
 2026-08-17 15:50  Bug 排查批次 4：finally 控制流 + for 循环变量作用域：
    - try/finally 的 finally 在 try 体内 return 时不执行（finally 内联进
      正常/异常路径，return/break/continue 直接跳过）。修复：finally 注册为

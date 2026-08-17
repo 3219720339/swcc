@@ -3543,6 +3543,49 @@ typedef struct {
     void* env;
 } sw_closure;
 
+// 比较器排序（稳定插入排序，升序）：comparator 为 Sw 闭包 (a, b) => bool
+// （a 应排在 b 前返回 true）。标量元素按值传，struct 元素传地址（与 Sw
+// 闭包 ABI 一致）。原地排序，返回原数组。
+sw_array* sw_array_sort_by(sw_array* array, int64_t elem_size, int64_t struct_elem, void* closure) {
+    if (array == NULL || closure == NULL || array->len <= 1) {
+        return array;
+    }
+    if (elem_size <= 0) {
+        elem_size = 1;
+    }
+    sw_closure* c = (sw_closure*)closure;
+    typedef int64_t (*comparator_fn)(void* env, int64_t a, int64_t b);
+    comparator_fn cmp = (comparator_fn)c->fn;
+    char* data = (char*)array->data;
+    char* tmp = (char*)malloc((sw_size)elem_size);
+    if (tmp == NULL) {
+        return array;
+    }
+    for (int64_t i = 1; i < array->len; i++) {
+        for (int64_t j = i; j > 0; j--) {
+            int64_t a = struct_elem ? (int64_t)(data + (uintptr_t)j * (uintptr_t)elem_size)
+                                    : (elem_size == 1
+                                           ? (int64_t)((unsigned char)data[j])
+                                           : ((int64_t*)data)[j]);
+            int64_t b = struct_elem ? (int64_t)(data + (uintptr_t)(j - 1) * (uintptr_t)elem_size)
+                                    : (elem_size == 1
+                                           ? (int64_t)((unsigned char)data[j - 1])
+                                           : ((int64_t*)data)[j - 1]);
+            // a 应排在 b 前？是则交换（升序）。
+            if (cmp(c->env, a, b)) {
+                memcpy(tmp, data + (uintptr_t)j * (uintptr_t)elem_size, (sw_size)elem_size);
+                memcpy(data + (uintptr_t)j * (uintptr_t)elem_size,
+                       data + (uintptr_t)(j - 1) * (uintptr_t)elem_size, (sw_size)elem_size);
+                memcpy(data + (uintptr_t)(j - 1) * (uintptr_t)elem_size, tmp, (sw_size)elem_size);
+            } else {
+                break;
+            }
+        }
+    }
+    free(tmp);
+    return array;
+}
+
 void* sw_closure_new(void* fn, int64_t env_slots) {
     if (env_slots < 0) {
         env_slots = 0;
