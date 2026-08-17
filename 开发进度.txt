@@ -2,6 +2,25 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 11:20  数组 JS 方法 + 可空插值 + 类型转换优先级：
+   - 数组方法（JS 标准名）：
+     a) indexOf/includes：编译器内联线性查找（新 MirExpr::ArraySearch，
+        标量按值、字符串 string_eq、浮点按位比较；struct 元素暂不支持报错）。
+     b) reduce：编译器内联左折叠（新 MirExpr::ArrayReduce，闭包 (acc, elem)，
+        acc 类型自由：int/float/string 均可）。
+     c) shift/unshift/splice：runtime 新增 sw_array_shift/unshift/splice
+        （8 字节元素 memmove；splice 返回被删元素新数组）。
+   - 可空模板插值：`${maybe}` 空输出 "null"、非空格式化内部值（int?/float?/
+     string?/bool?）；顺带修复既有 bug——float? 的 `??` 此前 IR 校验失败
+     （Coalesce 把 F64 右操作数 select 进 I64），is_float_local/field_is_float/
+     全局加载识别 Nullable(F32|F64)，二元运算浮点规范化（I64 位模式 bitcast）。
+   - `-1 as u8` 优先级（Rust 语义）：`as` 从 parse_postfix 移到 parse_as 层
+     （一元 > as > 乘法），`-1 as u8` == 255、`2 * 3 as u8` 仍正确。
+   - 新增探针 probe-jsarrays.sw（28 项），注册 run-examples.py（120 项）。
+   - 文档：docs/08-能力清单.md（数组 JS 方法、可空插值、as 优先级）、开发进度.txt。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 120 examples 回归通过。
+ 
 2026-08-17 10:30  JS/TS 基础语法批次：switch 字符串 bug、??=、do-while、
    字符串方法 JS 别名、字符串比较：
    - 背景：探测发现 switch 字符串 case 静默走 default（降级为 if-else 链时

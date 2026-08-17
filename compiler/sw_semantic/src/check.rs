@@ -205,6 +205,18 @@ enum ArrayMethodKind {
     Find,
     Push,
     Pop,
+    /// 返回元素下标（无则 -1），编译器内联循环。
+    IndexOf,
+    /// 是否包含某元素，编译器内联循环。
+    Includes,
+    /// 左折叠：acc = fn(acc, elem)，返回最终 acc。
+    Reduce,
+    /// 队首出队（空数组返回 0/null），runtime。
+    Shift,
+    /// 队首入队，返回新长度，runtime。
+    Unshift,
+    /// 删除 [start, start+count) 并返回被删元素新数组，runtime。
+    Splice,
 }
 
 #[derive(Clone, Debug)]
@@ -3587,8 +3599,10 @@ impl<'s> Checker<'s> {
                         TemplatePart::Text(_) => {}
                         TemplatePart::Expr(expr) => {
                             let ty = self.check_expr(expr);
-                            if !matches!(ty, Type::Str | Type::Char | Type::Bool | Type::Int)
-                                && !ty.is_numeric()
+                            // 可空值插值：空时输出 "null"（JS 语义），非空输出内部值。
+                            let inner = ty.without_nullable();
+                            if !matches!(inner, Type::Str | Type::Char | Type::Bool | Type::Int)
+                                && !inner.is_numeric()
                             {
                                 self.error(
                                     format!("模板插值不支持类型 {}", ty.display()),
@@ -4610,7 +4624,14 @@ impl<'s> Checker<'s> {
                                 ArrayMethodKind::ForEach => Type::Void,
                                 ArrayMethodKind::Some | ArrayMethodKind::Every => Type::Bool,
                                 ArrayMethodKind::Find => Type::Nullable(inner.clone()),
-                                ArrayMethodKind::Push | ArrayMethodKind::Pop => Type::Error,
+                                ArrayMethodKind::IndexOf => Type::Int,
+                                ArrayMethodKind::Includes => Type::Bool,
+                                ArrayMethodKind::Reduce
+                                | ArrayMethodKind::Shift
+                                | ArrayMethodKind::Unshift
+                                | ArrayMethodKind::Splice
+                                | ArrayMethodKind::Push
+                                | ArrayMethodKind::Pop => Type::Error,
                             }
                         } else if name.name == "push" && args.len() == 1 {
                             // struct 数组 push：对象字面量参数先按元素类型传播目标
@@ -4685,6 +4706,132 @@ impl<'s> Checker<'s> {
                                 },
                             );
                             Type::Str
+                        } else if matches!(name.name.as_str(), "indexOf" | "includes")
+                            && args.len() == 1
+                            && args_ty.len() == 1
+                        {
+                            // 元素查找：编译器内联循环（标量/字符串元素；
+                            // struct 元素暂不支持，报错）。
+                            if matches!(**inner, Type::Struct(_)) {
+                                self.error(
+                                    "`indexOf`/`includes` 暂不支持 struct 数组元素",
+                                    args[0].span,
+                                );
+                                return Type::Error;
+                            }
+                            if !self.is_assignable(&args_ty[0], inner) {
+                                self.error(
+                                    format!("`{}` 参数必须是 {}", name.name, inner.display()),
+                                    args[0].span,
+                                );
+                                return Type::Error;
+                            }
+                            let is_index_of = name.name == "indexOf";
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method: if is_index_of {
+                                        ArrayMethodKind::IndexOf
+                                    } else {
+                                        ArrayMethodKind::Includes
+                                    },
+                                    elem: (**inner).clone(),
+                                    ret: if is_index_of { Type::Int } else { Type::Bool },
+                                },
+                            );
+                            if is_index_of { Type::Int } else { Type::Bool }
+                        } else if name.name == "reduce" && args.len() == 2 && args_ty.len() == 2 {
+                            // 左折叠：fn(acc, elem) -> acc，init 为 acc 初值。
+                            let Type::Function {
+                                params: fn_params,
+                                ret: fn_ret,
+                            } = &args_ty[0]
+                            else {
+                                self.error("`reduce` 第一个参数必须是函数", args[0].span);
+                                return Type::Error;
+                            };
+                            if fn_params.len() != 2 || !self.is_assignable(inner, &fn_params[1]) {
+                                self.error(
+                                    format!("`reduce` 的函数必须接收 (acc, {})", inner.display()),
+                                    args[0].span,
+                                );
+                                return Type::Error;
+                            }
+                            let acc_ty = fn_params[0].clone();
+                            if !self.is_assignable(&args_ty[1], &acc_ty)
+                                || !self.is_assignable(fn_ret, &acc_ty)
+                            {
+                                self.error(
+                                    format!(
+                                        "`reduce` 的 init/返回值必须与 acc 类型（{}）兼容",
+                                        acc_ty.display()
+                                    ),
+                                    span,
+                                );
+                                return Type::Error;
+                            }
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method: ArrayMethodKind::Reduce,
+                                    elem: (**inner).clone(),
+                                    ret: acc_ty.clone(),
+                                },
+                            );
+                            acc_ty
+                        } else if name.name == "shift" && args.is_empty() {
+                            if matches!(**inner, Type::Struct(_)) {
+                                self.error("`shift` 暂不支持 struct 数组元素", span);
+                                return Type::Error;
+                            }
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method: ArrayMethodKind::Shift,
+                                    elem: (**inner).clone(),
+                                    ret: (**inner).clone(),
+                                },
+                            );
+                            (**inner).clone()
+                        } else if name.name == "unshift" && args.len() == 1 {
+                            if matches!(**inner, Type::Struct(_)) {
+                                self.error("`unshift` 暂不支持 struct 数组元素", span);
+                                return Type::Error;
+                            }
+                            if !self.is_assignable(&args_ty[0], inner) {
+                                self.error(
+                                    format!("`unshift` 参数必须是 {}", inner.display()),
+                                    args[0].span,
+                                );
+                                return Type::Error;
+                            }
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method: ArrayMethodKind::Unshift,
+                                    elem: (**inner).clone(),
+                                    ret: Type::Int,
+                                },
+                            );
+                            Type::Int
+                        } else if name.name == "splice" && args.len() == 2 {
+                            if matches!(**inner, Type::Struct(_)) {
+                                self.error("`splice` 暂不支持 struct 数组元素", span);
+                                return Type::Error;
+                            }
+                            if !args_ty[0].is_integer() || !args_ty[1].is_integer() {
+                                self.error("`splice` 参数必须是整数 (start, count)", span);
+                                return Type::Error;
+                            }
+                            self.state.result.call_targets.insert(
+                                (span.start, span.end),
+                                CallTarget::ArrayMethod {
+                                    method: ArrayMethodKind::Splice,
+                                    elem: (**inner).clone(),
+                                    ret: Type::Array(inner.clone()),
+                                },
+                            );
+                            Type::Array(inner.clone())
                         } else {
                             self.error(
                                 format!(
@@ -8466,7 +8613,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         ExprKind::Member { object, .. } => self.lower_expr(object),
                         _ => MirExpr::Int(0),
                     };
-                    if matches!(method, ArrayMethodKind::Push | ArrayMethodKind::Pop) {
+                    if matches!(
+                        method,
+                        ArrayMethodKind::Push
+                            | ArrayMethodKind::Pop
+                            | ArrayMethodKind::Shift
+                            | ArrayMethodKind::Unshift
+                            | ArrayMethodKind::Splice
+                    ) {
                         let struct_elem = matches!(elem, Type::Struct(_));
                         let (name, params) = match method {
                             ArrayMethodKind::Push if matches!(elem, Type::U8) => {
@@ -8476,7 +8630,11 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                 ("sw_array_push_struct", 3usize)
                             }
                             ArrayMethodKind::Push => ("sw_array_push", 1usize),
-                            _ => ("sw_array_pop", 0usize),
+                            ArrayMethodKind::Pop => ("sw_array_pop", 0usize),
+                            ArrayMethodKind::Shift => ("sw_array_shift", 0usize),
+                            ArrayMethodKind::Unshift => ("sw_array_unshift", 1usize),
+                            ArrayMethodKind::Splice => ("sw_array_splice", 2usize),
+                            _ => unreachable!(),
                         };
                         let mut sig = FunctionSig {
                             module: self.lowerer.state.id,
@@ -8500,6 +8658,21 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                 has_default: false,
                                 rest: false,
                             });
+                        } else if params == 2 {
+                            sig.params.push(ParamSig {
+                                name: "start".to_owned(),
+                                ty: Type::Int,
+                                has_default: false,
+                                rest: false,
+                            });
+                            sig.params.push(ParamSig {
+                                name: "count".to_owned(),
+                                ty: Type::Int,
+                                has_default: false,
+                                rest: false,
+                            });
+                            // splice 返回被删元素的新数组。
+                            sig.ret = Type::Array(Box::new(elem.clone()));
                         } else if params == 3 {
                             // sw_array_push_struct(array, elem_size, src)
                             sig.params.push(ParamSig {
@@ -8515,11 +8688,15 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                 rest: false,
                             });
                         } else {
+                            // pop / shift 返回元素。
                             sig.ret = elem.clone();
                         }
                         let mut call_args = vec![object];
                         if params == 1 {
                             call_args.push(args.first().cloned().unwrap_or(MirExpr::Int(0)));
+                        } else if params == 2 {
+                            call_args.push(args.first().cloned().unwrap_or(MirExpr::Int(0)));
+                            call_args.push(args.get(1).cloned().unwrap_or(MirExpr::Int(0)));
                         } else if params == 3 {
                             let struct_size = self.lowerer.semantic_struct_size(&elem);
                             call_args.push(MirExpr::Int(struct_size as i64));
@@ -8531,6 +8708,65 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                 sig,
                             },
                             args: call_args,
+                        };
+                    }
+                    if matches!(method, ArrayMethodKind::IndexOf | ArrayMethodKind::Includes) {
+                        // 编译器内联线性查找：i 从 0 起，元素与 needle 相等即停。
+                        let is_string = matches!(elem, Type::Str);
+                        let is_float = elem.is_float();
+                        let needle = args.first().cloned().unwrap_or(MirExpr::Int(0));
+                        return MirExpr::ArraySearch {
+                            object: Box::new(object),
+                            needle: Box::new(needle),
+                            elem: elem.clone(),
+                            is_string,
+                            is_float,
+                            mode: if *method == ArrayMethodKind::IndexOf {
+                                SearchMode::IndexOf
+                            } else {
+                                SearchMode::Includes
+                            },
+                        };
+                    }
+                    if *method == ArrayMethodKind::Reduce {
+                        // 左折叠：acc = init；逐元素 acc = closure(acc, elem[i])。
+                        let closure = args.first().cloned().unwrap_or(MirExpr::Int(0));
+                        let init = args.get(1).cloned().unwrap_or(MirExpr::Int(0));
+                        let fn_ty = self.expr_type(&ast_args[0]);
+                        let (fn_params, fn_ret) = match &fn_ty {
+                            Type::Function { params, ret } => (params.clone(), (**ret).clone()),
+                            _ => (Vec::new(), Type::Error),
+                        };
+                        let mut sig = FunctionSig {
+                            module: self.lowerer.state.id,
+                            name: "$closure".to_owned(),
+                            generics: Vec::new(),
+                            bounds: HashMap::new(),
+                            params: vec![ParamSig {
+                                name: "$env".to_owned(),
+                                ty: Type::Ptr(Box::new(Type::I8)),
+                                has_default: false,
+                                rest: false,
+                            }],
+                            ret: fn_ret,
+                            extern_c: false,
+                            span: expr.span,
+                        };
+                        for (index, param_ty) in fn_params.iter().enumerate() {
+                            sig.params.push(ParamSig {
+                                name: format!("arg{index}"),
+                                ty: param_ty.clone(),
+                                has_default: false,
+                                rest: false,
+                            });
+                        }
+                        return MirExpr::ArrayReduce {
+                            object: Box::new(object),
+                            closure: Box::new(closure),
+                            init: Box::new(init),
+                            sig,
+                            elem: elem.clone(),
+                            acc: ret.clone(),
                         };
                     }
                     let closure = args.first().cloned().unwrap_or(MirExpr::Int(0));
@@ -8604,7 +8840,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             elem: elem.clone(),
                             mode: IterateMode::Find,
                         },
-                        ArrayMethodKind::Push | ArrayMethodKind::Pop => unreachable!(),
+                        ArrayMethodKind::IndexOf
+                        | ArrayMethodKind::Includes
+                        | ArrayMethodKind::Reduce => unreachable!(),
+                        ArrayMethodKind::Push
+                        | ArrayMethodKind::Pop
+                        | ArrayMethodKind::Shift
+                        | ArrayMethodKind::Unshift
+                        | ArrayMethodKind::Splice => unreachable!(),
                     };
                 }
                 let callee = match target {
@@ -9236,24 +9479,46 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         }
                         TemplatePart::Expr(expr) => {
                             let ty = self.expr_type(expr);
+                            let nullable = matches!(ty, Type::Nullable(_));
+                            let inner = ty.without_nullable();
                             let value = self.lower_expr(expr);
-                            let value = if ty == Type::Str {
-                                value
+                            let formatted = if *inner == Type::Str {
+                                value.clone()
                             } else {
-                                let intrinsic = match ty {
+                                let intrinsic = match inner {
                                     Type::Int | Type::Isize => "int_to_string",
                                     Type::UInt | Type::Usize => "uint_to_string",
                                     Type::Char => "char_to_string",
                                     Type::Bool => "bool_to_string",
-                                    _ if ty.is_integer() => "int_to_string",
+                                    _ if inner.is_integer() => "int_to_string",
                                     _ => "float_to_string",
                                 };
                                 MirExpr::Call {
                                     callee: MirCallee::Intrinsic {
                                         name: intrinsic.to_owned(),
                                     },
-                                    args: vec![value],
+                                    args: vec![value.clone()],
                                 }
+                            };
+                            let value = if nullable {
+                                // 可空插值：空（0）→ "null"，否则格式化内部值。
+                                let zero = if inner.is_float() {
+                                    MirExpr::Float(0.0)
+                                } else {
+                                    MirExpr::Int(0)
+                                };
+                                let null_index = self.lowerer.intern_string("null");
+                                MirExpr::Select {
+                                    cond: Box::new(MirExpr::Binary {
+                                        op: MirBinary::Eq,
+                                        left: Box::new(value),
+                                        right: Box::new(zero),
+                                    }),
+                                    then: Box::new(MirExpr::Str(null_index)),
+                                    else_: Box::new(formatted),
+                                }
+                            } else {
+                                formatted
                             };
                             values.push(value);
                         }

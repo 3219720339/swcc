@@ -8,7 +8,7 @@ pub mod types;
 pub use check::{AnalysisResult, SymbolOccurrence, analyze, analyze_with_source};
 pub use mir::{
     IterateMode, MatchArmMir, MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule,
-    MirParam, MirStmt, MirStmtKind, MirTarget, MirUnary,
+    MirParam, MirStmt, MirStmtKind, MirTarget, MirUnary, SearchMode,
 };
 pub use symbols::{FunctionSig, SymbolId, TypeTable};
 pub use types::Type;

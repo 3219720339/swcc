@@ -3398,6 +3398,72 @@ int64_t sw_array_pop(sw_array* array) {
     return ((int64_t*)array->data)[array->len];
 }
 
+// 队首出队（8 字节元素；空数组返回 0）。剩余元素前移。
+int64_t sw_array_shift(sw_array* array) {
+    if (array == NULL || array->len <= 0) {
+        return 0;
+    }
+    int64_t value = ((int64_t*)array->data)[0];
+    if (array->len > 1) {
+        memmove(array->data, (char*)array->data + 8, (sw_size)((uint64_t)(array->len - 1) * 8));
+    }
+    array->len -= 1;
+    return value;
+}
+
+// 队首入队（8 字节元素）：扩容 + 整体后移，返回新长度。
+int64_t sw_array_unshift(sw_array* array, int64_t value) {
+    if (array == NULL) {
+        return 0;
+    }
+    if (array->len >= array->cap) {
+        int64_t new_cap = array->cap * 2 + 1;
+        sw_array* bigger = sw_array_new(8, new_cap);
+        memcpy(bigger->data, array->data, (sw_size)((uint64_t)array->len * 8));
+        bigger->len = array->len;
+        *array = *bigger;
+    }
+    if (array->len > 0) {
+        memmove((char*)array->data + 8, array->data, (sw_size)((uint64_t)array->len * 8));
+    }
+    ((int64_t*)array->data)[0] = value;
+    array->len += 1;
+    return array->len;
+}
+
+// 删除 [start, start+count)（8 字节元素），返回被删元素组成的新数组。
+// 越界自动钳制；count <= 0 返回空数组。
+sw_array* sw_array_splice(sw_array* array, int64_t start, int64_t count) {
+    sw_array* removed = sw_array_new(8, 0);
+    if (array == NULL || array->len <= 0 || count <= 0) {
+        return removed;
+    }
+    if (start < 0) {
+        start = 0;
+    }
+    if (start >= array->len) {
+        return removed;
+    }
+    int64_t end = start + count;
+    if (end > array->len) {
+        end = array->len;
+    }
+    int64_t removed_count = end - start;
+    for (int64_t i = 0; i < removed_count; i++) {
+        sw_array_push(removed, ((int64_t*)array->data)[start + i]);
+    }
+    int64_t tail = array->len - end;
+    if (tail > 0) {
+        memmove(
+            (char*)array->data + (uintptr_t)start * 8,
+            (char*)array->data + (uintptr_t)end * 8,
+            (sw_size)((uint64_t)tail * 8)
+        );
+    }
+    array->len = start + tail;
+    return removed;
+}
+
 // 数组切片（复制）：a[start:end]，越界自动裁剪，返回新数组。
 sw_array* sw_array_slice(sw_array* array, int64_t start, int64_t end, int64_t elem_size) {
     if (elem_size <= 0) {

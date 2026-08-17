@@ -20,7 +20,7 @@ use sw_semantic::symbols::FunctionSig;
 use sw_semantic::types::Type;
 use sw_semantic::{
     IterateMode, MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule, MirStmt,
-    MirStmtKind, MirTarget, MirUnary, TypeTable,
+    MirStmtKind, MirTarget, MirUnary, SearchMode, TypeTable,
 };
 use target_lexicon::Triple;
 
@@ -1012,6 +1012,39 @@ fn visit_expr(
             refs.closure_sig_refs.insert(key, sig_ref);
             visit_expr(object, generator, mir, exports, ctx, refs)?;
             visit_expr(closure, generator, mir, exports, ctx, refs)?;
+        }
+        MirExpr::ArraySearch {
+            object,
+            needle,
+            is_string,
+            ..
+        } => {
+            visit_expr(object, generator, mir, exports, ctx, refs)?;
+            visit_expr(needle, generator, mir, exports, ctx, refs)?;
+            // 字符串元素查找需要 string_eq 运行时函数引用。
+            if *is_string && !refs.func_refs.contains_key("string_eq") {
+                let sig = intrinsic_signature("string_eq", generator.module.isa());
+                let func_id = generator.declare_import("string_eq", &sig)?;
+                let func_ref = generator
+                    .module
+                    .declare_func_in_func(func_id, &mut ctx.func);
+                refs.func_refs.insert("string_eq".to_owned(), func_ref);
+            }
+        }
+        MirExpr::ArrayReduce {
+            object,
+            closure,
+            init,
+            sig,
+            ..
+        } => {
+            let key = format!("{:?}", sig);
+            let cranelift_sig = signature_of_sig(sig, generator.module.isa())?;
+            let sig_ref = ctx.func.import_signature(cranelift_sig);
+            refs.closure_sig_refs.insert(key, sig_ref);
+            visit_expr(object, generator, mir, exports, ctx, refs)?;
+            visit_expr(closure, generator, mir, exports, ctx, refs)?;
+            visit_expr(init, generator, mir, exports, ctx, refs)?;
         }
         _ => {}
     }
@@ -2063,7 +2096,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
 
     fn is_float_local(&self, local: usize) -> bool {
         matches!(
-            self.local_types.get(local),
+            self.local_types.get(local).map(|t| t.without_nullable()),
             Some(Type::F32) | Some(Type::F64)
         )
     }
@@ -2107,7 +2140,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
     fn field_is_float(&self, object: &MirExpr, index: usize) -> bool {
         self.expr_owner_type(object)
             .and_then(|owner| self.field_type(&owner, index))
-            .map(|ty| matches!(ty, Type::F32 | Type::F64))
+            .map(|ty| matches!(ty.without_nullable(), Type::F32 | Type::F64))
             .unwrap_or(false)
     }
 
@@ -2414,7 +2447,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 let address = self.builder.ins().symbol_value(types::I64, gv);
                 // float 全局按 f64 位模式加载（存储时也按 f64 字节），其余按 i64。
                 let is_float = matches!(
-                    self.global_types.get(index),
+                    self.global_types.get(index).map(|t| t.without_nullable()),
                     Some(Type::F32) | Some(Type::F64)
                 );
                 if is_float {
@@ -2509,6 +2542,27 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 let right = self.expr(right)?;
                 let is_float = self.builder.func.dfg.value_type(left) == types::F64
                     || self.builder.func.dfg.value_type(right) == types::F64;
+                // 浮点比较/运算的规范化：可空值（如 float? 与 null 比较）一边是
+                // 原始 i64，位模式 bitcast 成 f64（0 位模式 = 0.0，null 语义不变）。
+                let (left, right) = if is_float {
+                    let left = if self.builder.func.dfg.value_type(left) == types::F64 {
+                        left
+                    } else {
+                        self.builder
+                            .ins()
+                            .bitcast(types::F64, MemFlagsData::new(), left)
+                    };
+                    let right = if self.builder.func.dfg.value_type(right) == types::F64 {
+                        right
+                    } else {
+                        self.builder
+                            .ins()
+                            .bitcast(types::F64, MemFlagsData::new(), right)
+                    };
+                    (left, right)
+                } else {
+                    (left, right)
+                };
                 match op {
                     MirBinary::Add => {
                         if is_float {
@@ -2561,8 +2615,17 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     MirBinary::Gt => self.bool_cmp(IntCC::SignedGreaterThan, left, right),
                     MirBinary::Ge => self.bool_cmp(IntCC::SignedGreaterThanOrEqual, left, right),
                     MirBinary::Coalesce => {
-                        let zero = self.builder.ins().iconst(types::I64, 0);
-                        let is_nonzero = self.builder.ins().icmp(IntCC::NotEqual, left, zero);
+                        // 可空浮点（float?）经上面的规范化后 left 是 f64：
+                        // 空值位模式为 0.0，与 0.0 比较判定是否为空。
+                        let is_float = self.builder.func.dfg.value_type(left) == types::F64;
+                        let is_nonzero = if is_float {
+                            let zero = self.builder.ins().f64const(0.0);
+                            let cmp = self.builder.ins().fcmp(FloatCC::NotEqual, left, zero);
+                            self.builder.ins().uextend(types::I64, cmp)
+                        } else {
+                            let zero = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.ins().icmp(IntCC::NotEqual, left, zero)
+                        };
                         self.builder.ins().select(is_nonzero, left, right)
                     }
                 }
@@ -3805,6 +3868,284 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                             stored
                         }
                     }
+                }
+            }
+            MirExpr::ArraySearch {
+                object,
+                needle,
+                elem,
+                is_string,
+                is_float,
+                mode,
+            } => {
+                let array = self.expr(object)?;
+                let needle_val = self.expr(needle)?;
+                let len = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), array, 0);
+                let elem_size: i64 = if matches!(*elem, Type::U8) { 1 } else { 8 };
+                let data = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), array, 16);
+                let index_slot = self.new_slot();
+                let result_slot = self.new_slot();
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, zero, index_slot, 0);
+                let init_result = if matches!(mode, SearchMode::IndexOf) {
+                    self.builder.ins().iconst(types::I64, -1)
+                } else {
+                    zero
+                };
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, init_result, result_slot, 0);
+                let header = self.builder.create_block();
+                let body = self.builder.create_block();
+                let exit = self.builder.create_block();
+                self.builder.ins().jump(header, &[]);
+                self.builder.switch_to_block(header);
+                let i = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let cond = self.builder.ins().icmp(IntCC::UnsignedLessThan, i, len);
+                self.builder.ins().brif(cond, body, &[], exit, &[]);
+                self.builder.switch_to_block(body);
+                let i = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let stride = self.builder.ins().iconst(types::I64, elem_size);
+                let offset = self.builder.ins().imul(i, stride);
+                let addr = self.builder.ins().iadd(data, offset);
+                let item = if elem_size == 1 {
+                    let byte = self
+                        .builder
+                        .ins()
+                        .load(types::I8, MemFlagsData::new(), addr, 0);
+                    self.builder.ins().uextend(types::I64, byte)
+                } else {
+                    let value = self
+                        .builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), addr, 0);
+                    if *is_float {
+                        self.builder
+                            .ins()
+                            .bitcast(types::F64, MemFlagsData::new(), value)
+                    } else {
+                        value
+                    }
+                };
+                let eq = if *is_string {
+                    let func_ref = self
+                        .refs
+                        .func_refs
+                        .get("string_eq")
+                        .copied()
+                        .ok_or("string_eq 未导入")?;
+                    let call = self.builder.ins().call(func_ref, &[item, needle_val]);
+                    self.builder
+                        .inst_results(call)
+                        .first()
+                        .copied()
+                        .unwrap_or_else(|| self.builder.ins().iconst(types::I64, 0))
+                } else if *is_float {
+                    let cc = FloatCC::Equal;
+                    let cmp = self.builder.ins().fcmp(cc, item, needle_val);
+                    self.builder.ins().uextend(types::I64, cmp)
+                } else {
+                    let cmp = self.builder.ins().icmp(IntCC::Equal, item, needle_val);
+                    self.builder.ins().uextend(types::I64, cmp)
+                };
+                let hit_block = self.builder.create_block();
+                let cont = self.builder.create_block();
+                let hit = self.builder.ins().icmp(IntCC::NotEqual, eq, zero);
+                self.builder.ins().brif(hit, hit_block, &[], cont, &[]);
+                self.builder.switch_to_block(hit_block);
+                let stored = if matches!(mode, SearchMode::IndexOf) {
+                    i
+                } else {
+                    self.builder.ins().iconst(types::I64, 1)
+                };
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, stored, result_slot, 0);
+                self.builder.ins().jump(exit, &[]);
+                self.builder.switch_to_block(cont);
+                self.builder.seal_block(cont);
+                let i = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let next = self.builder.ins().iadd_imm_s(i, 1);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, next, index_slot, 0);
+                self.builder.ins().jump(header, &[]);
+                self.builder.switch_to_block(exit);
+                self.builder.seal_block(header);
+                self.builder.seal_block(body);
+                self.builder.seal_block(exit);
+                self.builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, result_slot, 0)
+            }
+            MirExpr::ArrayReduce {
+                object,
+                closure,
+                init,
+                sig,
+                elem,
+                acc,
+            } => {
+                let array = self.expr(object)?;
+                let closure_obj = self.expr(closure)?;
+                let init_val = self.expr(init)?;
+                let len = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), array, 0);
+                let elem_size: i64 = if matches!(*elem, Type::U8) {
+                    1
+                } else if let Type::Struct(id) = *elem {
+                    self.struct_sizes.get(&id).copied().unwrap_or(8) as i64
+                } else {
+                    8
+                };
+                let data = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), array, 16);
+                let acc_slot = self.new_slot();
+                let index_slot = self.new_slot();
+                let acc_stored = if acc.is_float() {
+                    self.builder
+                        .ins()
+                        .bitcast(types::I64, MemFlagsData::new(), init_val)
+                } else {
+                    init_val
+                };
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, acc_stored, acc_slot, 0);
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, zero, index_slot, 0);
+                let key = format!("{:?}", sig);
+                let sig_ref = self
+                    .refs
+                    .closure_sig_refs
+                    .get(&key)
+                    .copied()
+                    .ok_or("闭包签名未导入")?;
+                let header = self.builder.create_block();
+                let body = self.builder.create_block();
+                let exit = self.builder.create_block();
+                self.builder.ins().jump(header, &[]);
+                self.builder.switch_to_block(header);
+                let i = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let cond = self.builder.ins().icmp(IntCC::UnsignedLessThan, i, len);
+                self.builder.ins().brif(cond, body, &[], exit, &[]);
+                self.builder.switch_to_block(body);
+                let i = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let stride = self.builder.ins().iconst(types::I64, elem_size);
+                let offset = self.builder.ins().imul(i, stride);
+                let addr = self.builder.ins().iadd(data, offset);
+                let item = if elem_size == 1 {
+                    let byte = self
+                        .builder
+                        .ins()
+                        .load(types::I8, MemFlagsData::new(), addr, 0);
+                    self.builder.ins().uextend(types::I64, byte)
+                } else if matches!(*elem, Type::Struct(_)) {
+                    addr
+                } else {
+                    let value = self
+                        .builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), addr, 0);
+                    if elem.is_float() {
+                        self.builder
+                            .ins()
+                            .bitcast(types::F64, MemFlagsData::new(), value)
+                    } else {
+                        value
+                    }
+                };
+                let acc_val = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, acc_slot, 0);
+                let acc_val = if acc.is_float() {
+                    self.builder
+                        .ins()
+                        .bitcast(types::F64, MemFlagsData::new(), acc_val)
+                } else {
+                    acc_val
+                };
+                let fn_ptr =
+                    self.builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), closure_obj, 0);
+                let env = self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new(), closure_obj, 8);
+                let call = self
+                    .builder
+                    .ins()
+                    .call_indirect(sig_ref, fn_ptr, &[env, acc_val, item]);
+                let result = self
+                    .builder
+                    .inst_results(call)
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| self.builder.ins().iconst(types::I64, 0));
+                let result_stored = if acc.is_float() {
+                    self.builder
+                        .ins()
+                        .bitcast(types::I64, MemFlagsData::new(), result)
+                } else {
+                    result
+                };
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, result_stored, acc_slot, 0);
+                let i = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, index_slot, 0);
+                let next = self.builder.ins().iadd_imm_s(i, 1);
+                self.builder
+                    .ins()
+                    .stack_store(types::I64, next, index_slot, 0);
+                self.builder.ins().jump(header, &[]);
+                self.builder.switch_to_block(exit);
+                self.builder.seal_block(header);
+                self.builder.seal_block(body);
+                self.builder.seal_block(exit);
+                let acc_out = self
+                    .builder
+                    .ins()
+                    .stack_load(types::I64, types::I64, acc_slot, 0);
+                if acc.is_float() {
+                    self.builder
+                        .ins()
+                        .bitcast(types::F64, MemFlagsData::new(), acc_out)
+                } else {
+                    acc_out
                 }
             }
         })

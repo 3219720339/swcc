@@ -1577,8 +1577,27 @@ impl<'a> Parser<'a> {
         self.parse_binary_level(
             &[TokenKind::Star, TokenKind::Slash, TokenKind::Percent],
             BinaryOp::Mul,
-            Self::parse_unary,
+            Self::parse_as,
         )
+    }
+
+    /// `as` 类型转换层（Rust 优先级：一元运算 > as > 乘法/加法）。
+    /// 使 `-1 as u8` 解析为 `(-1) as u8`（=255）而非 `-(1 as u8)`（=-1）。
+    fn parse_as(&mut self) -> Result<Expr, ()> {
+        let start = self.peek().span.start;
+        let mut expr = self.parse_unary()?;
+        while self.at_ident("as") {
+            self.advance();
+            let ty = self.parse_type()?;
+            expr = Expr {
+                kind: ExprKind::Cast {
+                    expr: Box::new(expr),
+                    ty,
+                },
+                span: Span::new(start, self.peek().span.start),
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_binary_level(
@@ -1819,17 +1838,6 @@ impl<'a> Parser<'a> {
                     } else {
                         break;
                     }
-                }
-                TokenKind::Ident(name) if name == "as" => {
-                    self.advance();
-                    let ty = self.parse_type()?;
-                    expr = Expr {
-                        kind: ExprKind::Cast {
-                            expr: Box::new(expr),
-                            ty,
-                        },
-                        span: Span::new(start, self.peek().span.start),
-                    };
                 }
                 _ => break,
             }

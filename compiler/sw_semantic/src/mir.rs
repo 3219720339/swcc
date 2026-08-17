@@ -249,6 +249,25 @@ pub enum MirExpr {
         elem: Type,
         mode: IterateMode,
     },
+    /// 数组线性查找（indexOf/includes）：内联循环，元素与 needle 相等即停。
+    /// 相等比较：字符串走 string_eq intrinsic、浮点按位比较、标量按值比较。
+    ArraySearch {
+        object: Box<MirExpr>,
+        needle: Box<MirExpr>,
+        elem: Type,
+        is_string: bool,
+        is_float: bool,
+        mode: SearchMode,
+    },
+    /// 数组左折叠（reduce）：acc = init；逐元素 acc = closure(acc, elem[i])。
+    ArrayReduce {
+        object: Box<MirExpr>,
+        closure: Box<MirExpr>,
+        init: Box<MirExpr>,
+        sig: FunctionSig,
+        elem: Type,
+        acc: Type,
+    },
     /// match 表达式：按 tag 分派，每分支解构绑定后求值，结果进公共槽。
     MatchExpr {
         value: Box<MirExpr>,
@@ -263,6 +282,12 @@ pub enum IterateMode {
     Some,
     Every,
     Find,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchMode {
+    IndexOf,
+    Includes,
 }
 
 #[derive(Clone, Debug)]
