@@ -109,7 +109,20 @@ fn load_config(entry: &Path) -> SwConfig {
     config
 }
 
+/// 编译器主线程栈默认仅 1MB（Windows PE 头 SizeOfStackReserve），语义分析
+/// 对复杂模块（如 std/audio 的深层递归）会栈溢出。在 64MB 栈线程中运行
+/// 实际工作，保证 debug/release 构建都安全。
 fn main() {
+    let stack_size = 64 * 1024 * 1024;
+    let handle = std::thread::Builder::new()
+        .name("swc-main".to_owned())
+        .stack_size(stack_size)
+        .spawn(run)
+        .expect("无法创建编译器工作线程");
+    handle.join().expect("编译器工作线程 panic");
+}
+
+fn run() {
     let started = Instant::now();
     let args: Vec<String> = env::args().collect();
     if args.len() == 1 {

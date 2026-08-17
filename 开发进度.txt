@@ -2,6 +2,26 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 00:30  修复 debug 构建语义层栈溢出（P0）：
+   - 现象：debug 构建的 swc 分析 std/audio 模块相关探针（probe-audio、
+     probe-http-local）时 `thread 'main' has overflowed its stack`，间歇性；
+     release 构建正常。git stash 原始代码同样复现（非本批引入）。
+   - 定位：swc.exe 主线程栈仅 1MB（Windows PE 头 SizeOfStackReserve=
+     1048576，debug/release 相同）。语义分析对复杂模块递归栈消耗接近
+     1MB 上限，debug 栈帧大（未优化）更易顶破，间歇性与内存布局/分配
+     顺序有关。最小复现：`import { audio_open } from "std/audio"` 单名字
+     偶发溢出；RUST_MIN_STACK 无效（只影响新线程不影响主线程）。
+   - 修复：main() 改为入口，实际逻辑移入 run()，在 64MB 栈线程中执行
+     （std::thread::Builder::stack_size）。debug/release 均安全。
+   - 验证：debug 构建 probe-audio/probe-http-local check 不再溢出、
+     10 次压力测试 0 溢出；debug 全量 110 examples 回归通过；release
+     110 回归通过；cargo test 59 全绿、fmt 通过、零警告；交叉编译
+     Linux x64/aarch64 musl + macOS aarch64 对象成功（ELF/Mach-O 格式
+     校验通过）。
+   - 注：examples 多数探针未按 swc fmt 格式（CI 仅检查 fixtures/
+     formatted.sw），格式化器对三元运算格式有缺陷（`a?b: c` 丢失空格），
+     已恢复已提交版本，不在本批处理。
+
 2026-08-16 23:59  清理编译警告 + 边界负例回归 + 文档修正 + 仓库卫生：
    - 编译警告清零（20 条）：sw-semantic 4 条（unreachable pattern 可空分支
      顺序修正、去掉多余 mut、删未用 symbol 参数、StaticMemberTarget::Method
