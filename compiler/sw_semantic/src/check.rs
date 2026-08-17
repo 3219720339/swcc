@@ -2554,6 +2554,9 @@ impl<'s> Checker<'s> {
                 update,
                 body,
             } => {
+                // for 循环变量作用域限定在循环内（JS 语义）：推子作用域，
+                // 循环后变量不可见、可重新声明同名。
+                self.scopes.push(HashMap::new());
                 if let Some(init) = init {
                     match init {
                         ForInit::Variable(variable) => self.check_var_decl(variable),
@@ -2577,6 +2580,7 @@ impl<'s> Checker<'s> {
                 self.loop_depth += 1;
                 self.check_stmt(body);
                 self.loop_depth -= 1;
+                self.scopes.pop();
             }
             StmtKind::ForEach {
                 kind,
@@ -2600,6 +2604,8 @@ impl<'s> Checker<'s> {
                         Type::Error
                     }
                 };
+                // for-of 元素变量作用域限定在循环内（JS 语义）。
+                self.scopes.push(HashMap::new());
                 let id = self.alloc_local();
                 self.symbols[id.0 as usize].kind = SymbolKind::Local {
                     ty: element.clone(),
@@ -2612,6 +2618,7 @@ impl<'s> Checker<'s> {
                 self.loop_depth += 1;
                 self.check_stmt(body);
                 self.loop_depth -= 1;
+                self.scopes.pop();
             }
             StmtKind::Switch {
                 value,
@@ -5438,7 +5445,8 @@ struct FnLower<'a, 'm, 's> {
 
 #[derive(Clone)]
 struct DeferredExpr {
-    expr: MirExpr,
+    /// 延迟执行的语句序列（defer 一条语句、try/finally 整块体）。
+    expr: Vec<MirStmt>,
     flag: usize,
 }
 
@@ -7233,19 +7241,18 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
 
     fn emit_defer_entries(&self, entries: &[DeferredExpr], output: &mut Vec<MirStmt>) {
         for deferred in entries.iter().rev() {
+            let mut then = vec![MirStmt::new(MirStmtKind::Assign {
+                target: MirTarget::Local(deferred.flag),
+                value: MirExpr::Int(0),
+            })];
+            then.extend(deferred.expr.clone());
             output.push(MirStmt::new(MirStmtKind::If {
                 cond: MirExpr::Binary {
                     op: MirBinary::Ne,
                     left: Box::new(MirExpr::Local(deferred.flag)),
                     right: Box::new(MirExpr::Int(0)),
                 },
-                then: vec![
-                    MirStmt::new(MirStmtKind::Assign {
-                        target: MirTarget::Local(deferred.flag),
-                        value: MirExpr::Int(0),
-                    }),
-                    MirStmt::new(MirStmtKind::Expr(deferred.expr.clone())),
-                ],
+                then,
                 else_: Vec::new(),
             }));
         }
@@ -7673,6 +7680,23 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 catches,
                 finally,
             } => {
+                // finally 注册为 flag 守卫的 defer 条目：正常/异常出口发射并清
+                // 标志，return/break/continue 经 emit_defer_cleanup_from 触发。
+                // 必须在降级 try 体之前推入，return 降级时才能看到。
+                let mut finally_entries: Vec<DeferredExpr> = Vec::new();
+                if let Some(finally) = finally {
+                    let finally_mir = self.lower_defer_scope(&finally.statements);
+                    let flag = self.declare_local("$fin_active", Type::Bool, true);
+                    output.push(MirStmt::new(MirStmtKind::VarDecl {
+                        local: flag,
+                        init: Some(MirExpr::Bool(true)),
+                    }));
+                    finally_entries.push(DeferredExpr {
+                        expr: finally_mir,
+                        flag,
+                    });
+                    self.defer_scopes.push(finally_entries.clone());
+                }
                 let (normal_body, body_defers) =
                     self.lower_defer_scope_with_entries(&body.statements);
                 let frame_ty = Type::Ptr(Box::new(Type::I8));
@@ -7771,8 +7795,8 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         else_: Vec::new(),
                     }));
                 }
-                if let Some(finally) = finally {
-                    then_stmts.extend(self.lower_defer_scope(&finally.statements));
+                if !finally_entries.is_empty() {
+                    self.emit_defer_entries(&finally_entries, &mut then_stmts);
                 }
                 then_stmts.push(MirStmt::new(MirStmtKind::If {
                     cond: MirExpr::Binary {
@@ -7791,8 +7815,10 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
 
                 // 正常路径：body → finally → 弹出框架
                 let mut else_stmts = normal_body;
-                if let Some(finally) = finally {
-                    else_stmts.extend(self.lower_defer_scope(&finally.statements));
+                if !finally_entries.is_empty() {
+                    self.emit_defer_entries(&finally_entries, &mut else_stmts);
+                    // finally 已发射并清标志，弹出作用域避免后续 return 重复触发。
+                    self.defer_scopes.pop();
                 }
                 else_stmts.push(MirStmt::new(MirStmtKind::Expr(MirExpr::Call {
                     callee: MirCallee::Intrinsic {
@@ -7857,7 +7883,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     init: Some(MirExpr::Bool(true)),
                 }));
                 let deferred = DeferredExpr {
-                    expr: self.lower_expr(expr),
+                    expr: vec![MirStmt::new(MirStmtKind::Expr(self.lower_expr(expr)))],
                     flag,
                 };
                 self.defer_scopes

@@ -2,6 +2,23 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 15:50  Bug 排查批次 4：finally 控制流 + for 循环变量作用域：
+   - try/finally 的 finally 在 try 体内 return 时不执行（finally 内联进
+     正常/异常路径，return/break/continue 直接跳过）。修复：finally 注册为
+     flag 守卫的 defer 条目（DeferredExpr.expr 从单 MirExpr 改为语句序列），
+     在降级 try 体之前推入 defer_scopes——return/break/continue 经
+     emit_defer_cleanup_from 自动触发并清标志；正常/异常出口用
+     emit_defer_entries 发射后弹出作用域。return 值保持（$defer_return）、
+     嵌套 try/finally 两级都执行、break/throw/catch 内 return 全正确。
+   - for/for-of 循环变量泄漏出循环作用域（JS 里循环后不可见、可重声明同名；
+     Sw 报"重复声明"）。修复：检查期 For/ForEach 推/弹子作用域。
+   - 排查确认正常：return+finally 值保持、break 触发 finally、throw→finally
+     →catch、catch 内 return+finally、嵌套 finally、多 case 共享体、
+     float as int / int as float、可空函数类型 ??、defer 在循环内。
+   - 新增探针 probe-finally.sw（5 项），注册 run-examples.py（125 项）。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 125 examples 回归通过。
+ 
 2026-08-17 15:10  Bug 排查批次 3：enum switch、float/int 字面量适配：
    - enum switch 失效（文档声称支持枚举成员 case）：switch 降级对枚举值/case
      用 MirBinary::Eq 指针比较，每次构造新枚举对象永不相等、静默走 default。
