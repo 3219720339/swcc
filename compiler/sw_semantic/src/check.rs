@@ -1228,13 +1228,20 @@ impl Analyzer {
                         .iter()
                         .any(|m| matches!(m, MemberModifier::Static))
                     {
-                        // 静态字段初值必须是编译期常量标量；字符串/数组字面量
-                        // 无法在数据段静态表示（bug #4 遗留），编译期明确报错。
+                        // 静态字段初值必须是编译期常量标量；字符串字面量由
+                        // sw_global_init 运行时构造（仅入口模块）。
                         if let Some(default) = &field.default {
                             if self.const_type(default).is_none() {
                                 self.error(
-                                    "静态字段初始化式必须是编译期常量（整数/浮点/布尔/字符）",
+                                    "静态字段初始化式必须是编译期常量（整数/浮点/布尔/字符/字符串字面量）",
                                     default.span,
+                                );
+                            } else if self.const_type(default) == Some(Type::Str)
+                                && module_id.0 != 0
+                            {
+                                self.error(
+                                    "字符串静态字段暂只支持在入口模块（main 所在文件）的类中声明",
+                                    field.name.span,
                                 );
                             }
                         }
@@ -1436,9 +1443,10 @@ impl Analyzer {
         match &expr.kind {
             ExprKind::Integer { .. } => Some(Type::Int),
             ExprKind::Float { .. } => Some(Type::F64),
-            // 字符串/数组字面量不能作全局静态初值：数据段无法静态表示
-            // sw_string { data, len }（data 需指向池内内容，运行时才构造），
-            // codegen 会生成空指针导致运行崩溃（bug #4 遗留）。
+            // 字符串字面量可作全局/静态字段初值：codegen 在数据段生成
+            // sw_string 结构体（data 重定位指向字符串池）。数组字面量仍
+            // 不支持（运行时需 sw_array_new 构造，属运行时初始化范畴）。
+            ExprKind::Str(_) => Some(Type::Str),
             ExprKind::Bool(_) => Some(Type::Bool),
             ExprKind::Char(_) => Some(Type::Char),
             ExprKind::Binary { op, left, right } => {
@@ -1487,6 +1495,13 @@ impl Analyzer {
                     let ty = self.const_type(init);
                     if ty.is_none() {
                         self.error("顶层变量初始化式必须是编译期常量表达式", init.span);
+                    } else if ty == Some(Type::Str) && module_id.0 != 0 {
+                        // 跨模块 string 全局：sw_global_init 仅在入口模块生成，
+                        // 定义模块的字符串全局不会被运行时初始化（当前限制）。
+                        self.error(
+                            "字符串全局变量暂只支持在入口模块（main 所在文件）声明",
+                            variable.name.span,
+                        );
                     }
                 }
             }
@@ -5937,6 +5952,25 @@ impl<'m, 's> MirLowerer<'m, 's> {
         for function in std::mem::take(&mut self.hidden_functions) {
             module_mir.functions.push(function);
         }
+        // string/数组等引用类型全局变量：数据段无法静态表示 sw_string 指针
+        // （COFF+PIC 下数据重定位生成 .refptr 间接引用不可靠），由运行时
+        // sw_global_init 在 main 之前构造（sw_string_from_literal 写入全局槽）。
+        // 入口模块始终生成该函数（空函数体也生成），runtime main 无条件调用，
+        // 保证链接符号存在。当前仅支持入口模块的 string 全局；跨模块 string
+        // 全局在定义模块检查时拦截（check_globals 报错）。
+        if self.state.id.0 == 0 {
+            let mut string_global_inits: Vec<(u32, usize)> = Vec::new();
+            for (index, global) in module_mir.globals.iter().enumerate() {
+                if global.ty == Type::Str {
+                    if let Some(MirExpr::Str(str_id)) = global.init.as_ref() {
+                        string_global_inits.push((index as u32, *str_id));
+                    }
+                }
+            }
+            if let Some(init_fn) = self.build_global_init(&string_global_inits) {
+                module_mir.functions.push(init_fn);
+            }
+        }
         // @test 测试函数：无 main 时合成测试 runner（返回失败数）。
         let test_fns: Vec<(String, FunctionSig)> = items
             .iter()
@@ -5981,6 +6015,31 @@ impl<'m, 's> MirLowerer<'m, 's> {
         // 崩溃定位表：填全局表快照（codegen 仅入口模块导出，其余 Local）。
         module_mir.debug_table = self.debug_table.clone();
         module_mir
+    }
+
+    /// 生成 sw_global_init：运行时把字符串字面量全局初值写入全局槽。
+    /// 函数体：`全局槽 = MirExpr::Str(池 id)`（codegen 对 MirExpr::Str 调用
+    /// sw_string_from_literal 构造）。runtime main 在 sw_user_main 前调用。
+    fn build_global_init(&mut self, string_inits: &[(u32, usize)]) -> Option<MirFunction> {
+        let mut body = Vec::new();
+        for (gindex, str_id) in string_inits {
+            body.push(MirStmt::new(MirStmtKind::Assign {
+                target: MirTarget::Global(*gindex),
+                value: MirExpr::Str(*str_id),
+            }));
+        }
+        Some(MirFunction {
+            name: "sw_global_init".to_owned(),
+            user_name: String::new(),
+            exported: false,
+            params: Vec::new(),
+            ret: Type::Void,
+            locals: Vec::new(),
+            body,
+            extern_c: false,
+            debug_index: u32::MAX,
+            source_line: 0,
+        })
     }
 
     fn build_test_main(&mut self, test_fns: &[(String, FunctionSig)]) -> Option<MirFunction> {

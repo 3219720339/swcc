@@ -2,6 +2,29 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 05:10  支持字符串全局变量初始化（sw_global_init 运行时构造）：
+   - 背景：`const S = "hello"` / `let S = "x"` / `static NAME: string = "swc"`
+     此前编译期报错——数据段无法静态表示 sw_string {data,len} 指针。
+   - 尝试 1（数据重定位）：用 Cranelift data_relocs 在数据段写 sw_string
+     结构体（data 指针经重定位指向字符串池）。验证发现 COFF+PIC 下生成
+     .refptr 间接引用，全局槽存的是 .refptr 地址而非字符串地址，非 PIC
+     也崩溃——跨平台不可靠，放弃。
+   - 方案（运行时初始化）：入口模块（module_id==0）生成隐藏函数
+     sw_global_init（空函数体也生成，保证链接符号存在；有字符串全局时
+     对每个全局发 Assign{ target: Global(gindex), value: Str(池 id) }）；
+     runtime main 在 sw_user_main 前调用 sw_global_init()；codegen
+     visit_target 补 MirTarget::Global 的 global_refs 声明（此前只有读取
+     路径声明，写入目标漏了导致"全局未声明"）。
+   - 效果：const/let 字符串全局、static 字符串字段全部可用（含拼接、
+     可变全局重新赋值）；数组全局仍编译期报错（需运行时 sw_array_new）。
+   - 限制（编译期明确报错而非崩溃）：跨模块字符串全局/静态字段仅支持
+     入口模块声明（sw_global_init 只在入口模块生成）。
+   - 新增探针 probe-string-global.sw（7 项），注册 run-examples.py（113 项）；
+     语义单测 basic/overloads 函数数 +1 更新。
+   - 文档：docs/04-内存模型.md、docs/08-能力清单.md 更新字符串全局说明。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 113 examples 回归通过；lib 构建（含字符串全局）正常。
+
 2026-08-17 04:10  修复 Bug #2（catch 无注解 e 不可用）+ Bug #3（lambda 返回类型注解）：
    - Bug #2 `catch (e)` 无类型注解时 e 完全不可用（中严重度，文档违背）：
      docs/06 承诺"catch (e) 不写类型捕获所有异常"，但 check.rs 无注解时

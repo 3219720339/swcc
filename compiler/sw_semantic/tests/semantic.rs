@@ -18,7 +18,8 @@ fn checks_basic_program_and_generates_mir() {
         result.diagnostics.items
     );
     assert_eq!(result.modules.len(), 1);
-    assert_eq!(result.modules[0].functions.len(), 2);
+    // 2 个用户函数 + 1 个 sw_global_init（运行时字符串全局初始化）。
+    assert_eq!(result.modules[0].functions.len(), 3);
     let main = result.modules[0]
         .functions
         .iter()
@@ -75,7 +76,8 @@ fn resolves_overloads() {
         "{:?}",
         result.diagnostics.items
     );
-    assert_eq!(result.modules[0].functions.len(), 3);
+    // 3 个用户函数 + 1 个 sw_global_init。
+    assert_eq!(result.modules[0].functions.len(), 4);
 }
 
 #[test]

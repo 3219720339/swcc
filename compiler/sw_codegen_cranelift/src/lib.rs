@@ -312,24 +312,37 @@ impl Generator {
             .map_err(|error| error.to_string())?;
         if defining {
             let mut description = DataDescription::new();
-            // 按全局类型存储初始值：float 用 f64 位模式，其余按 i64 字节。
-            let bytes = match &global.ty {
-                Type::F32 | Type::F64 => global
-                    .init
-                    .as_ref()
-                    .and_then(const_f64)
-                    .map(|value| value.to_le_bytes().to_vec())
-                    .unwrap_or_else(|| 0.0f64.to_le_bytes().to_vec()),
-                _ => global
-                    .init
-                    .as_ref()
-                    .and_then(const_i64)
-                    .map(|value| value.to_le_bytes().to_vec())
-                    .unwrap_or_else(|| vec![0u8; 8]),
-            };
-            description.init = Init::Bytes {
-                contents: bytes.into_boxed_slice(),
-            };
+            // 按全局类型存储初始值：float 用 f64 位模式；string 字面量初值
+            // 由运行时 sw_global_init 构造（数据段重定位在 COFF+PIC 下会
+            // 生成 .refptr 间接引用，跨平台不可靠），这里零初始化槽位。
+            // 其余按 i64 字节。
+            match &global.ty {
+                Type::F32 | Type::F64 => {
+                    let bytes = global
+                        .init
+                        .as_ref()
+                        .and_then(const_f64)
+                        .map(|value| value.to_le_bytes().to_vec())
+                        .unwrap_or_else(|| 0.0f64.to_le_bytes().to_vec());
+                    description.init = Init::Bytes {
+                        contents: bytes.into_boxed_slice(),
+                    };
+                }
+                Type::Str => {
+                    description.init = Init::Zeros { size: 8 };
+                }
+                _ => {
+                    let bytes = global
+                        .init
+                        .as_ref()
+                        .and_then(const_i64)
+                        .map(|value| value.to_le_bytes().to_vec())
+                        .unwrap_or_else(|| vec![0u8; 8]);
+                    description.init = Init::Bytes {
+                        contents: bytes.into_boxed_slice(),
+                    };
+                }
+            }
             self.module
                 .define_data(data_id, &description)
                 .map_err(|error| error.to_string())?;
@@ -556,7 +569,20 @@ fn visit_target(
     refs: &mut RefTable,
 ) -> Result<(), CodegenError> {
     match target {
-        MirTarget::Local(_) | MirTarget::Global(_) => Ok(()),
+        MirTarget::Local(_) => Ok(()),
+        // 全局写入目标（如 sw_global_init 里的 Assign）：声明数据符号引用。
+        MirTarget::Global(index) => {
+            let data_id = generator
+                .global_data
+                .get(index)
+                .copied()
+                .ok_or("全局未声明")?;
+            let gv = generator
+                .module
+                .declare_data_in_func(data_id, &mut ctx.func);
+            refs.global_refs.insert(*index, gv);
+            Ok(())
+        }
         MirTarget::Field { object, .. } => visit_expr(object, generator, mir, exports, ctx, refs),
         MirTarget::Index { object, index, .. } => {
             let bounds_check = generator.declare_import(

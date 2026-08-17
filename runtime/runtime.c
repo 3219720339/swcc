@@ -3684,6 +3684,12 @@ int main(int argc, char** argv) {
         ((int64_t*)args_array->data)[index] =
             (int64_t)sw_string_from_literal(arg, (int64_t)strlen(arg));
     }
+    // 字符串/引用类型全局变量的运行时初始化（sw_global_init 由编译器生成，
+    // 数据段无法静态表示 sw_string 指针）。仅在入口模块定义了该函数时调用；
+    // 未定义（无字符串全局）时由链接器解析为弱引用失败？——这里用可空符号：
+    // 编译器始终在入口模块生成 sw_global_init（即使空函数体），保证符号存在。
+    extern int64_t sw_global_init(void);
+    sw_global_init();
     int64_t result = sw_user_main(args_array);
     exit((int)result);
     return 0;
