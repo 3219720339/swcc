@@ -2840,3 +2840,10 @@ Sw 编译器（swcc）开发进度
      try/finally 控制流、数组 slice/sort_by、线程参数/结果糖和 `swc test` 耗时汇总。
    - 音频层当前为 miniaudio 原生解码/播放、后台控制线程、事件队列、设备切换、播放列表及交叉淡化；
      注意 `docs/08-能力清单.md` 仍有旧的“Windows 后端使用系统 MCI”表述，和实际实现不一致，后续文档整理时应修正。
+
+2026-08-17 23:42  文档整理与本机全量验证：
+   - 更新 `docs/08-能力清单.md`：修正 std/audio 后端为 miniaudio，并补齐 WAV/MP3/FLAC 元数据、
+     设备切换、事件、播放列表和交叉淡化能力及跨平台边界。
+   - 更新 `docs/项目说明.md`：记录函数一等值、finally 控制流、线程便利 API 与当前音频能力。
+   - 本批未执行交叉编译；本机 release 构建、`cargo test --workspace`（67 项）、
+     126 个注册 examples 回归、`probe-test` 5 项内嵌测试和 `probe-callbacks2` 均通过。
