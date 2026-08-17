@@ -2,6 +2,27 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 01:50  修复 swc fmt 泛型尖括号加空格：
+   - 缺陷：`Result<T, E>`、`Box<int>` 被格式化成 `Result < T, E >`——
+     `<`/`>` 被当比较运算符前后加空格，泛型完全变形。
+   - 修复（compiler/swc/src/formatter.rs）：
+     a) 新增 generic_depth 状态机；`<` 判定为泛型开需满足：前一个 token
+        是名字且再前一个是类型上下文（function/class/struct/enum/interface
+        声明名、implements/extends/where/new 之后、`: ` 类型注解），或
+        已在泛型嵌套内；`>` 在 generic_depth>0 时紧贴闭合。
+     b) `>>` 嵌套闭合拆两个 `>`（`Box<Box<int>>`）；`>>=` 拆成 `>>` + `=`
+        （`Box<Box<int>>=x`）。
+     c) 泛型闭合 `>` 后接 `{`/标识符补空格（`Box<T> {`、`Box<T> implements`）；
+        泛型参数列表内逗号不换行（`Result<T, E>`）。
+   - 比较运算符不受影响：`1 < 2`、`x > 0` 仍前后空格。
+   - 新增 4 项格式化单测（泛型紧贴/嵌套泛型/比较运算符/泛型类 implements），
+     swc 测试 6→10 项。
+   - 验证：cargo fmt --check 通过、cargo build 零警告、cargo test 67 项
+     全绿、release 110 examples 回归通过；33 stdlib + 泛型探针副本格式化
+     后 check 全过（语义不变）、幂等。
+   - 注：import 多行拆开保留现状（引用多时更可读，且不影响语义）；
+     用户确认此为可接受风格，不修。
+
 2026-08-17 01:10  修复 swc fmt 三元运算格式缺陷：
    - 缺陷：`a >= 0.0 ? 0 : 1` 被格式化成 `0.0?0: 1`——`?` 被当一元
      前缀运算符直接输出，前后空格丢失；`:` 也按对象字段格式（前无空格）。

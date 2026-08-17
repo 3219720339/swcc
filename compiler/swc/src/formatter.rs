@@ -33,10 +33,14 @@ pub fn format_source(source: &str) -> String {
     let mut braces = Vec::new();
     let mut previous: Option<TokenKind> = None;
     let mut previous_text = "";
+    let mut prev_prev_text = "";
     let mut line_start = true;
     // 未配对的三元 `?` 计数：遇到三元中缀 `?` 加一，遇到配对 `:` 减一并
     // 让 `:` 前后留空格；否则 `:` 按对象字段/类型注解处理（前无空格）。
     let mut ternary_depth = 0usize;
+    // 泛型尖括号嵌套深度：`Box<int>` 内为 1，`Box<Box<int>>` 内为 2。
+    // `generic_depth > 0` 时 `<`/`>` 紧贴（泛型），否则按比较运算符留空格。
+    let mut generic_depth = 0usize;
 
     for (index, token) in tokens.iter().enumerate() {
         let next = tokens.get(index + 1).map(|item| item.kind);
@@ -61,7 +65,10 @@ pub fn format_source(source: &str) -> String {
                 }
             }
             TokenKind::OpenBrace => {
-                if needs_space(previous, token.kind, previous_text) {
+                // `{` 前留空格：普通标识符/`)`/`]`/泛型闭合 `>` 之后。
+                if needs_space(previous, token.kind, previous_text)
+                    || (previous == Some(TokenKind::Operator) && previous_text == ">")
+                {
                     space(&mut output);
                 }
                 write_indent(&mut output, indent, &mut line_start);
@@ -98,7 +105,10 @@ pub fn format_source(source: &str) -> String {
             }
             TokenKind::Comma => {
                 output.push(',');
-                if braces.last().copied().unwrap_or(false) && paren_depth == 0 && bracket_depth == 0
+                if generic_depth == 0
+                    && braces.last().copied().unwrap_or(false)
+                    && paren_depth == 0
+                    && bracket_depth == 0
                 {
                     newline(&mut output, &mut line_start);
                 } else {
@@ -210,6 +220,59 @@ pub fn format_source(source: &str) -> String {
                         output.push_str(token.text);
                         space(&mut output);
                     }
+                } else if token.text == "<"
+                    || token.text == ">"
+                    || token.text == ">>"
+                    || token.text == ">>="
+                {
+                    // 泛型尖括号 vs 比较运算符：`Box<int>`、`Result<T, E>` 的
+                    // `<`/`>` 紧贴；`1 < 2`、`x > 0` 的比较前后留空格。
+                    // 判定 `<` 为泛型开：前一个是名字且再前一个是类型上下文
+                    // （function/class/struct/enum/interface 声明名、
+                    //  implements/extends/where/new 之后、`: ` 类型注解），
+                    // 或在泛型嵌套内（generic_depth > 0）。
+                    let opens_generic = if token.text == "<" {
+                        generic_depth > 0
+                            || (previous == Some(TokenKind::Word)
+                                && matches!(
+                                    prev_prev_text,
+                                    "function"
+                                        | "class"
+                                        | "struct"
+                                        | "enum"
+                                        | "interface"
+                                        | "implements"
+                                        | "extends"
+                                        | "where"
+                                        | "new"
+                                        | ":"
+                                ))
+                    } else {
+                        false
+                    };
+                    if opens_generic {
+                        output.push('<');
+                        generic_depth += 1;
+                    } else if token.text == ">" && generic_depth > 0 {
+                        output.push('>');
+                        generic_depth -= 1;
+                    } else if token.text == ">>" && generic_depth >= 2 {
+                        // 嵌套泛型闭合 `Box<Box<int>>`：`>>` 拆成两个 `>`。
+                        output.push_str(">>");
+                        generic_depth -= 2;
+                    } else if token.text == ">>=" && generic_depth >= 2 {
+                        // 泛型闭合后跟赋值 `Box<Box<int>>=x`：`>>=` 拆成
+                        // `>>`（两个闭合 `>`）+ `=`。
+                        output.push_str(">>");
+                        generic_depth -= 2;
+                        space(&mut output);
+                        output.push('=');
+                        space(&mut output);
+                    } else {
+                        space(&mut output);
+                        output.push_str(token.text);
+                        space(&mut output);
+                    }
                 } else {
                     space(&mut output);
                     output.push_str(token.text);
@@ -217,13 +280,21 @@ pub fn format_source(source: &str) -> String {
                 }
             }
             _ => {
-                if needs_space(previous, token.kind, previous_text) {
+                // 泛型闭合 `>` 后接标识符（如 `class Box<T>implements`）需空格。
+                let after_generic = previous == Some(TokenKind::Operator)
+                    && matches!(previous_text, ">" | ">>")
+                    && matches!(
+                        token.kind,
+                        TokenKind::Word | TokenKind::String | TokenKind::OpenBrace
+                    );
+                if needs_space(previous, token.kind, previous_text) || after_generic {
                     space(&mut output);
                 }
                 write_indent(&mut output, indent, &mut line_start);
                 output.push_str(token.text);
             }
         }
+        prev_prev_text = previous_text;
         previous = Some(token.kind);
         previous_text = token.text;
     }
@@ -437,6 +508,40 @@ mod tests {
         assert_eq!(
             format_source("const sub=a-b;\nconst neg=-a;"),
             "const sub = a - b;\nconst neg = -a;\n"
+        );
+    }
+
+    #[test]
+    fn keeps_generic_angle_brackets_tight() {
+        assert_eq!(
+            format_source(
+                "enum Result<T, E>{Ok(T),Err(E)}\nfunction make<T>(x:T):Box<T>{return new Box<T>(x);}"
+            ),
+            "enum Result<T, E> {\n    Ok(T),\n    Err(E)\n}\nfunction make<T>(x: T): Box<T> {\n    return new Box<T>(x);\n}\n"
+        );
+    }
+
+    #[test]
+    fn keeps_nested_generic_angle_brackets_tight() {
+        assert_eq!(
+            format_source("const d:Box<Box<int>>=new Box<Box<int>>(null);"),
+            "const d: Box<Box<int>> = new Box<Box<int>>(null);\n"
+        );
+    }
+
+    #[test]
+    fn keeps_comparison_operators_with_spaces() {
+        assert_eq!(
+            format_source("const a=1<2;\nconst b=x>0?1:2;"),
+            "const a = 1 < 2;\nconst b = x > 0 ? 1 : 2;\n"
+        );
+    }
+
+    #[test]
+    fn keeps_generic_class_implements_with_space() {
+        assert_eq!(
+            format_source("class Box<T>implements Container<T>{value:T;}"),
+            "class Box<T> implements Container<T> {\n    value: T;\n}\n"
         );
     }
 }
