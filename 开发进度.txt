@@ -2,6 +2,27 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 13:10  闭包捕获修复 + 线程传参/回传糖：
+   - P0 修复：闭包内捕获对象的字段读写偏移错误——codegen expr_owner_type
+     不认识 MirExpr::EnvGet（无类型信息）导致 field_offset 兜底 index*8，
+     把 class 字段写进 vtable 指针槽（静默内存损坏）。修复：MirExpr::EnvGet
+     加 ty 字段（两处构造点补被捕获变量类型，泛型上下文 substitute 类型
+     参数）；expr_owner_type 识别 EnvGet 与 Index（`arr[0].v` 同类问题）。
+   - P1 修复：被捕获变量赋值报错信息差——降级期捕获守卫（Assign 与 ++/--
+     路径）报"闭包内不能修改被捕获变量（值捕获语义）"并去重，不再炸
+     "赋值表达式降级失败"。
+   - 泛型函数内闭包隐藏函数名冲突（同一 span 多次实例化重复定义）：
+     MirLowerer 加 closure_counter 序号保证唯一。
+   - 泛型推断补 Type::Function 分支（Checker.infer_type_arg 与自由函数版），
+     `spawn_with(f: (A) => int, ...)` 等函数类型参数可推断。
+   - std/thread 糖：spawn_with(f, arg)（带参任务）、spawn_result(f, arg, out)
+     （结果写入 out[0]，string/class/struct 均可）。
+   - 新增探针 probe-thread-sugar.sw（5 项），注册 run-examples.py（122 项）。
+   - 文档：docs/08-能力清单.md（spawn_with/spawn_result、闭包捕获语义、
+     能力矩阵）、开发进度.txt。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 122 examples 回归通过。
+ 
 2026-08-17 12:10  函数一等值闭环（回调）：函数类型注解 + 具名函数作值 + 回调存储：
    - 背景：此前只有编译器特判的数组方法收闭包（map/filter/...）与
      thread/task 任务；`f: (int) => int` 注解语法不存在（parse_type 只认

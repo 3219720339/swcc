@@ -1809,6 +1809,7 @@ impl Analyzer {
                 hidden_functions: Vec::new(),
                 generic_instances: HashMap::new(),
                 generic_counter: 0,
+                closure_counter: 0,
                 static_field_globals: HashMap::new(),
             };
             lowerer.lower_module()
@@ -5194,6 +5195,32 @@ impl<'s> Checker<'s> {
             (Type::Nullable(param_inner), Type::Nullable(arg_inner)) => {
                 self.infer_type_arg(param_inner, arg_inner, known)
             }
+            // 函数类型参数：逐参数 + 返回类型推导（如 `spawn_with(f: (A) => int)`）。
+            (
+                Type::Function {
+                    params: p_params,
+                    ret: p_ret,
+                },
+                Type::Function {
+                    params: a_params,
+                    ret: a_ret,
+                },
+            ) => {
+                let mut merged: HashMap<String, Type> = HashMap::new();
+                for (p, a) in p_params.iter().zip(a_params.iter()) {
+                    if let Some(fresh) = self.infer_type_arg(p, a, known) {
+                        merged.extend(fresh);
+                    }
+                }
+                if let Some(fresh) = self.infer_type_arg(p_ret, a_ret, known) {
+                    merged.extend(fresh);
+                }
+                let fresh: HashMap<String, Type> = merged
+                    .into_iter()
+                    .filter(|(name, _)| !known.contains_key(name))
+                    .collect();
+                if fresh.is_empty() { None } else { Some(fresh) }
+            }
             // 伪实例（Box<T>/Pair<A,B>）对同模板具体实例（Box<int>）：按位置推导。
             _ => {
                 let mut inferred = HashMap::new();
@@ -5337,6 +5364,9 @@ struct MirLowerer<'m, 's> {
     /// 泛型实例缓存：key → (实例函数名, 实例签名)。
     generic_instances: HashMap<String, (String, FunctionSig)>,
     generic_counter: u32,
+    /// 闭包隐藏函数序号：泛型函数每次实例化都会重新降级 lambda，同一 span 会
+    /// 生成多个隐藏函数，序号保证名字唯一（否则重复定义崩溃）。
+    closure_counter: u32,
     /// static 字段全局名 → 当前模块 MirGlobal 索引。
     static_field_globals: HashMap<String, u32>,
     /// 跨模块共享崩溃定位表（debug_index 全局连续）。
@@ -5374,6 +5404,8 @@ struct FnLower<'a, 'm, 's> {
     debug_index: u32,
     /// 函数定义起始行（1 基）。
     source_line: u32,
+    /// 已报告的捕获赋值错误（span.start），避免同一表达式重复报错。
+    capture_error_spans: HashSet<usize>,
 }
 
 #[derive(Clone)]
@@ -5796,6 +5828,22 @@ fn infer_type_arg(types: &TypeTable, param: &Type, arg: &Type, known: &mut HashM
         (Type::Nullable(param_inner), Type::Nullable(arg_inner)) => {
             infer_type_arg(types, param_inner, arg_inner, known);
         }
+        // 函数类型参数：逐参数 + 返回类型推导（如 `spawn_with(f: (A) => int, ...)`）。
+        (
+            Type::Function {
+                params: p_params,
+                ret: p_ret,
+            },
+            Type::Function {
+                params: a_params,
+                ret: a_ret,
+            },
+        ) => {
+            for (p, a) in p_params.iter().zip(a_params.iter()) {
+                infer_type_arg(types, p, a, known);
+            }
+            infer_type_arg(types, p_ret, a_ret, known);
+        }
         _ => infer_from_pseudo(types, param, arg, known),
     }
 }
@@ -6161,6 +6209,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         all_deferred: Vec::new(),
                         loop_defer_depths: Vec::new(),
                         unwind_frame: None,
+                        capture_error_spans: HashSet::new(),
                         debug_index,
                         source_line,
                     };
@@ -6237,6 +6286,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                                     all_deferred: Vec::new(),
                                     loop_defer_depths: Vec::new(),
                                     unwind_frame: None,
+                                    capture_error_spans: HashSet::new(),
                                     debug_index: u32::MAX,
                                     source_line: 0,
                                 };
@@ -6290,6 +6340,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                         all_deferred: Vec::new(),
                         loop_defer_depths: Vec::new(),
                         unwind_frame: None,
+                        capture_error_spans: HashSet::new(),
                         debug_index: u32::MAX,
                         source_line: 0,
                     };
@@ -6395,6 +6446,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     all_deferred: Vec::new(),
                     loop_defer_depths: Vec::new(),
                     unwind_frame: None,
+                    capture_error_spans: HashSet::new(),
                     debug_index: u32::MAX,
                     source_line: 0,
                 };
@@ -7855,6 +7907,24 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
     fn lower_assign_parts(&mut self, expr: &Expr) -> Option<(MirTarget, MirExpr)> {
         match &expr.kind {
             ExprKind::Assign { op, target, value } => {
+                // 闭包捕获守卫：被值捕获的局部/参数不可赋值（与 JS 引用捕获不同），
+                // 在降级期给出清晰错误；调用方据此跳过泛化报错。同一表达式去重。
+                if let ExprKind::Ident(ident) = &target.kind {
+                    if let Some(symbol) =
+                        self.result().ident_symbols.get(&target.span.start).copied()
+                    {
+                        if self.captures.contains_key(&symbol.0) {
+                            if self.capture_error_spans.insert(target.span.start) {
+                                self.error(
+                                    "闭包内不能修改被捕获变量（值捕获语义；可用数组/类/全局等引用方式间接修改）",
+                                    target.span,
+                                );
+                            }
+                            return None;
+                        }
+                    }
+                    let _ = ident;
+                }
                 let target_ast = target;
                 let value_ast = value;
                 let target = self.lower_target(target)?;
@@ -7949,6 +8019,23 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 expr: inner,
                 op: PostfixOp::Inc | PostfixOp::Dec,
             } => {
+                // 捕获守卫同样适用于 ++/--（等价于赋值）。
+                if let ExprKind::Ident(ident) = &inner.kind {
+                    if let Some(symbol) =
+                        self.result().ident_symbols.get(&inner.span.start).copied()
+                    {
+                        if self.captures.contains_key(&symbol.0) {
+                            if self.capture_error_spans.insert(inner.span.start) {
+                                self.error(
+                                    "闭包内不能修改被捕获变量（值捕获语义；可用数组/类/全局等引用方式间接修改）",
+                                    inner.span,
+                                );
+                            }
+                            return None;
+                        }
+                    }
+                    let _ = ident;
+                }
                 let target = self.lower_target(inner)?;
                 let op = if matches!(
                     &expr.kind,
@@ -8145,6 +8232,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
             all_deferred: Vec::new(),
             loop_defer_depths: Vec::new(),
             unwind_frame: None,
+            capture_error_spans: HashSet::new(),
             debug_index: u32::MAX,
             source_line: 0,
         };
@@ -8376,7 +8464,13 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 }
                 if let Some(symbol) = self.result().ident_symbols.get(&expr.span.start).copied() {
                     if let Some(slot) = self.captures.get(&symbol.0) {
-                        return MirExpr::EnvGet { slot: *slot };
+                        let ty = match &self.lowerer.symbol(symbol).kind {
+                            SymbolKind::Local { ty, .. }
+                            | SymbolKind::Param { ty }
+                            | SymbolKind::Global { ty, .. } => substitute_type(ty, &self.type_args),
+                            _ => Type::Error,
+                        };
+                        return MirExpr::EnvGet { slot: *slot, ty };
                     }
                     if let Some(global) = self.global_by_symbol.get(&symbol.0) {
                         return MirExpr::Global(*global as u32);
@@ -8576,12 +8670,24 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     right: Box::new(self.lower_expr(right)),
                 }
             }
-            ExprKind::Assign { .. } => {
+            ExprKind::Assign { target, .. } => {
                 if let Some((target, value)) = self.lower_assign_parts(expr) {
                     return MirExpr::Assign {
                         target,
                         value: Box::new(value),
                     };
+                }
+                // 捕获赋值已在语义期报清晰错误（闭包内不能修改被捕获变量），
+                // 这里不再补泛化错误。
+                if let ExprKind::Ident(ident) = &target.kind {
+                    if let Some(symbol) =
+                        self.result().ident_symbols.get(&target.span.start).copied()
+                    {
+                        if self.captures.contains_key(&symbol.0) {
+                            return MirExpr::Int(0);
+                        }
+                    }
+                    let _ = ident;
                 }
                 self.error("赋值表达式降级失败", expr.span);
                 MirExpr::Int(0)
@@ -8608,7 +8714,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             Some(symbol) => match &symbol.kind {
                                 SymbolKind::Local { ty, .. }
                                 | SymbolKind::Param { ty }
-                                | SymbolKind::Global { ty, .. } => ty.clone(),
+                                | SymbolKind::Global { ty, .. } => {
+                                    substitute_type(ty, &self.type_args)
+                                }
                                 _ => Type::Error,
                             },
                             None => Type::Error,
@@ -9684,8 +9792,12 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     }
                 }
 
-                let hidden_name =
-                    format!("sw_closure_{}_{}", self.lowerer.state.id.0, expr.span.start);
+                let seq = self.lowerer.closure_counter;
+                self.lowerer.closure_counter += 1;
+                let hidden_name = format!(
+                    "sw_closure_{}_{}_{}",
+                    self.lowerer.state.id.0, expr.span.start, seq
+                );
                 let env_ty = Type::Ptr(Box::new(Type::I8));
                 let mut hidden_params = vec![MirParam {
                     name: "$env".to_owned(),
@@ -9756,6 +9868,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     all_deferred: Vec::new(),
                     loop_defer_depths: Vec::new(),
                     unwind_frame: None,
+                    capture_error_spans: HashSet::new(),
                     debug_index: u32::MAX,
                     source_line: 0,
                 };
@@ -9767,7 +9880,17 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     .filter_map(|(name, symbol)| {
                         self.captures
                             .get(symbol)
-                            .map(|slot| MirExpr::EnvGet { slot: *slot })
+                            .map(|slot| {
+                                let ty = match &self.lowerer.symbol(SymbolId(*symbol)).kind {
+                                    SymbolKind::Local { ty, .. }
+                                    | SymbolKind::Param { ty }
+                                    | SymbolKind::Global { ty, .. } => {
+                                        substitute_type(ty, &self.type_args)
+                                    }
+                                    _ => Type::Error,
+                                };
+                                MirExpr::EnvGet { slot: *slot, ty }
+                            })
                             .or_else(|| self.lookup_local(name).map(MirExpr::Local))
                     })
                     .collect();
@@ -9791,7 +9914,12 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 .map(String::as_str)
                 .unwrap_or("mod"),
         );
-        let hidden_name = format!("sw_closure_{}_{}", self.lowerer.state.id.0, span.start);
+        let seq = self.lowerer.closure_counter;
+        self.lowerer.closure_counter += 1;
+        let hidden_name = format!(
+            "sw_closure_{}_{}_{}",
+            self.lowerer.state.id.0, span.start, seq
+        );
         let env_ty = Type::Ptr(Box::new(Type::I8));
         let mut params = vec![MirParam {
             name: "$env".to_owned(),

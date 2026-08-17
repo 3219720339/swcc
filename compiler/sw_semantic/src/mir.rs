@@ -192,9 +192,10 @@ pub enum MirExpr {
         captures: Vec<MirExpr>,
         sig: FunctionSig,
     },
-    /// 隐藏函数内部读取捕获槽。
+    /// 隐藏函数内部读取捕获槽（ty 为被捕获变量的类型，codegen 字段偏移需要）。
     EnvGet {
         slot: usize,
+        ty: Type,
     },
     /// 创建类对象并调用构造函数。
     New {

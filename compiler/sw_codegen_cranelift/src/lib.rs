@@ -2108,6 +2108,9 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 let owner = self.expr_owner_type(object)?;
                 self.field_type(&owner, *index)
             }
+            MirExpr::EnvGet { ty, .. } => Some(ty.clone()),
+            // 数组元素访问：元素类型即属主类型（`arr[0].v` 的字段偏移需要）。
+            MirExpr::Index { elem, .. } => Some((**elem).clone()),
             MirExpr::New { class, .. } => Some(Type::Class(*class)),
             MirExpr::Struct { ty, .. } => Some(ty.clone()),
             MirExpr::Call { callee, .. } => {
@@ -3376,7 +3379,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .ins()
                     .stack_load(types::I64, types::I64, slot, 0)
             }
-            MirExpr::EnvGet { slot } => {
+            MirExpr::EnvGet { slot, .. } => {
                 let env_slot = self.slot_for(0);
                 let env = self
                     .builder
