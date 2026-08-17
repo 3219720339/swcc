@@ -1229,19 +1229,12 @@ impl Analyzer {
                         .any(|m| matches!(m, MemberModifier::Static))
                     {
                         // 静态字段初值必须是编译期常量标量；字符串字面量由
-                        // sw_global_init 运行时构造（仅入口模块）。
+                        // sw_global_init 运行时构造（入口模块统一初始化所有模块）。
                         if let Some(default) = &field.default {
                             if self.const_type(default).is_none() {
                                 self.error(
                                     "静态字段初始化式必须是编译期常量（整数/浮点/布尔/字符/字符串字面量）",
                                     default.span,
-                                );
-                            } else if self.const_type(default) == Some(Type::Str)
-                                && module_id.0 != 0
-                            {
-                                self.error(
-                                    "字符串静态字段暂只支持在入口模块（main 所在文件）的类中声明",
-                                    field.name.span,
                                 );
                             }
                         }
@@ -1495,13 +1488,6 @@ impl Analyzer {
                     let ty = self.const_type(init);
                     if ty.is_none() {
                         self.error("顶层变量初始化式必须是编译期常量表达式", init.span);
-                    } else if ty == Some(Type::Str) && module_id.0 != 0 {
-                        // 跨模块 string 全局：sw_global_init 仅在入口模块生成，
-                        // 定义模块的字符串全局不会被运行时初始化（当前限制）。
-                        self.error(
-                            "字符串全局变量暂只支持在入口模块（main 所在文件）声明",
-                            variable.name.span,
-                        );
                     }
                 }
             }
@@ -5956,15 +5942,49 @@ impl<'m, 's> MirLowerer<'m, 's> {
         // （COFF+PIC 下数据重定位生成 .refptr 间接引用不可靠），由运行时
         // sw_global_init 在 main 之前构造（sw_string_from_literal 写入全局槽）。
         // 入口模块始终生成该函数（空函数体也生成），runtime main 无条件调用，
-        // 保证链接符号存在。当前仅支持入口模块的 string 全局；跨模块 string
-        // 全局在定义模块检查时拦截（check_globals 报错）。
+        // 保证链接符号存在。初始化覆盖**所有模块**的字符串全局：
+        //  - 本模块 globals：直接 Assign 本模块全局槽；
+        //  - 其他模块（all_modules）：为每个字符串全局生成跨模块 Import 条目
+        //    （sw_global_<模块id>_<名字>），字符串文本 intern 进本模块池，
+        //    Assign 到导入条目的全局索引（运行时写定义模块的导出符号）。
         if self.state.id.0 == 0 {
             let mut string_global_inits: Vec<(u32, usize)> = Vec::new();
+            // 本模块全局
             for (index, global) in module_mir.globals.iter().enumerate() {
                 if global.ty == Type::Str {
                     if let Some(MirExpr::Str(str_id)) = global.init.as_ref() {
                         string_global_inits.push((index as u32, *str_id));
                     }
+                }
+            }
+            // 其他模块的字符串全局（跨模块）：遍历全部 AST 模块。
+            for (module_index, module) in self.all_modules.iter().enumerate() {
+                if module_index == self.state.id.0 as usize {
+                    continue;
+                }
+                for item in &module.items {
+                    let ItemKind::Variable(variable) = &item.kind else {
+                        continue;
+                    };
+                    let Some(init) = &variable.init else {
+                        continue;
+                    };
+                    // 仅字符串字面量初值（const/let S = "text"）。
+                    let ExprKind::Str(text) = &init.kind else {
+                        continue;
+                    };
+                    // 生成跨模块 Import 条目（module=定义模块，链接到导出符号）。
+                    let index = module_mir.globals.len() as u32;
+                    module_mir.globals.push(MirGlobal {
+                        name: format!("sw_global_{}_{}", module_index, variable.name.name),
+                        ty: Type::Str,
+                        mutable: matches!(variable.kind, VarKind::Let),
+                        init: None,
+                        module: module_index as u32,
+                    });
+                    // 字符串文本加入入口模块池，Assign 到导入条目。
+                    let str_id = self.intern_string(text);
+                    string_global_inits.push((index, str_id));
                 }
             }
             if let Some(init_fn) = self.build_global_init(&string_global_inits) {

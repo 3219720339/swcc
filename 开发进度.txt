@@ -2,6 +2,26 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 05:40  解锁跨模块字符串全局（sw_global_init 全模块初始化）：
+   - 背景：上批限制"字符串全局仅支持入口模块声明"。用户需求：一个模块
+     定义字符串全局，多个模块引用，且可修改（固定修改、多模块引用）。
+   - 实现：入口模块的 sw_global_init 遍历 all_modules AST，收集**所有模块**
+     的字符串全局声明（ItemKind::Variable + 字面量 Str 初值）：
+     - 本模块全局：直接 Assign 本模块全局槽；
+     - 其他模块：生成跨模块 Import 条目（sw_global_<模块id>_<名字>，
+       module=定义模块），字符串文本 intern 进入口模块池，Assign 到导入
+       条目索引（运行时写定义模块的导出符号，跨模块共享同一份数据）。
+     - 移除 check_globals/静态字段的跨模块拦截。
+   - 效果：export const/let 字符串全局跨模块读取与修改均共享数据；
+     定义模块函数读到 main 里的修改值。
+   - 探针：新增 lib-string-global.sw（定义模块）+ probe-string-global.sw
+     扩展 6 项跨模块断言（读取/函数读/let 修改/函数读修改后值），
+     共 13 项；注册 run-examples.py（113 项，探针+lib 均注册）。
+   - 文档：docs/04-内存模型.md、docs/08-能力清单.md 更新（跨模块可用，
+     数组全局仍不支持）。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 113 examples 回归通过。
+
 2026-08-17 05:10  支持字符串全局变量初始化（sw_global_init 运行时构造）：
    - 背景：`const S = "hello"` / `let S = "x"` / `static NAME: string = "swc"`
      此前编译期报错——数据段无法静态表示 sw_string {data,len} 指针。
