@@ -8274,6 +8274,40 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         }
     }
 
+    /// 构造器调用补默认参数：`new C(a)` 而构造器带缺省形参时，按
+    /// ctor_sig.span 在声明模块找到构造器声明，追加缺省实参表达式。
+    /// 与 append_default_args（普通函数）同理，但构造器是类成员、且可能
+    /// 来自其它模块（如 std/ui 的 Application）。
+    fn append_ctor_defaults(&mut self, ctor_sig: &FunctionSig, args: &mut Vec<MirExpr>) {
+        let module = ctor_sig.module.0 as usize;
+        if module >= self.lowerer.all_modules.len() {
+            return;
+        }
+        let items = &self.lowerer.all_modules[module].items;
+        let mut defaults: Vec<Expr> = Vec::new();
+        for item in items {
+            if let ItemKind::Class(class) = &item.kind {
+                let params = class.members.iter().find_map(|member| match member {
+                    ClassMember::Constructor(ctor) if ctor.span == ctor_sig.span => {
+                        Some(ctor.params.clone())
+                    }
+                    _ => None,
+                });
+                if let Some(params) = params {
+                    defaults = params
+                        .iter()
+                        .skip(args.len())
+                        .filter_map(|param| param.default.clone())
+                        .collect();
+                    break;
+                }
+            }
+        }
+        for default in defaults {
+            args.push(self.lower_expr(&default));
+        }
+    }
+
     fn lower_expr_stmt(&mut self, expr: &Expr, output: &mut Vec<MirStmt>) {
         if let Some((target, value)) = self.lower_assign_parts(expr) {
             output.push(MirStmt::new(MirStmtKind::Assign { target, value }));
@@ -10298,10 +10332,13 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             .map(|method| method.sig.clone())
                     })
                     .unwrap_or_else(placeholder_sig);
+                let mut ctor_args: Vec<MirExpr> =
+                    args.iter().map(|arg| self.lower_expr(arg)).collect();
+                self.append_ctor_defaults(&ctor_sig, &mut ctor_args);
                 MirExpr::New {
                     class,
                     sig: ctor_sig,
-                    args: args.iter().map(|arg| self.lower_expr(arg)).collect(),
+                    args: ctor_args,
                 }
             }
             ExprKind::Template(parts) => {

@@ -95,6 +95,7 @@ typedef struct {
     int64_t scale_x1000; // DPI ×1000
     int64_t cursor;
     int64_t title_bar_h; // 标题栏拖动区域高度（逻辑像素）
+    int64_t frameless;   // 无边框（自定义标题栏）模式
     int64_t client_w, client_h; // 逻辑客户区
     sw_ui_event queue[SW_UI_EVENT_CAP];
     int head;
@@ -199,12 +200,38 @@ static wchar_t* sw_ui_utf8_to_wide(sw_string* text, int* out_len) {
 }
 
 // 由逻辑客户区尺寸换算窗口尺寸（非客户区随 DPI 缩放）。
-static void sw_ui_window_size_for_client(int64_t client_w, int64_t client_h, int scale,
-                                         int* out_w, int* out_h) {
+static void sw_ui_window_size_for_client_ex(int64_t client_w, int64_t client_h, int scale,
+                                            int frameless, int* out_w, int* out_h) {
+    DWORD style = frameless ? (WS_POPUP | WS_THICKFRAME) : WS_OVERLAPPEDWINDOW;
     RECT rc = {0, 0, (int)client_w, (int)client_h};
-    AdjustWindowRectEx(&rc, WS_POPUP | WS_THICKFRAME, FALSE, 0);
+    AdjustWindowRectEx(&rc, style, FALSE, 0);
     *out_w = (rc.right - rc.left) * scale / 1000;
     *out_h = (rc.bottom - rc.top) * scale / 1000;
+}
+
+static void sw_ui_window_size_for_client(int64_t client_w, int64_t client_h, int scale,
+                                         int* out_w, int* out_h) {
+    sw_ui_window_size_for_client_ex(client_w, client_h, scale, 0, out_w, out_h);
+}
+
+// 无边框窗口的现代观感：圆角（Win11）+ 阴影（Win10+），GetProcAddress 探测，
+// 缺失（Win7）自动跳过。
+static void sw_ui_apply_modern_style(HWND hwnd) {
+    HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+    if (dwm == NULL) return;
+    typedef HRESULT(WINAPI* fn_attr)(HWND, DWORD, LPCVOID, DWORD);
+    fn_attr attr = (fn_attr)(void*)GetProcAddress(dwm, "DwmSetWindowAttribute");
+    if (attr != NULL) {
+        DWORD preference = 2; // DWMWCP_ROUND
+        attr(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &preference, sizeof(preference));
+    }
+    typedef HRESULT(WINAPI* fn_extend)(HWND, const void*);
+    fn_extend extend = (fn_extend)(void*)GetProcAddress(dwm, "DwmExtendFrameIntoClientArea");
+    if (extend != NULL) {
+        // DWM MARGINS 布局（mingw 头未必暴露 MARGINS，直接按布局声明）。
+        int margins[4] = {-1, -1, -1, -1};
+        extend(hwnd, margins);
+    }
 }
 
 static const wchar_t* sw_ui_cursor_id(int64_t cursor) {
@@ -627,8 +654,8 @@ static LRESULT CALLBACK sw_ui_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
             w->scale_x1000 = (int64_t)dpi * 1000 / 96;
             // 保持逻辑客户区不变，重算物理尺寸。
             int win_w = 0, win_h = 0;
-            sw_ui_window_size_for_client(w->client_w, w->client_h, (int)w->scale_x1000,
-                                         &win_w, &win_h);
+            sw_ui_window_size_for_client_ex(w->client_w, w->client_h, (int)w->scale_x1000,
+                                            (int)w->frameless, &win_w, &win_h);
             RECT* rc = (RECT*)lparam;
             SetWindowPos(hwnd, NULL, rc->left, rc->top, win_w, win_h,
                          SWP_NOZORDER | SWP_NOACTIVATE);
@@ -636,7 +663,9 @@ static LRESULT CALLBACK sw_ui_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
             return 0;
         }
         case WM_NCHITTEST: {
-            if (w == NULL) break;
+            // 仅无边框模式自定义命中测试；系统窗口交给 DefWindowProc
+            // （原生标题栏拖动/按钮/缩放全部保留）。
+            if (w == NULL || !w->frameless) break;
             POINT pt = {(int)(int16_t)LOWORD(lparam), (int)(int16_t)HIWORD(lparam)};
             ScreenToClient(hwnd, &pt);
             RECT rc;
@@ -690,7 +719,7 @@ static LRESULT CALLBACK sw_ui_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 // 公开 API
 // ---------------------------------------------------------------------------
 
-void* sw_ui_create(sw_string* title, int64_t width, int64_t height) {
+void* sw_ui_create_ex(sw_string* title, int64_t width, int64_t height, int64_t frameless) {
     sw_ui_enable_dpi_aware();
     sw_ui_load_font();
     HINSTANCE instance = GetModuleHandleW(NULL);
@@ -712,8 +741,10 @@ void* sw_ui_create(sw_string* title, int64_t width, int64_t height) {
     } else {
         free_title = 1;
     }
-    // frameless 窗口：WS_POPUP + WS_THICKFRAME（可缩放，无系统标题栏）。
-    HWND hwnd = CreateWindowExW(0, L"SwUiWindow", title_buf, WS_POPUP | WS_THICKFRAME,
+    // 默认系统窗口（WS_OVERLAPPEDWINDOW 原生标题栏）；frameless 用
+    // WS_POPUP + WS_THICKFRAME（可缩放、无系统标题栏、可加圆角/阴影）。
+    DWORD style = frameless ? (WS_POPUP | WS_THICKFRAME) : WS_OVERLAPPEDWINDOW;
+    HWND hwnd = CreateWindowExW(0, L"SwUiWindow", title_buf, style,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 200, 120, NULL, NULL, instance,
                                 NULL);
     if (free_title) free(title_buf);
@@ -729,10 +760,13 @@ void* sw_ui_create(sw_string* title, int64_t width, int64_t height) {
     w->scale_x1000 = (int64_t)sw_ui_scale_of(hwnd) * 1000 / 96;
     w->client_w = width;
     w->client_h = height;
+    w->frameless = frameless != 0;
+    if (w->frameless) sw_ui_apply_modern_style(hwnd);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)w);
     // 客户区 = 请求的逻辑尺寸；主屏工作区居中。
     int win_w = 0, win_h = 0;
-    sw_ui_window_size_for_client(width, height, (int)w->scale_x1000, &win_w, &win_h);
+    sw_ui_window_size_for_client_ex(width, height, (int)w->scale_x1000, (int)w->frameless,
+                                    &win_w, &win_h);
     RECT work = {0, 0, 800, 600};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     int x = work.left + ((work.right - work.left) - win_w) / 2;
@@ -743,6 +777,31 @@ void* sw_ui_create(sw_string* title, int64_t width, int64_t height) {
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
     return w;
+}
+
+// 默认系统窗口样式。
+void* sw_ui_create(sw_string* title, int64_t width, int64_t height) {
+    return sw_ui_create_ex(title, width, height, 0);
+}
+
+void sw_ui_minimize(void* handle) {
+    sw_ui_window* w = (sw_ui_window*)handle;
+    if (w != NULL) ShowWindow(w->hwnd, SW_MINIMIZE);
+}
+
+void sw_ui_maximize(void* handle) {
+    sw_ui_window* w = (sw_ui_window*)handle;
+    if (w != NULL) ShowWindow(w->hwnd, SW_MAXIMIZE);
+}
+
+void sw_ui_restore(void* handle) {
+    sw_ui_window* w = (sw_ui_window*)handle;
+    if (w != NULL) ShowWindow(w->hwnd, SW_RESTORE);
+}
+
+int64_t sw_ui_is_maximized(void* handle) {
+    sw_ui_window* w = (sw_ui_window*)handle;
+    return w != NULL && IsZoomed(w->hwnd) ? 1 : 0;
 }
 
 void sw_ui_destroy(void* handle) {
@@ -783,7 +842,8 @@ void sw_ui_set_size(void* handle, int64_t width, int64_t height) {
     w->client_w = width;
     w->client_h = height;
     int win_w = 0, win_h = 0;
-    sw_ui_window_size_for_client(width, height, (int)w->scale_x1000, &win_w, &win_h);
+    sw_ui_window_size_for_client_ex(width, height, (int)w->scale_x1000, (int)w->frameless,
+                                    &win_w, &win_h);
     SetWindowPos(w->hwnd, NULL, 0, 0, win_w, win_h, SWP_NOMOVE | SWP_NOZORDER);
 }
 
@@ -1071,11 +1131,25 @@ int64_t sw_ui_present(void* handle) {
 
 #else // 非 Windows：安全 stub（musl 交叉编译等场景自动退化为不可用）。
 
+void* sw_ui_create_ex(sw_string* title, int64_t width, int64_t height, int64_t frameless) {
+    (void)title;
+    (void)width;
+    (void)height;
+    (void)frameless;
+    return NULL;
+}
 void* sw_ui_create(sw_string* title, int64_t width, int64_t height) {
     (void)title;
     (void)width;
     (void)height;
     return NULL;
+}
+void sw_ui_minimize(void* handle) { (void)handle; }
+void sw_ui_maximize(void* handle) { (void)handle; }
+void sw_ui_restore(void* handle) { (void)handle; }
+int64_t sw_ui_is_maximized(void* handle) {
+    (void)handle;
+    return 0;
 }
 void sw_ui_destroy(void* handle) { (void)handle; }
 int64_t sw_ui_is_open(void* handle) {

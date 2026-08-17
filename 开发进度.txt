@@ -2848,6 +2848,26 @@ Sw 编译器（swcc）开发进度
    - 本批未执行交叉编译；本机 release 构建、`cargo test --workspace`（67 项）、
      126 个注册 examples 回归、`probe-test` 5 项内嵌测试和 `probe-callbacks2` 均通过。
 
+2026-08-18 04:10  UI 窗口样式升级 + 命名空间全量导入 + new 默认参数修复：
+   - 窗口样式：默认系统窗口（WS_OVERLAPPEDWINDOW 原生标题栏）；
+     `new Application(t, w, h, true)` 无边框模式（WS_POPUP+WS_THICKFRAME），
+     Win10/11 自动圆角（DwmSetWindowAttribute DWMWCP_ROUND）+ 阴影
+     （DwmExtendFrameIntoClientArea -1），GetProcAddress 探测降级（Win7 跳过）；
+     WM_NCHITTEST 仅无边框时自定义（系统窗口走 DefWindowProc 保留原生交互）；
+     新增 minimize/maximize/restore/is_maximized（ShowWindow/IsZoomed）。
+   - 标题栏升级：ui_widgets 新增 TitleBar 控件（标题 + 最小化/最大化/关闭三键，
+     悬停高亮、关闭键悬停变红，对应 Windows 11 风格）；demo-ui.sw 改 frameless
+     + TitleBar 三键齐全（参考恢复副本 sw-ui-runtime 的设计）。
+   - 命名空间全量导入：`import * as ns from "std/xxx"` 对所有标准库通用——
+     函数调用（含重载）、常量、函数作值（回调实参）、命名空间限定类型
+     （ns.结构体 类型注解 / ns.类 new）全部可用（probe-ns.sw 覆盖
+     string/time/io/array/math/audio 六库）。
+   - 修复 new 构造调用默认参数：检查期接受缺参但降级未补默认实参（IR
+     校验失败 mismatched argument count）；新增 append_ctor_defaults 按
+     ctor_sig.span 在声明模块（可能跨模块，如 std/ui）找构造器补默认值。
+   - 验证：probe-ui（系统窗口）120 帧通过、demo 像素校验通过、
+     probe-ns PASS、cargo test 67 全绿、release 128 examples 回归通过、
+     fmt 通过、零警告。
 2026-08-18 03:20  UI P2：绘制 + 控件 + 主题 + 交互体验（照 docs/11-UI设计.md）：
    - runtime_ui.c 大幅扩展：CPU 光栅化（fill_rect/圆角/描边/圆形/线性渐变，
      2×2 超采样 AA）+ stb_truetype 文字（vendor/stb 单头，系统字体探测

@@ -3,10 +3,15 @@
 // 事件由 Application.pump() 收集、poll() 拉取（与 std/audio 同原则）；
 // 所有 setter 返回 this 支持链式调用。
 
+export extern c function sw_ui_create_ex(title: string, width: int, height: int, frameless: int): ptr<void>;
 export extern c function sw_ui_create(title: string, width: int, height: int): ptr<void>;
 export extern c function sw_ui_destroy(handle: ptr<void>): void;
 export extern c function sw_ui_is_open(handle: ptr<void>): int;
 export extern c function sw_ui_close(handle: ptr<void>): void;
+export extern c function sw_ui_minimize(handle: ptr<void>): void;
+export extern c function sw_ui_maximize(handle: ptr<void>): void;
+export extern c function sw_ui_restore(handle: ptr<void>): void;
+export extern c function sw_ui_is_maximized(handle: ptr<void>): int;
 export extern c function sw_ui_set_title(handle: ptr<void>, title: string): void;
 export extern c function sw_ui_set_size(handle: ptr<void>, width: int, height: int): void;
 export extern c function sw_ui_request_redraw(handle: ptr<void>): void;
@@ -124,10 +129,12 @@ export class Canvas {
 /// 事件循环由主线程驱动（pump），后端线程永不进入 Sw 代码。
 export class Application {
     private handle: ptr<void>;
-    /// 创建可见窗口。宽高为逻辑像素；失败时 is_open() 为 false、
-    /// last_error() 给出原因。
-    public constructor(title: string, width: int, height: int) {
-        this.handle = sw_ui_create(title, width, height);
+    /// 创建可见窗口。宽高为逻辑像素；frameless=true 时无系统标题栏
+    /// （自定义标题栏需配 set_title_bar 拖动区；Win10/11 自动加圆角与阴影），
+    /// 默认系统窗口（原生标题栏/缩放/贴靠全保留）。
+    /// 失败时 is_open() 为 false、last_error() 给出原因。
+    public constructor(title: string, width: int, height: int, frameless: bool = false) {
+        this.handle = sw_ui_create_ex(title, width, height, frameless ? 1 : 0);
     }
     /// 等待并收集平台事件，最长阻塞 timeout_ms 毫秒；窗口仍开时返回 true。
     public function pump(timeout_ms: int): bool {
@@ -141,6 +148,22 @@ export class Application {
     /// 主动结束窗口循环并隐藏窗口。
     public function close(): void {
         sw_ui_close(this.handle);
+    }
+    /// 最小化到任务栏。
+    public function minimize(): void {
+        sw_ui_minimize(this.handle);
+    }
+    /// 最大化（切换后由 is_maximized 判断）。
+    public function maximize(): void {
+        sw_ui_maximize(this.handle);
+    }
+    /// 从最小化/最大化还原。
+    public function restore(): void {
+        sw_ui_restore(this.handle);
+    }
+    /// 当前是否最大化。
+    public function is_maximized(): bool {
+        return sw_ui_is_maximized(this.handle) != 0;
     }
     /// 取出一条事件；队列为空时 kind 为 UI_EVENT_NONE。
     public function poll(): UiEvent {
