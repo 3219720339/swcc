@@ -66,7 +66,7 @@ def main():
         if os.path.exists(source):
             shutil.copy2(source, os.path.join(sdk, "bin", dll))
     for name in ("libucrt.a", "libucrtbase.a", "libkernel32.a", "libshell32.a",
-                 "libole32.a", "libws2_32.a", "libwinmm.a"):
+                 "libole32.a", "libws2_32.a", "libwinmm.a", "libuser32.a", "libgdi32.a"):
         source = os.path.join(mingw_lib, name)
         if not os.path.exists(source):
             sys.exit(f"工具链缺少链接库：{source}")
@@ -78,6 +78,7 @@ def main():
     for source, output in (
         ("runtime.c", "runtime.obj"),
         ("runtime_audio.c", "runtime_audio.obj"),
+        ("runtime_ui.c", "runtime_ui.obj"),
         ("runtime_x64.S", "runtime_asm.obj"),
         ("startup.s", "startup.obj"),
     ):
@@ -95,7 +96,7 @@ def main():
             "-o",
             dst,
         ]
-        if source not in ("runtime.c", "runtime_audio.c"):
+        if source not in ("runtime.c", "runtime_audio.c", "runtime_ui.c"):
             command = [clang, "-target", target, "-c", src, "-o", dst]
         run(command)
 

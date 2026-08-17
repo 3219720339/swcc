@@ -94,6 +94,7 @@ EXPECTED = {
     "probe-batch6.sw": 0,
     "probe-trait.sw": 0,
     "probe-unicode.sw": 0,
+    "probe-ui.sw": 0,
     "probe-vars.sw": 0,
     "showcase.sw": 0,
     "probe-generic-implements.sw": 0,

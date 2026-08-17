@@ -2848,6 +2848,25 @@ Sw 编译器（swcc）开发进度
    - 本批未执行交叉编译；本机 release 构建、`cargo test --workspace`（67 项）、
      126 个注册 examples 回归、`probe-test` 5 项内嵌测试和 `probe-callbacks2` 均通过。
 
+2026-08-18 02:10  UI P1：窗口 + 事件（Win32，照 docs/11-UI设计.md）：
+   - 新增 runtime/runtime_ui.c：平台层（Win32 真实现 + 非 Windows 安全 stub），
+     含窗口生命周期、MsgWaitForMultipleObjectsEx 有界 pump（16ms 级）、
+     WndProc→int 事件队列（关闭/缩放/键盘 scancode+修饰/鼠标/滚轮/焦点/DPI）、
+     GetProcAddress 探测 DPI 感知（SetProcessDpiAwarenessContext 缺失降级）、
+     逻辑像素客户区（AdjustWindowRectEx × scale）、UTF-8→UTF-16 标题转换。
+   - 新增 stdlib/ui.sw：Application（pump/is_open/close/poll/set_title/set_size/
+     request_redraw/set_cursor/scale/last_error/destroy）+ UiEvent + 常量；
+     setter 返回 this 支持链式调用；事件数据化（后端线程永不回调 Sw）。
+   - 新增 examples/probe-ui.sw：建窗→泵事件→打印→150 帧后自动关闭，注册
+     run-examples.py（127 项）；无 UI 平台优雅跳过（last_error 探测）。
+   - 编译器接入：compile_runtime_objects 加 runtime_ui.c 编译任务；
+     Windows 链接补 -luser32 -lgdi32（UI 首次用到）；SDK 打包/CI 冒烟加
+     runtime_ui.obj + libuser32.a + libgdi32.a；runtime_objects_for 预编译
+     检查同步。
+   - 验证：probe-ui 弹出窗口正常（scale=1500 即 150% DPI 感知生效、
+     FOCUS/RESIZED 事件收到、空闲不占 CPU）、cargo test 67 全绿、
+     release 127 examples 回归通过、fmt --check 通过、零警告。
+   - 遗留：X11/Cocoa 后端、绘制命令与字体（P2）、SDK 分发验证（P3）。
 2026-08-18 01:20  UI 库设计稿（docs/11-UI设计.md，未动工）：
    - 目标：跨平台（Win/Linux/macOS × x86_64/aarch64）、性能好、少依赖、
      好看、不复杂；链式调用一等支持；后续可输出 dll/lib 供其他语言调用。

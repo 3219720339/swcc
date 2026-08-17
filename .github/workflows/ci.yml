@@ -139,11 +139,11 @@ jobs:
           $sdk = Join-Path $extract 'swc-windows-x64'
           if (-not (Test-Path (Join-Path $sdk 'swc.exe'))) { $sdk = $extract }
           if (-not (Test-Path (Join-Path $sdk 'swc.exe'))) { throw 'swc.exe missing in extracted SDK' }
-          # 关键链接库必须随包分发（编译器固定链接 -lole32 -lws2_32）
-          foreach ($lib in @('libucrt.a','libucrtbase.a','libkernel32.a','libshell32.a','libole32.a','libws2_32.a','libwinmm.a','libclang_rt.builtins-x86_64.a')) {
+          # 关键链接库必须随包分发（编译器固定链接 -lole32 -lws2_32 -luser32 -lgdi32）
+          foreach ($lib in @('libucrt.a','libucrtbase.a','libkernel32.a','libshell32.a','libole32.a','libws2_32.a','libwinmm.a','libuser32.a','libgdi32.a','libclang_rt.builtins-x86_64.a')) {
             if (-not (Test-Path (Join-Path $sdk "lib\$lib"))) { throw "SDK missing lib/$lib" }
           }
-          foreach ($obj in @('runtime.obj','runtime_audio.obj','runtime_asm.obj','startup.obj')) {
+          foreach ($obj in @('runtime.obj','runtime_audio.obj','runtime_ui.obj','runtime_asm.obj','startup.obj')) {
             if (-not (Test-Path (Join-Path $sdk "lib\$obj"))) { throw "SDK missing runtime object: $obj" }
           }
           $work = Join-Path $env:RUNNER_TEMP 'sdk-smoke-work'

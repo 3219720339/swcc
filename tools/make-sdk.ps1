@@ -49,7 +49,7 @@ foreach ($dll in @("libLLVM-22.dll", "libc++.dll", "libunwind.dll")) {
     }
 }
 foreach ($name in @("libucrt.a", "libucrtbase.a", "libkernel32.a", "libshell32.a",
-                    "libole32.a", "libws2_32.a", "libwinmm.a")) {
+                    "libole32.a", "libws2_32.a", "libwinmm.a", "libuser32.a", "libgdi32.a")) {
     $source = Join-Path $mingwLib $name
     if (-not (Test-Path $source)) {
         throw "Toolchain missing link library: $source"
@@ -64,6 +64,8 @@ $runtimeDir = Join-Path $Root "runtime"
 if ($LASTEXITCODE -ne 0) { throw "compile runtime.c failed" }
 & $clang -target $target -O2 -ffunction-sections -fdata-sections -c (Join-Path $runtimeDir "runtime_audio.c") -o (Join-Path $sdk "lib\runtime_audio.obj")
 if ($LASTEXITCODE -ne 0) { throw "compile runtime_audio.c failed" }
+& $clang -target $target -O2 -ffunction-sections -fdata-sections -c (Join-Path $runtimeDir "runtime_ui.c") -o (Join-Path $sdk "lib\runtime_ui.obj")
+if ($LASTEXITCODE -ne 0) { throw "compile runtime_ui.c failed" }
 & $clang -target $target -c (Join-Path $runtimeDir "runtime_x64.S") -o (Join-Path $sdk "lib\runtime_asm.obj")
 if ($LASTEXITCODE -ne 0) { throw "compile runtime_x64.S failed" }
 & $clang -target $target -c (Join-Path $runtimeDir "startup.s") -o (Join-Path $sdk "lib\startup.obj")
