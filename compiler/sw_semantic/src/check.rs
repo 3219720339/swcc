@@ -1124,7 +1124,16 @@ impl Analyzer {
                         );
                         resolver.lower(annotation, &generics)
                     } else if let Some(init) = &variable.init {
-                        self.const_type(init).unwrap_or(Type::Error)
+                        // map_new() 调用：类型为 ptr<void>。
+                        if matches!(
+                            &init.kind,
+                            ExprKind::Call { callee, .. }
+                                if matches!(&callee.kind, ExprKind::Ident(name) if name.name == "map_new")
+                        ) {
+                            Type::Ptr(Box::new(Type::Void))
+                        } else {
+                            self.const_type(init).unwrap_or(Type::Error)
+                        }
                     } else {
                         Type::Error
                     };
@@ -1431,7 +1440,19 @@ impl Analyzer {
 
     fn const_type(&self, expr: &Expr) -> Option<Type> {
         match &expr.kind {
-            ExprKind::Integer { .. } => Some(Type::Int),
+            ExprKind::Integer { suffix, .. } => Some(match suffix {
+                Some(sw_frontend::IntegerSuffix::I8) => Type::I8,
+                Some(sw_frontend::IntegerSuffix::U8) => Type::U8,
+                Some(sw_frontend::IntegerSuffix::I16) => Type::I16,
+                Some(sw_frontend::IntegerSuffix::U16) => Type::U16,
+                Some(sw_frontend::IntegerSuffix::I32) => Type::I32,
+                Some(sw_frontend::IntegerSuffix::U32) => Type::U32,
+                Some(sw_frontend::IntegerSuffix::I64) => Type::I64,
+                Some(sw_frontend::IntegerSuffix::U64) => Type::U64,
+                Some(sw_frontend::IntegerSuffix::Isize) => Type::Isize,
+                Some(sw_frontend::IntegerSuffix::Usize) => Type::Usize,
+                _ => Type::Int,
+            }),
             ExprKind::Float { .. } => Some(Type::F64),
             // 字符串字面量可作全局/静态字段初值：codegen 在数据段生成
             // sw_string 结构体（data 重定位指向字符串池）。数组字面量仍
@@ -1473,6 +1494,37 @@ impl Analyzer {
                 };
                 if valid { Some(inner) } else { None }
             }
+            // 数组字面量全局初值（const NUMS = [1,2,3]）：元素须为编译期
+            // 常量标量/字符串，返回 Array(元素) 类型。运行时 sw_global_init
+            // 构造（codegen MirExpr::Array 完整创建数组）。
+            ExprKind::Array(items) => {
+                let mut elem_ty = None;
+                for item in items {
+                    if let ExprKind::Spread(inner) = &item.kind {
+                        let spread_ty = self.const_type(inner)?;
+                        match &elem_ty {
+                            None => {
+                                elem_ty = Some(match spread_ty.without_nullable() {
+                                    Type::Array(inner_ty) => (**inner_ty).clone(),
+                                    _ => return None,
+                                })
+                            }
+                            Some(_) => {}
+                        }
+                        continue;
+                    }
+                    let item_ty = self.const_type(item)?;
+                    match &elem_ty {
+                        None => elem_ty = Some(item_ty),
+                        Some(expected) => {
+                            if expected != &item_ty {
+                                return None;
+                            }
+                        }
+                    }
+                }
+                elem_ty.map(|elem| Type::Array(Box::new(elem)))
+            }
             _ => None,
         }
     }
@@ -1482,9 +1534,17 @@ impl Analyzer {
         for item in &items {
             if let ItemKind::Variable(variable) = &item.kind {
                 if let Some(init) = &variable.init {
-                    let ty = self.const_type(init);
-                    if ty.is_none() {
-                        self.error("顶层变量初始化式必须是编译期常量表达式", init.span);
+                    // map_new() 调用：运行时构造空 map，放行。
+                    let is_map_new = matches!(
+                        &init.kind,
+                        ExprKind::Call { callee, .. }
+                            if matches!(&callee.kind, ExprKind::Ident(name) if name.name == "map_new")
+                    );
+                    if !is_map_new {
+                        let ty = self.const_type(init);
+                        if ty.is_none() {
+                            self.error("顶层变量初始化式必须是编译期常量表达式", init.span);
+                        }
                     }
                 }
             }
@@ -5973,20 +6033,24 @@ impl<'m, 's> MirLowerer<'m, 's> {
         //    （sw_global_<模块id>_<名字>），字符串文本 intern 进本模块池，
         //    Assign 到导入条目的全局索引（运行时写定义模块的导出符号）。
         if self.state.id.0 == 0 {
-            let mut string_global_inits: Vec<(u32, usize)> = Vec::new();
-            // 本模块全局
-            for (index, global) in module_mir.globals.iter().enumerate() {
-                if global.ty == Type::Str {
-                    if let Some(MirExpr::Str(str_id)) = global.init.as_ref() {
-                        string_global_inits.push((index as u32, *str_id));
+            let mut global_inits: Vec<(u32, MirExpr)> = Vec::new();
+            // 本模块静态字段的字符串/数组初值（sw_sfield_* 全局，不在顶层
+            // 变量 AST 里）：按 static_field_globals 表收集。
+            for (name, &gindex) in &self.static_field_globals {
+                if let Some(global) = module_mir.globals.get(gindex as usize) {
+                    if matches!(global.ty, Type::Str | Type::Array(_)) {
+                        if let Some(init) = global.init.as_ref() {
+                            if matches!(init, MirExpr::Str(_) | MirExpr::Array { .. }) {
+                                global_inits.push((gindex, init.clone()));
+                            }
+                        }
                     }
                 }
+                let _ = name;
             }
-            // 其他模块的字符串全局（跨模块）：遍历全部 AST 模块。
+            // 统一遍历全部模块（含本模块）的 AST：识别引用类型全局初值
+            // （字符串/数组字面量、map_new() 调用），生成 sw_global_init 语句。
             for (module_index, module) in self.all_modules.iter().enumerate() {
-                if module_index == self.state.id.0 as usize {
-                    continue;
-                }
                 for item in &module.items {
                     let ItemKind::Variable(variable) = &item.kind else {
                         continue;
@@ -5994,25 +6058,73 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     let Some(init) = &variable.init else {
                         continue;
                     };
-                    // 仅字符串字面量初值（const/let S = "text"）。
-                    let ExprKind::Str(text) = &init.kind else {
+                    let init_mir = match &init.kind {
+                        // 字符串字面量
+                        ExprKind::Str(text) => {
+                            let str_id = self.intern_string(text);
+                            Some((MirExpr::Str(str_id), Type::Str))
+                        }
+                        // 数组字面量
+                        ExprKind::Array(_) => self
+                            .const_mir(init)
+                            .map(|mir| (mir, Type::Array(Box::new(Type::Int)))),
+                        // map_new()：运行时调用构造空 map
+                        ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name.name == "map_new") =>
+                        {
+                            let sig = FunctionSig {
+                                module: ModuleId(0),
+                                name: "map_new".to_owned(),
+                                generics: Vec::new(),
+                                bounds: HashMap::new(),
+                                params: Vec::new(),
+                                ret: Type::Ptr(Box::new(Type::Void)),
+                                extern_c: true,
+                                span: Span::empty(0),
+                            };
+                            Some((
+                                MirExpr::Call {
+                                    callee: MirCallee::Extern {
+                                        name: "map_new".to_owned(),
+                                        sig,
+                                    },
+                                    args: Vec::new(),
+                                },
+                                Type::Ptr(Box::new(Type::Void)),
+                            ))
+                        }
+                        _ => None,
+                    };
+                    let Some((init_mir, ty)) = init_mir else {
                         continue;
                     };
-                    // 生成跨模块 Import 条目（module=定义模块，链接到导出符号）。
+                    // 本模块全局：直接 Assign 已有全局槽（顶层变量 + 静态字段）。
+                    if module_index == self.state.id.0 as usize {
+                        // 顶层变量：按名字匹配符号表索引。
+                        let symbol_id = self
+                            .state
+                            .names
+                            .get(&variable.name.name)
+                            .and_then(|ids| ids.first().copied());
+                        if let Some(&gindex) =
+                            symbol_id.and_then(|id| self.global_index_by_symbol.get(&id.0))
+                        {
+                            global_inits.push((gindex as u32, init_mir));
+                        }
+                        continue;
+                    }
+                    // 跨模块全局：生成 Import 条目（module=定义模块）。
                     let index = module_mir.globals.len() as u32;
                     module_mir.globals.push(MirGlobal {
                         name: format!("sw_global_{}_{}", module_index, variable.name.name),
-                        ty: Type::Str,
+                        ty: ty.clone(),
                         mutable: matches!(variable.kind, VarKind::Let),
                         init: None,
                         module: module_index as u32,
                     });
-                    // 字符串文本加入入口模块池，Assign 到导入条目。
-                    let str_id = self.intern_string(text);
-                    string_global_inits.push((index, str_id));
+                    global_inits.push((index, init_mir));
                 }
             }
-            if let Some(init_fn) = self.build_global_init(&string_global_inits) {
+            if let Some(init_fn) = self.build_global_init(&global_inits) {
                 module_mir.functions.push(init_fn);
             }
         }
@@ -6082,12 +6194,12 @@ impl<'m, 's> MirLowerer<'m, 's> {
         }
     }
 
-    fn build_global_init(&mut self, string_inits: &[(u32, usize)]) -> Option<MirFunction> {
+    fn build_global_init(&mut self, global_inits: &[(u32, MirExpr)]) -> Option<MirFunction> {
         let mut body = Vec::new();
-        for (gindex, str_id) in string_inits {
+        for (gindex, value) in global_inits {
             body.push(MirStmt::new(MirStmtKind::Assign {
                 target: MirTarget::Global(*gindex),
-                value: MirExpr::Str(*str_id),
+                value: value.clone(),
             }));
         }
         Some(MirFunction {
@@ -6383,6 +6495,41 @@ impl<'m, 's> MirLowerer<'m, 's> {
                     op: mir_binary(op),
                     left: Box::new(left),
                     right: Box::new(right),
+                })
+            }
+            // 数组字面量全局初值（const NUMS = [1,2,3]）：codegen 的
+            // MirExpr::Array 运行时构造完整数组（sw_array_new + 逐项填充）。
+            // 元素类型由检查端 const_type 校验（check_globals），此处按
+            // 首元素 MIR 形状推断（str→Str、其余→Int）供布局使用。
+            ExprKind::Array(items) => {
+                let mut mir_items = Vec::new();
+                let mut elem_ty = Type::Int;
+                for item in items {
+                    match &item.kind {
+                        ExprKind::Spread(inner) => {
+                            mir_items.push(MirExpr::ArraySpread(Box::new(self.const_mir(inner)?)));
+                        }
+                        _ => {
+                            if matches!(item.kind, ExprKind::Str(_)) {
+                                elem_ty = Type::Str;
+                            } else if matches!(
+                                item.kind,
+                                ExprKind::Integer {
+                                    suffix: Some(sw_frontend::IntegerSuffix::U8),
+                                    ..
+                                }
+                            ) {
+                                elem_ty = Type::U8;
+                            } else if matches!(item.kind, ExprKind::Float { .. }) {
+                                elem_ty = Type::F64;
+                            }
+                            mir_items.push(self.const_mir(item)?);
+                        }
+                    }
+                }
+                Some(MirExpr::Array {
+                    elem: Box::new(elem_ty),
+                    items: mir_items,
                 })
             }
             _ => None,
@@ -9248,7 +9395,21 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         // Ident 直接从符号表取类型，避免碰撞。
         match &expr.kind {
             ExprKind::Str(_) => return Type::Str,
-            ExprKind::Integer { .. } => return Type::Int,
+            ExprKind::Integer { suffix, .. } => {
+                return match suffix {
+                    Some(sw_frontend::IntegerSuffix::I8) => Type::I8,
+                    Some(sw_frontend::IntegerSuffix::U8) => Type::U8,
+                    Some(sw_frontend::IntegerSuffix::I16) => Type::I16,
+                    Some(sw_frontend::IntegerSuffix::U16) => Type::U16,
+                    Some(sw_frontend::IntegerSuffix::I32) => Type::I32,
+                    Some(sw_frontend::IntegerSuffix::U32) => Type::U32,
+                    Some(sw_frontend::IntegerSuffix::I64) => Type::I64,
+                    Some(sw_frontend::IntegerSuffix::U64) => Type::U64,
+                    Some(sw_frontend::IntegerSuffix::Isize) => Type::Isize,
+                    Some(sw_frontend::IntegerSuffix::Usize) => Type::Usize,
+                    _ => Type::Int,
+                };
+            }
             ExprKind::Float { suffix, .. } => {
                 return if matches!(suffix, Some(sw_frontend::FloatSuffix::F32)) {
                     Type::F32

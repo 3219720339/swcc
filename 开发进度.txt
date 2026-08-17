@@ -2,6 +2,29 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 07:20  支持数组/map 全局变量（sw_global_init 扩展）：
+   - 背景：const NUMS = [1,2,3] / const CONFIG = map_new() 此前编译期报错
+     （配置表场景刚需）。
+   - 数组全局：const_mir 支持 ExprKind::Array（MirExpr::Array 运行时完整
+     构造）；const_type 支持数组字面量（元素类型按 suffix 推断，修复
+     `1u8` 等固定宽度字面量此前恒为 Int 的类型错误）；codegen
+     expr_array_elem 补 MirExpr::Global 分支（u8 数组全局此前按 8 字节
+     步长读取错乱）。
+   - map 全局：sw_global_init 识别 `= map_new()` 初值，生成
+     Call(Extern map_new)；check_globals/顶层符号注册放行 map_new
+     （类型 ptr<void>）。
+   - const 引用类型全局强制可写数据段（sw_global_init 运行时写初值，
+     只读段会崩）；修复 sw_global_init 重构后静态字段字符串初值漏收集
+     （补 static_field_globals 遍历）。
+   - 支持 int/string/u8/float 数组全局、let 可变 + push、跨模块数组/map
+     共享（读取与修改）。
+   - 新增探针 probe-global-container.sw（14 项）+ lib-global-container.sw
+     （定义模块），注册 run-examples.py（115 项）。
+   - 文档：docs/04-内存模型.md、docs/08-能力清单.md 更新（引用类型全局
+     初值支持、跨模块共享）。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 115 examples 回归通过。
+
 2026-08-17 06:20  支持 struct 数组作为字段类型（语言层最后实质缺口）：
    - 背景：`struct Node { children: Node[] }` 此前编译期报错
      "v0.1 暂不支持该字段类型"——树/链表/图数据结构不可用。

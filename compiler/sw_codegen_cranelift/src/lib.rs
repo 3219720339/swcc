@@ -297,6 +297,12 @@ impl Generator {
     ) -> Result<(), CodegenError> {
         // 本模块定义的全局导出为可链接符号；跨模块引用声明为 Import 外部数据。
         let defining = global.module == current_module;
+        // 字符串/数组/map 等引用类型全局：sw_global_init 运行时写初值，即使
+        // const 声明也必须落在可写数据段（否则写只读段崩溃）。Ptr 类型
+        // （map 等）无条件可写；Str/Array 在带运行时 init 时可写。
+        let needs_runtime_init = matches!(global.ty, Type::Ptr(_))
+            || (matches!(global.ty, Type::Str | Type::Array(_)) && global.init.is_some());
+        let writable = global.mutable || needs_runtime_init;
         let data_id = self
             .module
             .declare_data(
@@ -306,7 +312,7 @@ impl Generator {
                 } else {
                     Linkage::Import
                 },
-                global.mutable,
+                writable,
                 false,
             )
             .map_err(|error| error.to_string())?;
@@ -1972,6 +1978,10 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     _ => None,
                 }
             }
+            MirExpr::Global(index) => match self.global_types.get(index) {
+                Some(Type::Array(inner)) => Some((**inner).clone()),
+                _ => None,
+            },
             _ => None,
         }
     }
