@@ -2848,6 +2848,19 @@ Sw 编译器（swcc）开发进度
    - 本批未执行交叉编译；本机 release 构建、`cargo test --workspace`（67 项）、
      126 个注册 examples 回归、`probe-test` 5 项内嵌测试和 `probe-callbacks2` 均通过。
 
+2026-08-18 01:20  UI 库设计稿（docs/11-UI设计.md，未动工）：
+   - 目标：跨平台（Win/Linux/macOS × x86_64/aarch64）、性能好、少依赖、
+     好看、不复杂；链式调用一等支持；后续可输出 dll/lib 供其他语言调用。
+   - 架构：stdlib/ui.sw（稳定 Sw API）→ sw_ui_* extern C ABI 分界线 →
+     runtime_ui.c（Win32/Xlib/Cocoa 平台层）+ vendor nanovg（GL 为主，
+     AGGE 软件回退）+ stb_truetype（系统字体探测 + 拉丁兜底）。
+   - 接入照抄音频模式：compile_runtime_objects 加 task、SDK 打包
+     runtime_ui.obj、musl 交叉编译 __has_include stub 退化。
+   - 关键验证：协作式 safepoint GC 下 pump(timeout) 必须总有界返回（16ms）；
+     dll .def 导出需手动补 sw_ui_*（现有逻辑跳过 extern_c）。
+   - Win7 兼容：可支持（SP1 + KB2999226 UCRT），新 API 全 GetProcAddress
+     降级，GL 不可用回退软件渲染；裸 Win7 需改链 msvcrt（独立任务，不做）。
+   - 阶段：P1 窗口+事件（Win32 先行）→ P2 绘制+控件+主题 → P3 跨平台+发布。
 2026-08-18 00:52  当前项目学习：
    - 已复核工作区、编译入口和核心架构：`swc` 命令行负责读取、模块分析、目标文件编排与平台链接；
      `sw_frontend` 完成词法/语法/AST，`sw_semantic` 负责名称解析、类型检查和 MIR，
