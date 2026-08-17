@@ -2847,3 +2847,10 @@ Sw 编译器（swcc）开发进度
    - 更新 `docs/项目说明.md`：记录函数一等值、finally 控制流、线程便利 API 与当前音频能力。
    - 本批未执行交叉编译；本机 release 构建、`cargo test --workspace`（67 项）、
      126 个注册 examples 回归、`probe-test` 5 项内嵌测试和 `probe-callbacks2` 均通过。
+
+2026-08-17 23:45  Windows SDK 分发包：
+   - 在全新目录 `dist/package-20260817-234423/` 生成 Windows x64 自包含 SDK，未覆盖或删除 dist 中既有文件。
+   - 产物为 `swc-windows-x64-0.1.2.zip`（37,553,245 字节），同目录生成 `SHA256SUMS`（52 项）；
+     zip SHA-256 为 `a37014c1b6f75b7d1f6c37fec8ab657b3f810f08d8af1ef37f232b3ba30c072e`。
+   - SDK 冒烟通过：清空 SW_TOOLCHAIN/SW_STDLIB/SW_RUNTIME 后，包内 swc 成功编译并运行 hello，
+     并成功编译联网探针 probe-batch11。
