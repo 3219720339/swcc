@@ -208,7 +208,8 @@ enum FieldTarget {
 #[derive(Clone, Copy, Debug)]
 enum StaticMemberTarget {
     Field(u32, usize),
-    Method(u32, usize),
+    /// 静态方法访问（降级走 CallTarget::StaticMethod 路径，此处无需携带数据）。
+    Method,
 }
 
 struct Analyzer {
@@ -2296,10 +2297,11 @@ impl<'s> Checker<'s> {
             (Type::Array(from_inner), Type::Array(to_inner)) => {
                 self.is_assignable(from_inner, to_inner)
             }
-            (_, Type::Nullable(to_inner)) => self.is_assignable(from, to_inner),
+            // 可空对可空：先剥外层再比较（如 int? → isize?）。
             (Type::Nullable(from_inner), Type::Nullable(to_inner)) => {
                 self.is_assignable(from_inner, to_inner)
             }
+            (_, Type::Nullable(to_inner)) => self.is_assignable(from, to_inner),
             _ => false,
         }
     }
@@ -3675,7 +3677,7 @@ impl<'s> Checker<'s> {
                         self.state
                             .result
                             .static_member_targets
-                            .insert(span.start, StaticMemberTarget::Method(class_id, index));
+                            .insert(span.start, StaticMemberTarget::Method);
                         return Type::Function {
                             params: sig.params.iter().map(|p| p.ty.clone()).collect(),
                             ret: Box::new(sig.ret.clone()),
@@ -5912,7 +5914,7 @@ impl<'m, 's> MirLowerer<'m, 's> {
     }
 
     fn build_test_main(&mut self, test_fns: &[(String, FunctionSig)]) -> Option<MirFunction> {
-        let mut locals = vec![
+        let locals = vec![
             MirLocal {
                 name: "fail".to_owned(),
                 ty: Type::Int,
@@ -7210,7 +7212,6 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
     /// 泛型函数按调用点单态化：推断类型实参，生成并缓存专用实例。
     fn instantiate_generic(
         &mut self,
-        symbol: SymbolId,
         template: &FunctionSig,
         ast_args: &[Expr],
         span: Span,
@@ -8077,7 +8078,7 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                             }
                         } else if !sig.generics.is_empty() {
                             let (instance_name, instance_sig) =
-                                self.instantiate_generic(symbol, &sig, ast_args, expr.span);
+                                self.instantiate_generic(&sig, ast_args, expr.span);
                             MirCallee::Function {
                                 module: sig.module.0,
                                 name: instance_name,

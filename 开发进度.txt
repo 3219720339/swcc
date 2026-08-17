@@ -2,6 +2,34 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-16 23:59  清理编译警告 + 边界负例回归 + 文档修正 + 仓库卫生：
+   - 编译警告清零（20 条）：sw-semantic 4 条（unreachable pattern 可空分支
+     顺序修正、去掉多余 mut、删未用 symbol 参数、StaticMemberTarget::Method
+     改无字段变体）+ sw-codegen-cranelift 11 条（8 处 iadd_imm → iadd_imm_s
+     弃用 API、未用导入 MatchArmMir/MirParam、LowerCtx.types/class_field_counts
+     字段、expr_is_float 方法、class_field_counts 函数）+ 整理；cargo build
+     零警告
+   - 边界负例回归（7 个新探针，全部注册 run-examples.py）：
+     a) 数组越界（预期 exit 3）：probe-bounds-float（float[] 越界读）、
+        probe-bounds-string（string[] 越界读）、probe-bounds-u8（u8[] 越界读）、
+        probe-bounds-assign（赋值目标越界写）
+     b) 切片越界（安全裁剪，预期 0）：probe-slice-bounds（end 超长/负 start/
+        空区间/u8 裁剪）
+     c) 进程参数引号：probe-args-quote（run() 调自身传空格/引号/尾随反斜杠/
+        空串参数，验证 CreateProcessA 命令行编码往返一致）
+     d) 符号链接策略：probe-symlink（walk_files 不跟随链接、copy_dir 遇链接
+        失败、remove_all 只删链接本身；无权限创建链接时 [skip] 返回 0）
+   - 文档过期修正：docs/08-能力清单.md 删除两条过时限制（泛型 enum 已由
+     probe-generic-enum 覆盖；对象字面量 return/实参目标类型传播已支持——
+     实测验证）；浮点全局变量限制更新（const F = 3.5 实测正常）
+   - 仓库卫生（用户确认 A+B+C）：删除 130 个文件（116 exe + 2 o +
+     12 临时文本），0 失败；保留 D/E/F/G（tmp-*.sw 79 个、dir-demo/、
+     examples/demo 临时项、.swcache 1.07GB）
+   - 验证：cargo build 零警告、cargo test 59 项全绿、cargo fmt --check 通过、
+     release 110 个 examples 退出码全部符合设计
+   - 已知（既有，非本批引入）：debug 构建的 swc 分析 probe-audio.sw 时
+     语义层栈溢出（release 正常；git stash 原始代码同样复现）
+
 
 2026-08-16 18:20  跨平台构建验证：
    - 使用 release swc 对 probe-bounds 完成 x86_64-unknown-linux-musl 与

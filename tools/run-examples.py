@@ -115,6 +115,13 @@ EXPECTED = {
     "probe-narrow.sw": 0,
     "probe-language-complete.sw": 0,
     "probe-gc-memory.sw": 0,
+    "probe-bounds-float.sw": 3,
+    "probe-bounds-string.sw": 3,
+    "probe-bounds-u8.sw": 3,
+    "probe-bounds-assign.sw": 3,
+    "probe-slice-bounds.sw": 0,
+    "probe-args-quote.sw": 0,
+    "probe-symlink.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]

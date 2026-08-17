@@ -19,8 +19,8 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use sw_semantic::symbols::FunctionSig;
 use sw_semantic::types::Type;
 use sw_semantic::{
-    IterateMode, MatchArmMir, MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule,
-    MirParam, MirStmt, MirStmtKind, MirTarget, MirUnary, TypeTable,
+    IterateMode, MirBinary, MirCallee, MirExpr, MirFunction, MirGlobal, MirModule, MirStmt,
+    MirStmtKind, MirTarget, MirUnary, TypeTable,
 };
 use target_lexicon::Triple;
 
@@ -404,8 +404,6 @@ impl Generator {
             temp_slots: Vec::new(),
             loops: Vec::new(),
             module: &self.module,
-            types,
-            class_field_counts: class_field_counts(types),
             struct_field_offsets: struct_layout.0,
             struct_sizes: struct_layout.1,
             class_field_offsets: class_layout.0,
@@ -1533,24 +1531,6 @@ fn const_f64(expr: &MirExpr) -> Option<f64> {
     }
 }
 
-fn class_field_counts(types: &TypeTable) -> HashMap<u32, usize> {
-    types
-        .classes
-        .iter()
-        .enumerate()
-        .map(|(index, class)| {
-            let own = class.fields.len();
-            let mut count = own;
-            let mut base = class.base;
-            while let Some(id) = base {
-                count += types.classes[id as usize].fields.len();
-                base = types.classes[id as usize].base;
-            }
-            (index as u32, count)
-        })
-        .collect()
-}
-
 /// struct 布局：每个字段的字节偏移（标量 8 字节，嵌套 struct 内联其大小）。
 /// 返回 (字段偏移表, 总大小表)。
 fn struct_layout(types: &TypeTable) -> (HashMap<u32, Vec<usize>>, HashMap<u32, usize>) {
@@ -1695,8 +1675,6 @@ struct LowerCtx<'a, 'f> {
     /// (循环头块, 循环出口块)
     loops: Vec<(Block, Block)>,
     module: &'a ObjectModule,
-    types: &'a TypeTable,
-    class_field_counts: HashMap<u32, usize>,
     struct_field_offsets: HashMap<u32, Vec<usize>>,
     struct_sizes: HashMap<u32, usize>,
     class_field_offsets: HashMap<u32, Vec<usize>>,
@@ -2160,7 +2138,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 let offset = self.field_offset(&owner, *index) as i32;
                 let object = self.expr(object)?;
                 if let Some(Type::Struct(_)) = self.field_type(&owner, *index) {
-                    let dst = self.builder.ins().iadd_imm(object, offset as i64);
+                    let dst = self.builder.ins().iadd_imm_s(object, offset as i64);
                     let field_ty = self.field_type(&owner, *index).unwrap();
                     self.copy_struct(&field_ty, value, dst)
                 } else {
@@ -2549,7 +2527,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 let object = self.expr(object)?;
                 if let Some(field_ty @ Type::Struct(_)) = self.field_type(&owner, *index) {
                     let _ = field_ty;
-                    return Ok(self.builder.ins().iadd_imm(object, offset as i64));
+                    return Ok(self.builder.ins().iadd_imm_s(object, offset as i64));
                 }
                 let ty = if float { types::F64 } else { types::I64 };
                 self.builder
@@ -2719,7 +2697,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                                     &[array, dst_index, value],
                                 )?;
                             }
-                            let next = self.builder.ins().iadd_imm(i, 1);
+                            let next = self.builder.ins().iadd_imm_s(i, 1);
                             self.builder
                                 .ins()
                                 .stack_store(types::I64, next, index_slot, 0);
@@ -2785,7 +2763,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                                     &[array, index_value, item],
                                 )?;
                             }
-                            let next = self.builder.ins().iadd_imm(index_value, 1);
+                            let next = self.builder.ins().iadd_imm_s(index_value, 1);
                             self.builder
                                 .ins()
                                 .stack_store(types::I64, next, cursor_slot, 0);
@@ -2857,7 +2835,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     let value = self.expr(field)?;
                     let offset = self.field_offset(ty, *index) as i32;
                     if let Some(field_ty @ Type::Struct(_)) = self.field_type(ty, *index) {
-                        let dst = self.builder.ins().iadd_imm(address, offset as i64);
+                        let dst = self.builder.ins().iadd_imm_s(address, offset as i64);
                         self.copy_struct(&field_ty, value, dst)?;
                     } else {
                         self.builder
@@ -3331,7 +3309,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                         array_set_signature(self.module.isa()),
                         &[new_array, write_index, stored],
                     )?;
-                    let next = self.builder.ins().iadd_imm(write_index, 1);
+                    let next = self.builder.ins().iadd_imm_s(write_index, 1);
                     self.builder
                         .ins()
                         .stack_store(types::I64, next, write_slot, 0);
@@ -3356,7 +3334,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .builder
                     .ins()
                     .stack_load(types::I64, types::I64, index_slot, 0);
-                let next_index = self.builder.ins().iadd_imm(index, 1);
+                let next_index = self.builder.ins().iadd_imm_s(index, 1);
                 self.builder
                     .ins()
                     .stack_store(types::I64, next_index, index_slot, 0);
@@ -3536,7 +3514,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     .builder
                     .ins()
                     .stack_load(types::I64, types::I64, index_slot, 0);
-                let next = self.builder.ins().iadd_imm(i, 1);
+                let next = self.builder.ins().iadd_imm_s(i, 1);
                 self.builder
                     .ins()
                     .stack_store(types::I64, next, index_slot, 0);
@@ -3568,14 +3546,6 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                 }
             }
         })
-    }
-
-    fn expr_is_float(&self, expr: &MirExpr) -> bool {
-        match expr {
-            MirExpr::Float(_) => true,
-            MirExpr::Cast { to, .. } => to.is_float(),
-            _ => false,
-        }
     }
 
     fn bool_cmp(&mut self, cond: IntCC, left: Value, right: Value) -> Value {
