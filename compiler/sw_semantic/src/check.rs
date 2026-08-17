@@ -3841,7 +3841,13 @@ impl<'s> Checker<'s> {
             right.kind,
             ExprKind::Integer { .. } | ExprKind::Float { .. }
         );
-        if left_literal && right_ty.is_numeric() {
+        // float 一侧优先：int 字面量适配成 float（`2.0 * 2` 与 `2 * 2.0` 都
+        // 是 float），绝不把 float 字面量截断成 int。
+        if left_ty.is_float() && right_literal && !right_ty.is_float() {
+            (left_ty.clone(), left_ty)
+        } else if right_ty.is_float() && left_literal && !left_ty.is_float() {
+            (right_ty.clone(), right_ty)
+        } else if left_literal && right_ty.is_numeric() {
             (right_ty.clone(), right_ty)
         } else if right_literal && left_ty.is_numeric() {
             (left_ty.clone(), left_ty)
@@ -7551,6 +7557,9 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 // 字符串 case 必须按内容比较（string_eq intrinsic），
                 // 裸 MirBinary::Eq 是指针比较，switch 会静默走 default。
                 let string_switch = self.expr_type(value) == Type::Str;
+                // 枚举 switch：值/case 都是枚举对象（每次构造新对象），指针比较
+                // 永不相等；改比较对象头 tag（offset 0，与 match 一致）。
+                let enum_switch = matches!(self.expr_type(value).without_nullable(), Type::Enum(_));
                 let value = self.lower_expr(value);
                 let mut chain = default
                     .as_ref()
@@ -7559,7 +7568,20 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                 for case in cases.iter().rev() {
                     let case_value = self.lower_expr(&case.value);
                     let body = self.lower_switch_case_body(&case.body);
-                    let cond = if string_switch {
+                    let cond = if enum_switch {
+                        let tag = match &case_value {
+                            MirExpr::EnumNew { tag, .. } => *tag,
+                            _ => 0,
+                        };
+                        MirExpr::Binary {
+                            op: MirBinary::Eq,
+                            left: Box::new(MirExpr::Field {
+                                object: Box::new(value.clone()),
+                                index: 0,
+                            }),
+                            right: Box::new(MirExpr::Int(tag)),
+                        }
+                    } else if string_switch {
                         MirExpr::Call {
                             callee: MirCallee::Intrinsic {
                                 name: "string_eq".to_owned(),
@@ -8406,6 +8428,33 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
         self.lower_expr(expr)
     }
 
+    /// 镜像检查期 adapt_literal_operands 的字面量适配：一侧是 float、另一侧是
+    /// 数值字面量时，把字面量 Cast 成对侧类型（fcvt 数值转换，不是位模式
+    /// bitcast）。用于二元运算及 pow/rem 内建调用的实参。
+    fn adapt_literal_mir(&mut self, left: &Expr, right: &Expr) -> (MirExpr, MirExpr) {
+        let left_ty = self.expr_type(left);
+        let right_ty = self.expr_type(right);
+        let left_lit = matches!(left.kind, ExprKind::Integer { .. } | ExprKind::Float { .. });
+        let right_lit = matches!(
+            right.kind,
+            ExprKind::Integer { .. } | ExprKind::Float { .. }
+        );
+        let mut left_mir = self.lower_expr(left);
+        let mut right_mir = self.lower_expr(right);
+        if left_lit && right_ty.is_float() && !left_ty.is_float() {
+            left_mir = MirExpr::Cast {
+                expr: Box::new(left_mir),
+                to: right_ty.clone(),
+            };
+        } else if right_lit && left_ty.is_float() && !right_ty.is_float() {
+            right_mir = MirExpr::Cast {
+                expr: Box::new(right_mir),
+                to: left_ty.clone(),
+            };
+        }
+        (left_mir, right_mir)
+    }
+
     /// 把右/左操作数包装成字符串：标量经 to_string intrinsic 转换，字符串原样。
     fn to_string_expr(value: MirExpr, ty: &Type) -> MirExpr {
         if *ty == Type::Str {
@@ -8649,21 +8698,25 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     }
                 }
                 if *op == BinaryOp::Pow {
-                    let is_float = self.expr_type(left).is_float();
+                    let left_ty = self.expr_type(left);
+                    let right_ty = self.expr_type(right);
+                    let is_float = left_ty.is_float() || right_ty.is_float();
                     let name = if is_float { "pow_f64" } else { "pow_i64" };
+                    let (left_mir, right_mir) = self.adapt_literal_mir(left, right);
                     return MirExpr::Call {
                         callee: MirCallee::Intrinsic {
                             name: name.to_owned(),
                         },
-                        args: vec![self.lower_expr(left), self.lower_expr(right)],
+                        args: vec![left_mir, right_mir],
                     };
                 }
                 if *op == BinaryOp::Rem && self.expr_type(left).is_float() {
+                    let (left_mir, right_mir) = self.adapt_literal_mir(left, right);
                     return MirExpr::Call {
                         callee: MirCallee::Intrinsic {
                             name: "frem_f64".to_owned(),
                         },
-                        args: vec![self.lower_expr(left), self.lower_expr(right)],
+                        args: vec![left_mir, right_mir],
                     };
                 }
                 if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && self.expr_type(left) == Type::Str {
@@ -8697,10 +8750,14 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         };
                     }
                 }
+                // int 字面量 vs float：检查期 adapt_literal_operands 把字面量
+                // 类型改成对侧（如 `f == 1000` 中 1000 → f64），MIR 必须同步
+                // 转换（fcvt），否则 codegen 位模式 bitcast 产生垃圾值。
+                let (left_mir, right_mir) = self.adapt_literal_mir(left, right);
                 MirExpr::Binary {
                     op: mir_binary(op),
-                    left: Box::new(self.lower_expr(left)),
-                    right: Box::new(self.lower_expr(right)),
+                    left: Box::new(left_mir),
+                    right: Box::new(right_mir),
                 }
             }
             ExprKind::Assign { target, .. } => {

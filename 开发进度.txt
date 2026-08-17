@@ -2,6 +2,25 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 15:10  Bug 排查批次 3：enum switch、float/int 字面量适配：
+   - enum switch 失效（文档声称支持枚举成员 case）：switch 降级对枚举值/case
+     用 MirBinary::Eq 指针比较，每次构造新枚举对象永不相等、静默走 default。
+     修复：枚举 switch 比较对象头 tag（offset 0，与 match 一致），case 取
+     变体判别值。
+   - float/int 字面量混合运算不对称且截断：adapt_literal_operands 规则先判
+     left_literal——`2.0 * 2` 把 float 字面量适配成 int（截断），`2 * 2.0`
+     却适配成 float；且 MIR 降级不同步（比较时 int 字面量位模式 bitcast 成
+     float 垃圾值，如 `f == 1000` 恒 false；`2.0 ** 2`/`5.5 % 2` IR 校验失败）。
+     修复：adapt_literal_operands float 一侧优先（int 字面量适配成 float，
+     不截断 float 字面量）；新增 adapt_literal_mir 在 MIR 降级同步字面量转换
+     （fcvt），覆盖二元运算与 pow/rem 内建调用。
+   - 排查确认正常：hex/二进制/下划线/科学计数法字面量、接口继承（extends
+     多接口）、try/finally 无 catch、i64 max、indexOf/split 空参数、跨模块
+     闭包传参/具名函数作值。
+   - 新增探针 probe-enum-switch.sw（14 项），注册 run-examples.py（124 项）。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 124 examples 回归通过。
+ 
 2026-08-17 14:30  Bug 排查批次 2：字符串 for-of 字节迭代、lambda 返回类型上下文、
    嵌套闭包捕获链、函数类型注解歧义：
    - for-of 字符串按字节迭代（多字节 UTF-8 如"你好世界"4 字符跑 12 次）：
