@@ -134,6 +134,7 @@ EXPECTED = {
     "probe-jsarrays.sw": 0,
     "probe-callback.sw": 0,
     "probe-thread-sugar.sw": 0,
+    "probe-closure-edge.sw": 0,
 }
 
 # 需要额外命令行参数的探针：name -> [参数...]

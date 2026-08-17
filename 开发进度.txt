@@ -2,6 +2,27 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 14:30  Bug 排查批次 2：字符串 for-of 字节迭代、lambda 返回类型上下文、
+   嵌套闭包捕获链、函数类型注解歧义：
+   - for-of 字符串按字节迭代（多字节 UTF-8 如"你好世界"4 字符跑 12 次）：
+     for-of 循环边界改用 utf8_len（字符数），MirExpr::Len{string} 仍是
+     字节数（.length 语义不变）。
+   - lambda 体内 return 校验用错外层函数返回类型（self.ret 未随 lambda
+     切换）：lambda 检查保存/恢复 self.ret（有注解用注解、无注解置 Unknown）。
+   - 嵌套闭包捕获父作用域外变量失败（"无法降级标识符"）：collect_captures_expr
+     不遍历 ExprKind::Lambda，只在内层引用、父作用域之外的值对外层不可见，
+     内层环境取值链断裂。加 Lambda 分支（内层参数除外）。
+   - 函数类型注解歧义：lambda 返回函数类型（`(): (() => int) => () => 42`）
+     解析失败。parse_type 括号分支改回溯法——`(T) => R` 的 R 能解析成类型
+     才算函数类型，否则回退为括号分组（`=>` 属于调用方）。
+   - 排查确认正常：char 字面量/char switch、slice 负索引/start>=end、
+     for(;;)、-0.0/NaN 比较、可选链、泛型函数双闭包、闭包捕获闭包、
+     字符串+字符拼接、lambda 内 throw 被外部 catch、重载函数作值（绑定
+     一个重载）；方法引用作值不支持（"成员访问未解析"）。
+   - 新增探针 probe-closure-edge.sw（4 项），注册 run-examples.py（123 项）。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 123 examples 回归通过。
+ 
 2026-08-17 13:50  Bug 排查批次：lambda 作用域边界泄漏 + spawn_result 空数组越界：
    - 排查发现：循环/switch 里的 lambda 内 break/continue 检查期放行
      （loop_depth/switch_depth 泄漏进 lambda 体），到 codegen 才报

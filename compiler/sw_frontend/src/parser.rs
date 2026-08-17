@@ -539,12 +539,31 @@ impl<'a> Parser<'a> {
             }
             self.expect(&TokenKind::RParen, "类型缺少 `)`")?;
             if self.at(&TokenKind::FatArrow) {
+                // 先按函数类型解析 `(T) => R`：R 能解析成类型才算；否则 `=>`
+                // 属于调用方（lambda 返回类型注解后的箭头，如
+                // `(): (() => int) => () => 42` 或 `... => { ... }`），
+                // 外层括号是分组，回退重放。
+                let checkpoint = self.checkpoint();
                 self.advance();
-                let ret = self.parse_type()?;
-                function = Some(FunctionTypeRef {
-                    params,
-                    ret: Box::new(ret),
-                });
+                match self.parse_type() {
+                    Ok(ret) => {
+                        function = Some(FunctionTypeRef {
+                            params,
+                            ret: Box::new(ret),
+                        });
+                    }
+                    Err(()) => {
+                        self.restore(checkpoint);
+                        if !empty && params.len() == 1 {
+                            let inner = params.into_iter().next().unwrap();
+                            grouped = Some((inner.segments, inner.function, inner.suffixes));
+                        } else {
+                            let span = self.peek().span;
+                            self.error("`(T1, T2)` 后缺少 `=>`（函数类型）", span);
+                            return Err(());
+                        }
+                    }
+                }
             } else if !empty && params.len() == 1 {
                 // 括号分组：`(T)` / `((T) => R)[]`——整体是内层类型，后缀在下方解析。
                 let inner = params.into_iter().next().unwrap();

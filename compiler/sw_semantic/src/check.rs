@@ -3665,6 +3665,14 @@ impl<'s> Checker<'s> {
                 self.loop_depth = 0;
                 self.switch_depth = 0;
                 self.this_class = None;
+                // lambda 是独立函数：体内 return 按 lambda 自身返回类型校验，
+                // 而不是外层函数（否则 `(): (() => int) => { return (): int => ...; }`
+                // 会被误用 main 的 int 返回类型拒绝）。未注解时置 Unknown 放行。
+                let outer_ret = self.ret.clone();
+                self.ret = match ret {
+                    Some(ty_ref) => self.lower_type(ty_ref),
+                    None => Type::Unknown,
+                };
                 let inferred = match body {
                     LambdaBody::Expr(expr) => self.check_expr(expr),
                     LambdaBody::Block(block) => {
@@ -3692,6 +3700,7 @@ impl<'s> Checker<'s> {
                 self.loop_depth = outer_loop;
                 self.switch_depth = outer_switch;
                 self.this_class = outer_this;
+                self.ret = outer_ret;
                 // 显式返回类型注解 `(x: int): int => ...`：校验与推断类型兼容，
                 // 并优先用声明的返回类型（ABI 以声明为准）。
                 let ret_ty = match ret {
@@ -7512,12 +7521,23 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     init: Some(MirExpr::Int(0)),
                 }));
                 output.push(MirStmt::new(MirStmtKind::While {
+                    // 字符串按字符数迭代（UTF-8 多字节安全）：边界用 utf8_len
+                    // （字符数），MirExpr::Len{string} 是字节数（.length 语义）。
                     cond: MirExpr::Binary {
                         op: MirBinary::Lt,
                         left: Box::new(index_expr),
-                        right: Box::new(MirExpr::Len {
-                            object: Box::new(array),
-                            string: is_string,
+                        right: Box::new(if is_string {
+                            MirExpr::Call {
+                                callee: MirCallee::Intrinsic {
+                                    name: "string_char_len".to_owned(),
+                                },
+                                args: vec![array.clone()],
+                            }
+                        } else {
+                            MirExpr::Len {
+                                object: Box::new(array),
+                                string: false,
+                            }
                         }),
                     },
                     body: body_stmts,
@@ -10102,8 +10122,24 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                     }
                 }
             }
-            ExprKind::Lambda { .. }
-            | ExprKind::Str(_)
+            ExprKind::Lambda { params, body, .. } => {
+                // 嵌套 lambda：其自由变量由外层函数捕获后转发给内层闭包环境
+                // （否则只在内层引用、父作用域之外的值对外层不可见，内层
+                // EnvGet 拿不到）。内层参数不参与外层捕获。
+                let inner_params: Vec<String> =
+                    params.iter().map(|param| param.name.name.clone()).collect();
+                match body {
+                    LambdaBody::Expr(inner) => {
+                        self.collect_captures_expr(inner, &inner_params, out, seen);
+                    }
+                    LambdaBody::Block(block) => {
+                        for statement in &block.statements {
+                            self.collect_captures_stmt(statement, &inner_params, out, seen);
+                        }
+                    }
+                }
+            }
+            ExprKind::Str(_)
             | ExprKind::Integer { .. }
             | ExprKind::Float { .. }
             | ExprKind::Char(_)
