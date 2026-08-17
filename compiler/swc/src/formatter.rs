@@ -164,10 +164,7 @@ pub fn format_source(source: &str) -> String {
                                 | TokenKind::OpenParen
                                 | TokenKind::OpenBracket
                         )
-                    ) || matches!(
-                        next_text,
-                        Some("!" | "~" | "-" | "+")
-                    );
+                    ) || matches!(next_text, Some("!" | "~" | "-" | "+"));
                     if ternary {
                         space(&mut output);
                         output.push('?');
@@ -183,19 +180,28 @@ pub fn format_source(source: &str) -> String {
                     // 一元 `-`/`+`（前一个 token 是运算符/括号/逗号/冒号等）
                     // 后紧跟操作数；二元则前后留空格。`(`/`[`/`{` 后的一元
                     // 不加前空格（`f(-1)`、`[-1]`）。
-                    let unary = previous.map(|kind| {
-                        matches!(
-                            kind,
-                            TokenKind::Operator
-                                | TokenKind::OpenParen
-                                | TokenKind::OpenBracket
-                                | TokenKind::Comma
-                                | TokenKind::Colon
-                                | TokenKind::OpenBrace
-                        )
-                    }).unwrap_or(true);
+                    let unary = previous
+                        .map(|kind| {
+                            matches!(
+                                kind,
+                                TokenKind::Operator
+                                    | TokenKind::OpenParen
+                                    | TokenKind::OpenBracket
+                                    | TokenKind::Comma
+                                    | TokenKind::Colon
+                                    | TokenKind::OpenBrace
+                            )
+                        })
+                        .unwrap_or(true);
                     if unary {
-                        if !matches!(previous, Some(TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace)) {
+                        if !matches!(
+                            previous,
+                            Some(
+                                TokenKind::OpenParen
+                                    | TokenKind::OpenBracket
+                                    | TokenKind::OpenBrace
+                            )
+                        ) {
                             space(&mut output);
                         }
                         output.push_str(token.text);
