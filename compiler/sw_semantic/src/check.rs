@@ -1177,15 +1177,12 @@ impl Analyzer {
         result
     }
 
-    /// struct/class 字段允许嵌套 struct 值字段；struct 数组作为字段类型暂不支持。
+    /// struct/class 字段允许嵌套 struct 值字段与 struct 数组字段
+    /// （数组为引用类型，字段存 8 字节指针，不内联布局）。
     fn reject_complex_field(&mut self, ty: &Type, span: Span, allow_struct_value: bool) {
-        let bad = (!allow_struct_value && matches!(ty, Type::Struct(_)))
-            || matches!(ty, Type::Array(inner) if matches!(**inner, Type::Struct(_)));
+        let bad = !allow_struct_value && matches!(ty, Type::Struct(_));
         if bad {
-            self.error(
-                "v0.1 暂不支持该字段类型（struct 数组/class 的 struct 值字段）",
-                span,
-            );
+            self.error("v0.1 暂不支持该字段类型（class 的 struct 值字段）", span);
         }
     }
 
@@ -3364,14 +3361,16 @@ impl<'s> Checker<'s> {
                                     expr.span,
                                 );
                             }
-                            // 嵌套结构体字面量：按字段类型传播目标类型。
-                            if let (Some(Type::Struct(_)), ExprKind::Object(_)) =
-                                (&field_ty, &field.value.kind)
-                            {
-                                self.state
-                                    .result
-                                    .object_types
-                                    .insert(field.value.span.start, field_ty.clone().unwrap());
+                            // 嵌套结构体字面量 / struct 数组字段字面量：
+                            // 按字段类型传播目标类型（含数组元素的对象字面量，
+                            // 如 `points: [{x:1,y:2}]`）。
+                            if let Some(field_ty) = &field_ty {
+                                match field_ty.without_nullable() {
+                                    Type::Struct(_) | Type::Array(_) => {
+                                        self.register_object_target(&field.value, field_ty);
+                                    }
+                                    _ => {}
+                                }
                             }
                             self.check_expr(&field.value);
                         }
@@ -3384,11 +3383,27 @@ impl<'s> Checker<'s> {
                                 ObjectKey::Ident(ident) => ident.name.clone(),
                                 ObjectKey::Str(value) => value.clone(),
                             };
-                            if self.types.find_class_field(id, &field_name).is_none() {
+                            let field_ty = self.types.find_class_field(id, &field_name).and_then(
+                                |(class_id, index)| {
+                                    self.types.classes.get(class_id as usize).and_then(|info| {
+                                        info.fields.get(index).map(|f| f.ty.clone())
+                                    })
+                                },
+                            );
+                            if field_ty.is_none() {
                                 self.error(
                                     format!("类 {class_name} 没有字段 `{field_name}`"),
                                     expr.span,
                                 );
+                            }
+                            // 嵌套 struct/struct 数组字段：按字段类型传播目标类型。
+                            if let Some(field_ty) = &field_ty {
+                                match field_ty.without_nullable() {
+                                    Type::Struct(_) | Type::Array(_) => {
+                                        self.register_object_target(&field.value, field_ty);
+                                    }
+                                    _ => {}
+                                }
                             }
                             self.check_expr(&field.value);
                         }
@@ -4421,7 +4436,17 @@ impl<'s> Checker<'s> {
                                 ArrayMethodKind::Push | ArrayMethodKind::Pop => Type::Error,
                             }
                         } else if name.name == "push" && args.len() == 1 {
-                            if !self.is_assignable(&args_ty[0], inner) {
+                            // struct 数组 push：对象字面量参数先按元素类型传播目标
+                            // 类型再检查（`points.push({x:3,y:3})`）。
+                            let checked_ty = if matches!(**inner, Type::Struct(_))
+                                && matches!(args[0].kind, ExprKind::Object(_) | ExprKind::Array(_))
+                            {
+                                self.register_object_target(&args[0], inner);
+                                self.check_expr(&args[0])
+                            } else {
+                                args_ty[0].clone()
+                            };
+                            if !self.is_assignable(&checked_ty, inner) {
                                 self.error(
                                     format!("`push` 参数必须是 {}", inner.display()),
                                     args[0].span,
@@ -6040,6 +6065,23 @@ impl<'m, 's> MirLowerer<'m, 's> {
     /// 生成 sw_global_init：运行时把字符串字面量全局初值写入全局槽。
     /// 函数体：`全局槽 = MirExpr::Str(池 id)`（codegen 对 MirExpr::Str 调用
     /// sw_string_from_literal 构造）。runtime main 在 sw_user_main 前调用。
+    /// 语义层计算 struct 大小（与 codegen struct_layout 一致：嵌套 struct
+    /// 累加大小，其余字段 8 字节）。用于 sw_array_push_struct 的 elem_size。
+    fn semantic_struct_size(&self, ty: &Type) -> usize {
+        match ty.without_nullable() {
+            Type::Struct(id) => {
+                let mut total = 0usize;
+                if let Some(info) = self.types.structs.get(*id as usize) {
+                    for field in &info.fields {
+                        total += self.semantic_struct_size(&field.ty);
+                    }
+                }
+                total.max(8)
+            }
+            _ => 8,
+        }
+    }
+
     fn build_global_init(&mut self, string_inits: &[(u32, usize)]) -> Option<MirFunction> {
         let mut body = Vec::new();
         for (gindex, str_id) in string_inits {
@@ -8079,9 +8121,13 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         _ => MirExpr::Int(0),
                     };
                     if matches!(method, ArrayMethodKind::Push | ArrayMethodKind::Pop) {
+                        let struct_elem = matches!(elem, Type::Struct(_));
                         let (name, params) = match method {
                             ArrayMethodKind::Push if matches!(elem, Type::U8) => {
                                 ("sw_array_push_u8", 1usize)
+                            }
+                            ArrayMethodKind::Push if struct_elem => {
+                                ("sw_array_push_struct", 3usize)
                             }
                             ArrayMethodKind::Push => ("sw_array_push", 1usize),
                             _ => ("sw_array_pop", 0usize),
@@ -8108,11 +8154,29 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                                 has_default: false,
                                 rest: false,
                             });
+                        } else if params == 3 {
+                            // sw_array_push_struct(array, elem_size, src)
+                            sig.params.push(ParamSig {
+                                name: "elem_size".to_owned(),
+                                ty: Type::Int,
+                                has_default: false,
+                                rest: false,
+                            });
+                            sig.params.push(ParamSig {
+                                name: "src".to_owned(),
+                                ty: Type::Ptr(Box::new(Type::I8)),
+                                has_default: false,
+                                rest: false,
+                            });
                         } else {
                             sig.ret = elem.clone();
                         }
                         let mut call_args = vec![object];
                         if params == 1 {
+                            call_args.push(args.first().cloned().unwrap_or(MirExpr::Int(0)));
+                        } else if params == 3 {
+                            let struct_size = self.lowerer.semantic_struct_size(&elem);
+                            call_args.push(MirExpr::Int(struct_size as i64));
                             call_args.push(args.first().cloned().unwrap_or(MirExpr::Int(0)));
                         }
                         return MirExpr::Call {

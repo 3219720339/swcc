@@ -3279,6 +3279,30 @@ int64_t sw_array_push_u8(sw_array* array, int64_t value) {
     return array->len;
 }
 
+// struct 数组追加：按 elem_size 复制元素字节（struct 元素内联存储）。
+int64_t sw_array_push_struct(sw_array* array, int64_t elem_size, void* src) {
+    if (array == NULL) {
+        return 0;
+    }
+    if (elem_size < 1) {
+        elem_size = 1;
+    }
+    if (array->len >= array->cap) {
+        int64_t new_cap = array->cap * 2 + 1;
+        sw_array* bigger = sw_array_new(elem_size, new_cap);
+        memcpy(bigger->data, array->data, (sw_size)((uint64_t)array->len * (uint64_t)elem_size));
+        bigger->len = array->len;
+        *array = *bigger;
+    }
+    memcpy(
+        (char*)array->data + (uintptr_t)array->len * (uintptr_t)elem_size,
+        src,
+        (sw_size)(uint64_t)elem_size
+    );
+    array->len += 1;
+    return array->len;
+}
+
 // 弹出末尾元素（空数组返回 0）。
 int64_t sw_array_pop(sw_array* array) {
     if (array == NULL || array->len <= 0) {

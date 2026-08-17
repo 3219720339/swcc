@@ -2,6 +2,30 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 06:20  支持 struct 数组作为字段类型（语言层最后实质缺口）：
+   - 背景：`struct Node { children: Node[] }` 此前编译期报错
+     "v0.1 暂不支持该字段类型"——树/链表/图数据结构不可用。
+   - 调研发现 codegen 布局/读写路径已支持（数组为引用类型，字段存
+     8 字节指针；元素内联 struct 字节），主要障碍在语义层拦截。
+   - 修复：
+     a) reject_complex_field 移除 struct 数组字段拦截（保留 class 的
+        struct 值字段限制）。
+     b) 对象字面量字段目标类型传播：struct/class 字段字面量对
+        Array/Struct 字段调 register_object_target（此前只处理嵌套
+        struct 值字段），使 `points: [{x:1,y:1}]` 可用。
+     c) struct 数组 push：新增 runtime sw_array_push_struct
+        （按 elem_size 复制元素字节）；codegen 对 struct 元素 push
+        改用之（传 array, elem_size, src 地址）；语义层新增
+        semantic_struct_size（与 codegen struct_layout 一致的递归大小）。
+   - 语义：值字段（标量/嵌套 struct）拷贝字节不共享；数组等引用字段
+     共享引用不深拷贝（符合 docs/04 既有设计）。
+   - 新增探针 probe-struct-array.sw（11 项：字段字面量/索引读写/push/
+     递归树求和/嵌套访问/for-of/map/值引用拷贝语义），注册
+     run-examples.py（114 项）。
+   - 文档：docs/08-能力清单.md 补充 struct 数组字段能力。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 114 examples 回归通过。
+
 2026-08-17 05:40  解锁跨模块字符串全局（sw_global_init 全模块初始化）：
    - 背景：上批限制"字符串全局仅支持入口模块声明"。用户需求：一个模块
      定义字符串全局，多个模块引用，且可修改（固定修改、多模块引用）。
