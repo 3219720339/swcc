@@ -2,6 +2,23 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 13:50  Bug 排查批次：lambda 作用域边界泄漏 + spawn_result 空数组越界：
+   - 排查发现：循环/switch 里的 lambda 内 break/continue 检查期放行
+     （loop_depth/switch_depth 泄漏进 lambda 体），到 codegen 才报
+     "break 不在循环内"；类方法里的 lambda 内 this/super 同样泄漏
+     （检查放行、降级才报"只能在方法中降级"）。
+   - 修复：lambda 检查体重置 loop_depth/switch_depth/this_class 为外层
+     边界（lambda 是独立函数），现在检查期即报清晰错误
+     （"break 只能在循环或 switch 内使用"/"`this` 只能在类方法中使用"）。
+   - spawn_result 空 out 数组越界写崩溃：std 糖加 out.length >= 1 守卫
+     （空数组时结果丢弃、任务照常运行）。
+   - 验证过的正常项：char 字面量/char switch、slice 负索引与 start>=end、
+     for(;;)、泛型函数双闭包（closure_counter 唯一）、闭包捕获闭包、
+     闭包数组、字符串+字符拼接、闭包内全局赋值/数组元素写。
+   - 文档：开发进度.txt；探针 probe-thread-sugar.sw 补空数组守卫用例。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 122 examples 回归通过。
+ 
 2026-08-17 13:10  闭包捕获修复 + 线程传参/回传糖：
    - P0 修复：闭包内捕获对象的字段读写偏移错误——codegen expr_owner_type
      不认识 MirExpr::EnvGet（无类型信息）导致 field_offset 兜底 index*8，

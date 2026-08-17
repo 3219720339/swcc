@@ -30,10 +30,14 @@ export function spawn_with<A>(f: (A) => int, arg: A): int {
 
 /// 带参 + 结果回传：任务把 `f(arg)` 的结果写入 out[0]（out 是引用类型，
 /// 任务内写入对调用方可见），返回线程 id。适合 string/class/struct 等
-/// 复杂结果（int 结果可直接用 thread_result）。
+/// 复杂结果（int 结果可直接用 thread_result）。out 为空数组时结果丢弃
+/// （不越界写，任务照常运行）。
 export function spawn_result<A, R>(f: (A) => R, arg: A, out: R[]): int {
     return thread_spawn((): int => {
-        out[0] = f(arg);
+        const result = f(arg);
+        if (out.length >= 1) {
+            out[0] = result;
+        }
         return 0;
     });
 }

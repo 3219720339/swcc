@@ -43,6 +43,12 @@ function main(): int {
     thread_join(t4, -1);
     passed = passed & check(objs[0].v == 7, "spawn_result class field");
 
+    // 守卫：空 out 数组不越界写、任务照常运行
+    const empty: string[] = [];
+    const t5 = spawn_result((s: string): string => s + "!", "hi", empty);
+    thread_join(t5, -1);
+    passed = passed & check(true, "spawn_result empty out safe");
+
     // P0 回归：闭包内 class/struct 字段读写
     const b = new Box(1);
     const cl = (): int => {

@@ -3655,6 +3655,16 @@ impl<'s> Checker<'s> {
                         .insert(param.name.name.clone(), id);
                     param_types.push(ty);
                 }
+                // lambda 是独立函数边界：重置循环/switch 深度与 this/super
+                // 上下文，否则外层循环里的 lambda 内的 break/continue、类方法
+                // 里的 lambda 内的 this/super 会泄漏到检查期（降级期才炸，
+                // 报错时机与文案都错）。
+                let outer_loop = self.loop_depth;
+                let outer_switch = self.switch_depth;
+                let outer_this = self.this_class;
+                self.loop_depth = 0;
+                self.switch_depth = 0;
+                self.this_class = None;
                 let inferred = match body {
                     LambdaBody::Expr(expr) => self.check_expr(expr),
                     LambdaBody::Block(block) => {
@@ -3679,6 +3689,9 @@ impl<'s> Checker<'s> {
                     }
                 };
                 self.scopes.pop();
+                self.loop_depth = outer_loop;
+                self.switch_depth = outer_switch;
+                self.this_class = outer_this;
                 // 显式返回类型注解 `(x: int): int => ...`：校验与推断类型兼容，
                 // 并优先用声明的返回类型（ABI 以声明为准）。
                 let ret_ty = match ret {
