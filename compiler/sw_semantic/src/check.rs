@@ -162,6 +162,12 @@ enum CallTarget {
         class: u32,
         index: usize,
     },
+    /// 类实例方法虚调用（基类引用/继承数组经类 vtable 派发）；
+    /// `super.method()` 走 Method 直调，不进入本分支。
+    VirtualMethod {
+        class: u32,
+        index: usize,
+    },
     InterfaceMethod {
         interface: u32,
         index: usize,
@@ -3815,30 +3821,40 @@ impl<'s> Checker<'s> {
                     &self.symbols[id as usize].kind
                 {
                     let class_id = *class_id;
+                    // 静态字段/方法沿基类链解析（与 Java/JS 静态继承一致；
+                    // 跳过泛型模板类，见静态方法调用路径）。
+                    let mut current = Some(class_id);
+                    while let Some(cid) = current {
+                        let info = self.types.classes[cid as usize].clone();
+                        if info.generics.is_empty() {
+                            if let Some(index) =
+                                info.static_fields.iter().position(|f| f.name == name.name)
+                            {
+                                self.state
+                                    .result
+                                    .static_member_targets
+                                    .insert(span.start, StaticMemberTarget::Field(cid, index));
+                                return info.static_fields[index].ty.clone();
+                            }
+                            if let Some(index) =
+                                info.static_methods.iter().position(|m| m.name == name.name)
+                            {
+                                let sig = &info.static_methods[index].sig;
+                                self.state
+                                    .result
+                                    .static_member_targets
+                                    .insert(span.start, StaticMemberTarget::Method);
+                                return Type::Function {
+                                    params: sig.params.iter().map(|p| p.ty.clone()).collect(),
+                                    ret: Box::new(sig.ret.clone()),
+                                };
+                            }
+                        }
+                        current = info.base;
+                    }
                     let info = self.types.classes[class_id as usize].clone();
-                    if let Some(index) = info.static_fields.iter().position(|f| f.name == name.name)
-                    {
-                        self.state
-                            .result
-                            .static_member_targets
-                            .insert(span.start, StaticMemberTarget::Field(class_id, index));
-                        return info.static_fields[index].ty.clone();
-                    }
-                    if let Some(index) =
-                        info.static_methods.iter().position(|m| m.name == name.name)
-                    {
-                        let sig = &info.static_methods[index].sig;
-                        self.state
-                            .result
-                            .static_member_targets
-                            .insert(span.start, StaticMemberTarget::Method);
-                        return Type::Function {
-                            params: sig.params.iter().map(|p| p.ty.clone()).collect(),
-                            ret: Box::new(sig.ret.clone()),
-                        };
-                    }
                     self.error(
-                        format!("类 {} 没有静态成员 `{}`", info.name, name.name),
+                        format!("类 {} 没有静态成员 `{}`（含基类）", info.name, name.name),
                         name.span,
                     );
                     return Type::Error;
@@ -4193,17 +4209,38 @@ impl<'s> Checker<'s> {
                             &self.symbols[id as usize].kind
                         {
                             let class_id = *class_id;
-                            let info = self.types.classes[class_id as usize].clone();
-                            let Some(index) =
-                                info.static_methods.iter().position(|m| m.name == name.name)
-                            else {
+                            // 静态方法沿基类链解析（Derived.helper() → Base.helper()，
+                            // 与 Java/JS 静态继承一致）；找到的定义类 id 用于 MIR 直调。
+                            // 跳过泛型模板类（模板静态方法函数不生成，避免链接期才报错）。
+                            let resolved = self
+                                .types
+                                .class_base_chain(class_id)
+                                .into_iter()
+                                .find_map(|cid| {
+                                    if self.types.classes[cid as usize].generics.is_empty() {
+                                        self.types.classes[cid as usize]
+                                            .static_methods
+                                            .iter()
+                                            .position(|m| m.name == name.name)
+                                            .map(|index| (cid, index))
+                                    } else {
+                                        None
+                                    }
+                                });
+                            let Some((class_id, index)) = resolved else {
+                                let info = self.types.classes[class_id as usize].clone();
                                 self.error(
-                                    format!("类 {} 没有静态方法 `{}`", info.name, name.name),
+                                    format!(
+                                        "类 {} 没有静态方法 `{}`（含基类）",
+                                        info.name, name.name
+                                    ),
                                     name.span,
                                 );
                                 return Type::Error;
                             };
-                            let sig = info.static_methods[index].sig.clone();
+                            let sig = self.types.classes[class_id as usize].static_methods[index]
+                                .sig
+                                .clone();
                             let args_ty = self.call_args_ty(args);
                             self.match_call_args(&sig, &args_ty, span, true);
                             self.check_object_args(&sig, args);
@@ -4369,13 +4406,23 @@ impl<'s> Checker<'s> {
                             return Type::Error;
                         };
                         let (class_id, index) = methods[choice as usize];
-                        self.state.result.call_targets.insert(
-                            (span.start, span.end),
+                        // 类实例方法虚派发：JS/Java 语义，基类引用/继承数组按对象
+                        // 实际 vtable 调最派生实现；`super.method()` 显式直调基类实现。
+                        let target = if matches!(object.kind, ExprKind::Super) {
                             CallTarget::Method {
                                 class: class_id,
                                 index,
-                            },
-                        );
+                            }
+                        } else {
+                            CallTarget::VirtualMethod {
+                                class: class_id,
+                                index,
+                            }
+                        };
+                        self.state
+                            .result
+                            .call_targets
+                            .insert((span.start, span.end), target);
                         self.check_object_args(&sig, args);
                         sig.ret
                     }
@@ -8544,6 +8591,39 @@ impl<'a, 'm, 's> FnLower<'a, 'm, 's> {
                         MirCallee::Method {
                             class,
                             name: callee_name,
+                            sig: method_sig,
+                        }
+                    }
+                    Some(CallTarget::VirtualMethod { class, index }) => {
+                        // 虚派发：接收者是普通对象表达式（super 走 Method 直调，
+                        // 不会进本分支）。
+                        match &callee.kind {
+                            ExprKind::Member { object, .. } => {
+                                args.insert(0, self.lower_expr(object));
+                            }
+                            _ => {}
+                        }
+                        // 与 Method 相同的泛型实例/伪实例解析，得到具体类后取
+                        // 方法名与（已替换类型实参的）签名；codegen 按 名+参数
+                        // 分配/查找类 vtable 槽位。
+                        let class = self.remap_class_to_instance(class);
+                        let type_args = self.type_args.clone();
+                        let class = match self.resolve_pseudo_class(&Type::Class(class), &type_args)
+                        {
+                            Type::Class(id) => id,
+                            _ => class,
+                        };
+                        let class_info = self.lowerer.types.classes.get(class as usize);
+                        let method_name = class_info
+                            .and_then(|info| info.methods.get(index))
+                            .map(|method| method.name.clone())
+                            .unwrap_or_default();
+                        let method_sig = class_info
+                            .and_then(|info| info.methods.get(index))
+                            .map(|method| method.sig.clone())
+                            .unwrap_or_else(placeholder_sig);
+                        MirCallee::VirtualMethod {
+                            name: method_name,
                             sig: method_sig,
                         }
                     }

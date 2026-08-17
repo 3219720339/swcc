@@ -2,6 +2,28 @@ Sw 编译器（swcc）开发进度
 ==========================
 
 更新：2026-08-16（main）
+2026-08-17 09:30  类继承虚方法派发 + 静态成员继承（类继承闭环）：
+   - 背景：`const a: Animal = new Dog("d"); a.speak()` 输出基类实现 "?"
+     （类方法调用点静态绑定，仅接口接收者走 vtable）；`Animal[] = [Dog, Cat]`
+     不崩但全部派发到基类；`Derived.helper()` 报"没有静态方法"。
+   - 虚派发（JS/Java 语义）：实例方法调用点除 `super.method()` 直调外一律
+     经类 vtable 间接派发（语义层新增 CallTarget::VirtualMethod →
+     MirCallee::VirtualMethod；codegen 按「方法名+参数类型」分配全局类槽位，
+     重载各占一槽、覆盖复用同槽，槽内容填各自最派生实现）。
+   - vtable 扩展：数据区改为「接口槽区 + 类方法槽区」（原仅接口槽区，
+     纯类继承层级无接口时原本不建 vtable）；跨模块方法（基类定义在其他
+     模块）按 Import 声明填槽（method_func_id，跳过泛型模板类/含类型参数
+     签名）；接口槽填充同步补 import 兜底（修同源潜在漏洞）。
+   - 静态继承：静态方法/静态字段解析沿基类链（Derived.helper() →
+     Base.helper()、Derived.VERSION → Base.VERSION），跳过泛型模板类。
+   - 验证：基类引用/继承数组/for-of/`Dog[]`→`Animal[]` 参数/重载虚派发/
+     super.method 直调/方法内 this.method()/跨模块继承（import 填槽）全过。
+   - 新增探针 probe-virtual.sw（15 项）+ probe-cross-virtual.sw（5 项）
+     + lib-cross-animal.sw（定义模块），注册 run-examples.py（118 项）。
+   - 文档：docs/08-能力清单.md 更新（虚派发、静态继承、能力矩阵）。
+   - 验证：fmt --check 通过、零警告、cargo test 67 项全绿、
+     release 118 examples 回归通过。
+ 
 2026-08-17 08:10  多态数组（接口数组）+ struct 数组 return 字面量：
    - 背景：`const shapes: Shape[] = [new Circle(1.0), new Square(2.0)]`
      此前元素需与目标类型严格相等才能通过，不同 class 实现同一接口

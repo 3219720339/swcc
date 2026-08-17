@@ -292,6 +292,12 @@ pub enum MirCallee {
         index: usize,
         sig: FunctionSig,
     },
+    /// 类实例方法虚调用：经类 vtable 间接派发（args[0] 为接收者对象）。
+    /// name 为方法名，sig 为已替换类型实参的方法签名（槽位按 方法名+参数类型 分配）。
+    VirtualMethod {
+        name: String,
+        sig: FunctionSig,
+    },
     /// 通过闭包对象间接调用：args[0] 是闭包指针。
     Closure {
         sig: FunctionSig,

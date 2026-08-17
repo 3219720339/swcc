@@ -214,8 +214,11 @@ impl Generator {
         // 按 Import 声明。此前每个模块都生成 Local 副本：使用模块的副本因本模块
         // exports 里没有该类的方法而槽位全空，`new` 又把对象头指向这份空表，
         // 接口方法调用读到 0 地址直接崩溃（跨模块类 + 接口必崩）。
+        // v0.3 扩展：vtable 除接口槽区外追加类方法槽区（虚派发用），
+        // 跨模块方法（基类定义在其他模块）按 Import 声明填槽。
         let (interface_slot_bases, interface_slot_total) = interface_slot_bases(types);
-        if interface_slot_total > 0 {
+        let (class_slots, class_slot_total) = class_method_slots(types);
+        if interface_slot_total + class_slot_total > 0 {
             for (class_id, class) in types.classes.iter().enumerate() {
                 let home = class.module.0 == mir.module_id;
                 let data_id = self
@@ -233,7 +236,10 @@ impl Generator {
                     .map_err(|error| error.to_string())?;
                 if home {
                     let mut desc = DataDescription::new();
-                    desc.define(vec![0u8; interface_slot_total * 8].into_boxed_slice());
+                    desc.define(
+                        vec![0u8; (interface_slot_total + class_slot_total) * 8].into_boxed_slice(),
+                    );
+                    // 接口槽区：本类（含基类链）实现的接口方法。
                     let mut inherited_interfaces = Vec::new();
                     let mut current = Some(class_id as u32);
                     while let Some(id) = current {
@@ -257,14 +263,41 @@ impl Generator {
                             {
                                 let fn_name =
                                     format!("sw_m_{impl_class}_{impl_index}_{}", method.name);
-                                if let Some(func_id) = exports.get(&fn_name) {
+                                if let Some(func_id) = self.method_func_id(
+                                    types,
+                                    &fn_name,
+                                    impl_class,
+                                    impl_index,
+                                    exports.get(&fn_name).copied(),
+                                )? {
                                     let func_ref =
-                                        self.module.declare_func_in_data(*func_id, &mut desc);
+                                        self.module.declare_func_in_data(func_id, &mut desc);
                                     desc.write_function_addr(
                                         ((base + method_index) * 8) as u32,
                                         func_ref,
                                     );
                                 }
+                            }
+                        }
+                    }
+                    // 类方法槽区：本类（含基类链）的最派生实现，虚派发用。
+                    for ((name, params), slot) in &class_slots {
+                        if let Some((impl_class, impl_index)) =
+                            find_class_method_sig(types, class_id as u32, name, params)
+                        {
+                            let fn_name = format!("sw_m_{impl_class}_{impl_index}_{name}");
+                            if let Some(func_id) = self.method_func_id(
+                                types,
+                                &fn_name,
+                                impl_class,
+                                impl_index,
+                                exports.get(&fn_name).copied(),
+                            )? {
+                                let func_ref = self.module.declare_func_in_data(func_id, &mut desc);
+                                desc.write_function_addr(
+                                    ((interface_slot_total + slot) * 8) as u32,
+                                    func_ref,
+                                );
                             }
                         }
                     }
@@ -373,6 +406,55 @@ impl Generator {
         Ok(func_id)
     }
 
+    /// vtable 槽位填表取方法函数 id：本模块 exports 直接取；跨模块方法（基类
+    /// 定义在其他模块）按 Import 声明（签名补 self 接收者）；泛型模板类方法
+    /// 不生成、返回 None（槽留空，模板类不会被 new）。
+    fn method_func_id(
+        &mut self,
+        types: &TypeTable,
+        fn_name: &str,
+        impl_class: u32,
+        impl_index: usize,
+        local: Option<cranelift_module::FuncId>,
+    ) -> Result<Option<cranelift_module::FuncId>, CodegenError> {
+        if let Some(func_id) = local {
+            return Ok(Some(func_id));
+        }
+        let Some(class_info) = types.classes.get(impl_class as usize) else {
+            return Ok(None);
+        };
+        // 泛型模板类的方法不会生成（按实例化后的 id 生成），槽留空。
+        if !class_info.generics.is_empty() {
+            return Ok(None);
+        }
+        let Some(method_info) = class_info.methods.get(impl_index) else {
+            return Ok(None);
+        };
+        // 兜底：签名残留类型参数（模板签名）也无法导入。
+        if method_info
+            .sig
+            .params
+            .iter()
+            .any(|p| matches!(p.ty, Type::TypeParam(_)))
+            || matches!(method_info.sig.ret, Type::TypeParam(_))
+        {
+            return Ok(None);
+        }
+        let mut params = vec![sw_semantic::symbols::ParamSig {
+            name: "self".to_owned(),
+            ty: Type::Class(impl_class),
+            has_default: false,
+            rest: false,
+        }];
+        params.extend(method_info.sig.params.iter().cloned());
+        let full_sig = sw_semantic::FunctionSig {
+            params,
+            ..method_info.sig.clone()
+        };
+        let sig = signature_of_sig(&full_sig, self.module.isa())?;
+        Ok(Some(self.declare_import(fn_name, &sig)?))
+    }
+
     fn define_function(
         &mut self,
         mir: &MirModule,
@@ -431,6 +513,8 @@ impl Generator {
             class_field_types: class_field_types(types),
             vtable_data: self.vtable_data.clone(),
             interface_slot_bases: interface_slot_bases(types).0,
+            class_slot_bases: class_method_slots(types).0,
+            class_slot_offset: interface_slot_bases(types).1,
             local_types,
             global_types: mir
                 .globals
@@ -646,8 +730,8 @@ fn visit_expr(
             refs.global_refs.insert(*index, gv);
         }
         MirExpr::Call { callee, args } => {
-            // 接口方法经 vtable 间接调用，无需直接符号导入。
-            if let MirCallee::InterfaceMethod { .. } = callee {
+            // 接口/虚方法经 vtable 间接调用，无需直接符号导入。
+            if let MirCallee::InterfaceMethod { .. } | MirCallee::VirtualMethod { .. } = callee {
                 for arg in args {
                     visit_expr(arg, generator, mir, exports, ctx, refs)?;
                 }
@@ -976,6 +1060,9 @@ fn callee_signature_for(
         MirCallee::Closure { sig } => ("$closure".to_owned(), signature_of_sig(sig, isa)?),
         MirCallee::InterfaceMethod { sig, .. } => {
             ("$iface".to_owned(), signature_of_sig(sig, isa)?)
+        }
+        MirCallee::VirtualMethod { sig, .. } => {
+            ("$vmethod".to_owned(), signature_of_sig(sig, isa)?)
         }
     })
 }
@@ -1696,6 +1783,56 @@ fn interface_slot_bases(types: &TypeTable) -> (HashMap<u32, usize>, usize) {
     (bases, total)
 }
 
+/// 类实例方法在 vtable 中的全局槽位：按「方法名 + 参数类型」分配（重载各占
+/// 一槽，派生类覆盖与基类同签名方法复用同一槽位，槽内容填各自最派生实现）。
+/// 返回 (槽位表, 槽位总数)；类 vtable 槽区紧接接口槽区之后。
+fn class_method_slots(types: &TypeTable) -> (HashMap<(String, Vec<Type>), usize>, usize) {
+    let mut slots = HashMap::new();
+    let mut total = 0usize;
+    for class in &types.classes {
+        for method in &class.methods {
+            if method.name == "constructor" {
+                continue;
+            }
+            let key = (
+                method.name.clone(),
+                method
+                    .sig
+                    .params
+                    .iter()
+                    .map(|p| p.ty.clone())
+                    .collect::<Vec<Type>>(),
+            );
+            if !slots.contains_key(&key) {
+                slots.insert(key, total);
+                total += 1;
+            }
+        }
+    }
+    (slots, total)
+}
+
+/// 类及其基类链中与 (方法名, 参数类型) 匹配的最派生方法实现（虚派发槽位填表用）。
+fn find_class_method_sig(
+    types: &TypeTable,
+    class_id: u32,
+    name: &str,
+    params: &[Type],
+) -> Option<(u32, usize)> {
+    let mut current = Some(class_id);
+    while let Some(id) = current {
+        let class = &types.classes[id as usize];
+        for (index, method) in class.methods.iter().enumerate() {
+            let sig_params: Vec<Type> = method.sig.params.iter().map(|p| p.ty.clone()).collect();
+            if method.name == name && sig_params == params {
+                return Some((id, index));
+            }
+        }
+        current = class.base;
+    }
+    None
+}
+
 struct LowerCtx<'a, 'f> {
     builder: FunctionBuilder<'f>,
     refs: RefTable,
@@ -1717,6 +1854,10 @@ struct LowerCtx<'a, 'f> {
     vtable_data: HashMap<u32, cranelift_module::DataId>,
     /// interface id → vtable 槽位起始偏移。
     interface_slot_bases: HashMap<u32, usize>,
+    /// 类实例方法槽位：方法名+参数类型 → 槽位（类槽区在接口槽区之后）。
+    class_slot_bases: HashMap<(String, Vec<Type>), usize>,
+    /// 类槽区起始偏移（= 接口槽位总数）。
+    class_slot_offset: usize,
     /// 参数 + 局部变量的类型（槽索引与 MIR 局部索引一致）。
     local_types: Vec<Type>,
     /// 全局变量类型（MirExpr::Global 索引 → 类型，float 全局按 f64 加载）。
@@ -1937,6 +2078,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     | MirCallee::Method { sig, .. }
                     | MirCallee::Extern { sig, .. }
                     | MirCallee::InterfaceMethod { sig, .. }
+                    | MirCallee::VirtualMethod { sig, .. }
                     | MirCallee::Closure { sig, .. } => Some(sig),
                     _ => None,
                 };
@@ -2432,6 +2574,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                     | MirCallee::Method { sig, .. }
                     | MirCallee::Extern { sig, .. } => (sig.ret.clone(), false),
                     MirCallee::InterfaceMethod { sig, .. } => (sig.ret.clone(), false),
+                    MirCallee::VirtualMethod { sig, .. } => (sig.ret.clone(), false),
                     MirCallee::Intrinsic { .. } => (Type::Void, false),
                 };
                 let _ = closure_struct;
@@ -2528,6 +2671,50 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                             .ins()
                             .call_indirect(sig_ref, fn_ptr, &final_args)
                     }
+                    MirCallee::VirtualMethod { name, sig } => {
+                        let mut values = call_args.into_iter();
+                        let sret_arg = if sret.is_some() { values.next() } else { None };
+                        let receiver = values.next().ok_or("虚方法调用缺少接收者")?;
+                        let vt =
+                            self.builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::new(), receiver, 0);
+                        let params: Vec<Type> = sig.params.iter().map(|p| p.ty.clone()).collect();
+                        let slot = self
+                            .class_slot_bases
+                            .get(&(name.clone(), params))
+                            .copied()
+                            .ok_or_else(|| format!("类 vtable 槽位未找到：{name}"))?;
+                        let offset = ((self.class_slot_offset + slot) * 8) as i32;
+                        let fn_ptr =
+                            self.builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::new(), vt, offset);
+                        let mut call_sig = Signature::new(self.module.isa().default_call_conv());
+                        if sret.is_some() {
+                            call_sig.params.push(AbiParam::new(types::I64));
+                        }
+                        call_sig.params.push(AbiParam::new(types::I64));
+                        for param in &sig.params {
+                            call_sig.params.push(AbiParam::new(abi_type(&param.ty)?));
+                        }
+                        if sig.ret != Type::Void
+                            && sig.ret != Type::Unknown
+                            && !is_struct_ret(&sig.ret)
+                        {
+                            call_sig.returns.push(AbiParam::new(abi_type(&sig.ret)?));
+                        }
+                        let sig_ref = self.builder.import_signature(call_sig);
+                        let mut final_args = Vec::new();
+                        if let Some(sret_arg) = sret_arg {
+                            final_args.push(sret_arg);
+                        }
+                        final_args.push(receiver);
+                        final_args.extend(values);
+                        self.builder
+                            .ins()
+                            .call_indirect(sig_ref, fn_ptr, &final_args)
+                    }
                     _ => {
                         let name = match callee {
                             MirCallee::Function { name, .. } | MirCallee::Method { name, .. } => {
@@ -2537,6 +2724,7 @@ impl<'a, 'f> LowerCtx<'a, 'f> {
                             MirCallee::Intrinsic { name } => intrinsic_name(name).to_owned(),
                             MirCallee::Closure { .. } => unreachable!(),
                             MirCallee::InterfaceMethod { .. } => unreachable!(),
+                            MirCallee::VirtualMethod { .. } => unreachable!(),
                         };
                         let func_ref = self
                             .refs
